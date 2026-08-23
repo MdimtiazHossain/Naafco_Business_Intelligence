@@ -15,6 +15,10 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 # Required by FastAPI for multipart file uploads (POST /api/import/{data_type}).
 python-multipart>=0.0.9
+# Signs and verifies every access token (app/auth/security.py). Nothing else
+# depends on it, so a missing line here is not caught by another package's
+# requirements — the API fails to import at start-up on a clean install.
+PyJWT>=2.8
 
 # AI agent (Phase 3). The agent runs without a key using its deterministic
 # planner, so this is required for LLM phrasing/planning, not for correctness.
