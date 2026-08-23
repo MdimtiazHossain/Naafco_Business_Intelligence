@@ -1,0 +1,69 @@
+# Apache configuration for a static Hostinger deployment.
+#
+# The Docker image serves this bundle from nginx and gets these rules from
+# frontend/nginx.conf; Apache never sees that file, so the same three concerns
+# are restated here. Keep the two in step — a rule added to one belongs in the
+# other, or a deep link works in one deployment and 404s in the other.
+#
+# Vite copies everything under public/ into dist/, so this ships with the build.
+
+# --- Single-page routing -----------------------------------------------------
+# App.tsx uses BrowserRouter, so /performance?level=area is a real path, not a
+# fragment. Apache would look for a directory of that name and return 404 on a
+# hard refresh or a pasted link. Rewrite anything that is not an existing file
+# or directory to index.html and let the router read the URL.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Never rewrite a request that resolves to something real: the hashed assets,
+  # the GeoJSON under /geo/, favicon.svg and icons.svg all must be served as
+  # themselves.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# --- Caching -----------------------------------------------------------------
+# Asset filenames carry a content hash, so a changed file is a changed URL and
+# the old one can be cached indefinitely. index.html must never be cached: it is
+# the document naming which hashed bundles are current, and a stale copy pins
+# browsers to a deleted build.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css|woff2?|svg|png|jpg|jpeg|gif|webp)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+
+  <FilesMatch "^index\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+
+  # The eight boundary files change only when scripts/build_map_geojson.py is
+  # re-run, but they are not content-hashed, so they get a day rather than a
+  # year — long enough to matter, short enough that a regenerated boundary
+  # reaches users without a cache purge.
+  <FilesMatch "\.geojson$">
+    Header set Cache-Control "public, max-age=86400"
+  </FilesMatch>
+
+  Header set X-Content-Type-Options "nosniff"
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# --- Compression -------------------------------------------------------------
+# The GeoJSON is 3.3 MB uncompressed and compresses hard; the JS bundles are the
+# other reason this block exists.
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css text/plain
+  AddOutputFilterByType DEFLATE application/javascript application/json
+  AddOutputFilterByType DEFLATE application/geo+json image/svg+xml
+</IfModule>
+
+# Apache does not know this extension, and the map's fetches are cleaner when
+# the type is declared rather than guessed.
+<IfModule mod_mime.c>
+  AddType application/geo+json .geojson
+</IfModule>
