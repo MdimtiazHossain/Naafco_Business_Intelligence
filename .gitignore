@@ -41,6 +41,16 @@ Master Data.xlsx
 # this directory alone is ~118 MB and one file in it exceeds GitHub's limit.
 bgd_admin_boundaries.geojson/
 *.geojson
+# ...but frontend/public/geo/ holds the browser-sized derivatives the map
+# actually draws — simplified and coordinate-rounded by
+# scripts/build_map_geojson.py, 3.3 MB for all eight. Vite copies them into
+# dist/ and the browser fetches them directly, so without them every
+# administrative layer 404s on a fresh clone. They cannot be regenerated on a
+# host that lacks the ~118 MB source release above, which is why they are
+# committed rather than built. manifest.json was already tracked; these belong
+# beside it.
+!frontend/public/geo/
+!frontend/public/geo/*.geojson
 
 # --- Generated output -------------------------------------------------------
 # Reproducible from the workbook via scripts/inspect_master_data.py; keep the
