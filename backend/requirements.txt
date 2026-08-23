@@ -1,0 +1,28 @@
+# Phase 1: master-data foundation.
+# Pinned to minimum versions that were verified against this code base.
+
+# Excel / data handling
+openpyxl>=3.1.5
+pandas>=2.2
+
+# Database
+SQLAlchemy>=2.0.30
+alembic>=1.13
+psycopg[binary]>=3.1
+
+# API (Phase 2: import, ETL monitoring, data quality, reporting)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+# Required by FastAPI for multipart file uploads (POST /api/import/{data_type}).
+python-multipart>=0.0.9
+
+# AI agent (Phase 3). The agent runs without a key using its deterministic
+# planner, so this is required for LLM phrasing/planning, not for correctness.
+openai>=1.99
+# PDF export.
+reportlab>=4.0
+
+# Testing
+pytest>=8.0
+# Backs fastapi.testclient.
+httpx>=0.27

@@ -1,0 +1,136 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  /*
+   * How far down the page the app header ends, for anything that sticks
+   * beneath it.
+   *
+   * Declared rather than measured. The header is `h-14` (3.5rem) plus its
+   * bottom border, and below `md` it carries a second search row — so its
+   * height is a function of the breakpoint and nothing else, which CSS can say
+   * directly. An earlier version published this from a `ResizeObserver` in the
+   * layout; this needs no JavaScript, is correct on the very first paint, and
+   * cannot drift out of step with a re-render.
+   *
+   * Keep the two values in step with the header markup in `AppLayout`: the
+   * 51px is that search row, measured — `border-t` (1px) + `py-2` (16px) + the
+   * input itself (34px).
+   */
+  :root {
+    --app-header-height: calc(3.5rem + 1px + 51px);
+  }
+
+  @media (min-width: 768px) {
+    :root {
+      --app-header-height: calc(3.5rem + 1px);
+    }
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  }
+
+  /* Visible focus for keyboard users on every interactive element. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-white dark:ring-offset-slate-950;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900;
+  }
+
+  .card-header {
+    @apply flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-800;
+  }
+
+  .card-title {
+    @apply text-sm font-semibold text-slate-700 dark:text-slate-200;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700;
+  }
+
+  .btn-secondary {
+    @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800;
+  }
+
+  .btn-ghost {
+    @apply btn text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800;
+  }
+
+  /* Reserved for the irreversible: voiding a transaction, retiring a record.
+     Nothing merely inconvenient should wear it, or it stops meaning anything. */
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 disabled:opacity-50;
+  }
+
+  .input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-brand-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100;
+  }
+
+  .label {
+    @apply mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+
+  /*
+   * Material stock status colours, declared once for the whole application.
+   *
+   * A stock status is one colour applied to the *complete* metric — the label
+   * and the figure underneath it — so `Unrestricted Stock (KG/LTR)` and its
+   * `125,500` read as one green thing rather than a grey name over a green
+   * number. Cards, table headings and table cells all wear the same class,
+   * which is why it lives here rather than as a Tailwind string repeated in
+   * each component: a component that spells its own colours can drift, and
+   * three surfaces showing the same measure in three greens is exactly the
+   * inconsistency this replaces.
+   *
+   * The three are green, amber and red in that order of severity: unrestricted
+   * stock is the only stock that can be sold, expiring-soon stock is a warning
+   * with time left to act on it, and expired stock is money already lost.
+   * Colour never carries the meaning on its own — the label always names the
+   * status in words — so this is reinforcement, not signalling.
+   *
+   * The 700 weight in light mode for green and amber rather than 600:
+   * amber-600 on white clears the contrast floor for a large figure but not for
+   * the small uppercase label above it, and the pair has to be legible as one
+   * unit. Red is the 600 the rest of the application already uses for a serious
+   * condition (`.btn-danger`, `growthClass`), which clears it as it stands.
+   */
+  .stock-status--unrestricted {
+    @apply text-emerald-700 dark:text-emerald-400;
+  }
+
+  .stock-status--expiring {
+    @apply text-amber-700 dark:text-amber-400;
+  }
+
+  .stock-status--expired {
+    @apply text-red-600 dark:text-red-400;
+  }
+
+  .table-wrap {
+    /* Horizontal scrolling keeps wide tables usable on a phone. */
+    @apply w-full overflow-x-auto;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded bg-slate-200 dark:bg-slate-800;
+  }
+}

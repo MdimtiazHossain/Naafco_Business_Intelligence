@@ -1,0 +1,81 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ai_business_agent_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_business_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # The master data carries Bangla text; the database must be UTF-8.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_business_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: ai_business_agent_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ai_business_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      MASTER_DATA_FILE: /app/data/Master Data.xlsx
+      REPORTS_DIR: /app/reports
+      FINANCIAL_YEAR_START_MONTH: ${FINANCIAL_YEAR_START_MONTH:-7}
+      COMPANY_NAME: ${COMPANY_NAME:-Example Industries Ltd.}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      # Passed through from the host .env; never baked into the image. Without
+      # it the agent falls back to its deterministic planner.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      # Required in production: without it the API refuses to sign tokens.
+      JWT_SECRET: ${JWT_SECRET:-}
+      ALLOW_HEADER_AUTH: ${ALLOW_HEADER_AUTH:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8080}
+      WHATSAPP_API_TOKEN: ${WHATSAPP_API_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      PDF_BANGLA_FONT: ${PDF_BANGLA_FONT:-}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Read-only: the source workbook must never be modified by the pipeline.
+      - ./data:/app/data:ro
+      - ./reports:/app/reports
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Vite inlines this at build time, so it must be the URL browsers use.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    container_name: ai_business_agent_frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+
+volumes:
+  pgdata:

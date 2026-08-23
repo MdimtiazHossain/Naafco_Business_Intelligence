@@ -1,0 +1,734 @@
+/**
+ * The business map: MapLibre GL JS over an OpenFreeMap basemap.
+ *
+ * One engine, one component, one data flow. Everything drawn here is either a
+ * local administrative file (`public/geo/`) or a row the API already returned
+ * under the caller's permissions — this component fetches no business data of
+ * its own and holds no business logic, which is what keeps the map and the
+ * dashboard from ever disagreeing about a number.
+ *
+ * The map instance is created once and then *mutated*. Re-creating it when a
+ * filter changes would throw away the tile cache, the user's pan and zoom and
+ * about a second of GPU work on every keystroke, so props flow into
+ * `setData` / `setPaintProperty` / `setLayoutProperty` calls instead. The only
+ * thing that rebuilds the style is a theme change, and even then the sources and
+ * layers are re-applied by the same function that applied them the first time.
+ */
+
+import {
+  FullscreenControl,
+  GeoJSONSource,
+  LngLat,
+  Map as MapLibreMap,
+  NavigationControl,
+  Popup,
+  ScaleControl,
+  type ExpressionSpecification,
+  type MapLayerMouseEvent,
+  type MapGeoJSONFeature,
+  type StyleSpecification,
+} from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import type { AreaStyle } from '../../types/api';
+import {
+  BANGLADESH_BOUNDS,
+  BOUNDARY_LEVELS,
+  FALLBACK_AREA_STYLES,
+  FIT_PADDING,
+  IDS,
+  MASK_PAINT,
+  type BoundaryLevelKey,
+} from './mapConfig';
+import { GeoDataUnavailable, loadGeoJson, type GeoCollection } from './geoData';
+import {
+  collectionBounds,
+  registerMarkerImages,
+  type EntityCollection,
+  type EntityFeatureProperties,
+} from './businessGeoJson';
+import { MapControls } from './MapControls';
+import { MapPopup, type PopupSubject } from './MapPopup';
+import type { ResolvedMarkerConfig } from '../../types/api';
+
+export interface AreaMetric {
+  stock: number;
+  stock_source?: 'measured' | 'default';
+}
+
+export interface BusinessMapProps {
+  /** OpenFreeMap style URL for the active theme. */
+  styleUrl: string;
+  theme: 'light' | 'dark';
+  /** Administrative levels currently drawn, outermost first. */
+  activeLevels: readonly BoundaryLevelKey[];
+  onLevelsChange: (levels: BoundaryLevelKey[]) => void;
+  /** Appearance per level, from `map_area_styles` via the API. */
+  areaStyles: Partial<Record<BoundaryLevelKey, AreaStyle>>;
+  /** Business entities as GeoJSON, from the business data adapter. */
+  entities: EntityCollection;
+  /** Marker artwork per entity type, from the Marker Designer. */
+  markers: Record<string, ResolvedMarkerConfig> | undefined;
+  /** Server-computed metric per administrative code. Geometry stays local. */
+  areaMetrics: Record<string, AreaMetric>;
+  /** Dim everything outside Bangladesh. */
+  showMask: boolean;
+  showCapitals: boolean;
+  showAdminLines: boolean;
+  onReferenceChange: (next: { capitals: boolean; lines: boolean; mask: boolean }) => void;
+  onEntitySelect: (properties: EntityFeatureProperties) => void;
+  onAreaSelect: (level: BoundaryLevelKey, code: string, name: string) => void;
+  /** Non-fatal problems, surfaced by the page rather than swallowed. */
+  onError: (message: string | null) => void;
+  formatValue: (value: number) => string;
+  /** Bumping this refits the view to Bangladesh — used after a drill reset. */
+  fitToken?: number;
+  className?: string;
+}
+
+/** A style with no layers, so a failed basemap still yields a usable map. */
+const BLANK_STYLE: StyleSpecification = {
+  version: 8,
+  sources: {},
+  layers: [],
+  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+};
+
+export function BusinessMap({
+  styleUrl,
+  theme,
+  activeLevels,
+  onLevelsChange,
+  areaStyles,
+  entities,
+  markers,
+  areaMetrics,
+  showMask,
+  showCapitals,
+  showAdminLines,
+  onReferenceChange,
+  onEntitySelect,
+  onAreaSelect,
+  onError,
+  formatValue,
+  fitToken,
+  className,
+}: BusinessMapProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
+  const popupRef = useRef<Popup | null>(null);
+  const popupHostRef = useRef<HTMLDivElement | null>(null);
+  const hoveredRef = useRef<{ source: string; id: string | number } | null>(null);
+  const [ready, setReady] = useState(false);
+  /**
+   * Bumped once every source and layer is in place.
+   *
+   * Distinct from `ready`, and the distinction matters: `ready` means the style
+   * has loaded, but the layers are added *asynchronously* after it, because each
+   * one waits on its GeoJSON file. Attaching the click and hover handlers on
+   * `ready` alone binds them to layers that do not exist yet, and MapLibre
+   * silently ignores a handler for an unknown layer — so the map would render
+   * perfectly and simply never respond to a click.
+   */
+  const [layerGeneration, setLayerGeneration] = useState(0);
+  const [popup, setPopup] = useState<PopupSubject | null>(null);
+
+  // Props the map's own event handlers need. Handlers are attached once, so
+  // reading through a ref is what lets them see current props without the
+  // listener being torn down and rebuilt on every render.
+  const latest = useRef({ onEntitySelect, onAreaSelect, areaMetrics, formatValue });
+  latest.current = { onEntitySelect, onAreaSelect, areaMetrics, formatValue };
+
+  const styleFor = useCallback(
+    (level: BoundaryLevelKey): AreaStyle => areaStyles[level] ?? FALLBACK_AREA_STYLES[level],
+    [areaStyles],
+  );
+
+  /* ---------------------------------------------------------------- create */
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+
+    let map: MapLibreMap;
+    try {
+      map = new MapLibreMap({
+        container: containerRef.current,
+        style: styleUrl,
+        // A starting view, immediately replaced by a fit to the country outline
+        // once that file has loaded. Centring on Bangladesh rather than [0, 0]
+        // means the first frame is never the middle of the Atlantic.
+        bounds: BANGLADESH_BOUNDS,
+        fitBoundsOptions: { padding: FIT_PADDING },
+        attributionControl: { compact: true },
+        // Nothing here is drawn in 3D, and a tilted business map is harder to
+        // read, not easier.
+        pitchWithRotate: false,
+        dragRotate: false,
+      });
+    } catch (error) {
+      // No WebGL, or a context the browser refused. The dashboard must survive
+      // this: the page keeps its tables and reports the map as unavailable.
+      onError(
+        `The map could not start: ${(error as Error)?.message ?? 'WebGL is unavailable'}.`,
+      );
+      return;
+    }
+
+    mapRef.current = map;
+    map.addControl(new NavigationControl({ showCompass: false }), 'top-right');
+    map.addControl(new FullscreenControl(), 'top-right');
+    map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+    const host = document.createElement('div');
+    popupHostRef.current = host;
+    popupRef.current = new Popup({
+      closeButton: false,
+      closeOnClick: true,
+      maxWidth: '18rem',
+      offset: 14,
+    }).setDOMContent(host);
+    popupRef.current.on('close', () => setPopup(null));
+
+    map.on('error', (event) => {
+      // Style and tile failures arrive here rather than as exceptions. They are
+      // reported, not thrown: a missing tile must not take the page down.
+      const message = event.error?.message;
+      if (message) onError(`Map: ${message}`);
+    });
+
+    map.on('load', () => setReady(true));
+
+    return () => {
+      popupRef.current?.remove();
+      popupRef.current = null;
+      map.remove();
+      mapRef.current = null;
+      setReady(false);
+    };
+    // Created once. `styleUrl` changes are handled by the theme effect below,
+    // which swaps the style in place instead of rebuilding the map.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ------------------------------------------------------ sources & layers */
+
+  /**
+   * Add every source and layer this map draws, in draw order.
+   *
+   * Idempotent and re-runnable, because `setStyle` discards all of it: the same
+   * function that builds the map on load rebuilds it after a theme change, so
+   * the two can never drift apart.
+   */
+  const applyLayers = useCallback(async () => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    const problems: string[] = [];
+
+    /* The mask, first, so it sits above every basemap layer including labels —
+       which is the point: a foreign city label at full contrast would undo the
+       dimming that says this dashboard is about Bangladesh. Bangladesh itself is
+       a hole in the polygon, so nothing inside it is touched. */
+    try {
+      const mask = await loadGeoJson('mask');
+      addSource(map, IDS.maskSource, mask);
+      if (!map.getLayer(IDS.maskLayer)) {
+        map.addLayer({
+          id: IDS.maskLayer,
+          type: 'fill',
+          source: IDS.maskSource,
+          paint: {
+            'fill-color': MASK_PAINT[theme].color,
+            'fill-opacity': MASK_PAINT[theme].opacity,
+          },
+        });
+      }
+    } catch (error) {
+      problems.push(describe(error));
+    }
+
+    /* Administrative boundaries, outermost first so the finer levels draw over
+       the broader ones rather than under them. */
+    for (const level of BOUNDARY_LEVELS) {
+      try {
+        const collection = await loadGeoJson(level.file);
+        const sourceId = IDS.boundarySource(level.key);
+        // `promoteId` lifts the P-code into the feature id, which is what
+        // `setFeatureState` addresses — hover and selection need a stable id and
+        // GeoJSON string ids are not one without this.
+        addSource(map, sourceId, collection, 'code');
+
+        const paint = styleFor(level.key);
+        if (!map.getLayer(IDS.boundaryFill(level.key))) {
+          map.addLayer({
+            id: IDS.boundaryFill(level.key),
+            type: 'fill',
+            source: sourceId,
+            minzoom: level.minZoom,
+            paint: {
+              'fill-color': paint.fill_color,
+              'fill-opacity': fillOpacity(paint),
+            },
+          });
+        }
+        if (!map.getLayer(IDS.boundaryLine(level.key))) {
+          map.addLayer({
+            id: IDS.boundaryLine(level.key),
+            type: 'line',
+            source: sourceId,
+            minzoom: level.minZoom,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: {
+              'line-color': paint.stroke_color,
+              'line-opacity': paint.stroke_opacity,
+              'line-width': paint.stroke_width,
+            },
+          });
+        }
+      } catch (error) {
+        problems.push(describe(error));
+      }
+    }
+
+    /* Reference geography from the published release. Off by default: it is
+       context, and a map already carrying business markers does not need every
+       administrative line as well. */
+    try {
+      const lines = await loadGeoJson('lines');
+      addSource(map, IDS.linesSource, lines);
+      if (!map.getLayer(IDS.linesLayer)) {
+        map.addLayer({
+          id: IDS.linesLayer,
+          type: 'line',
+          source: IDS.linesSource,
+          layout: { visibility: 'none', 'line-join': 'round' },
+          paint: {
+            'line-color': theme === 'dark' ? '#64748B' : '#94A3B8',
+            'line-width': 0.6,
+            'line-dasharray': [2, 2],
+          },
+        });
+      }
+    } catch (error) {
+      problems.push(describe(error));
+    }
+
+    try {
+      const capitals = await loadGeoJson('capitals');
+      addSource(map, IDS.capitalsSource, capitals);
+      if (!map.getLayer(IDS.capitalsLayer)) {
+        map.addLayer({
+          id: IDS.capitalsLayer,
+          type: 'symbol',
+          source: IDS.capitalsSource,
+          layout: {
+            visibility: 'none',
+            'text-field': ['get', 'name'],
+            'text-size': ['interpolate', ['linear'], ['zoom'], 6, 9, 11, 13],
+            'text-offset': [0, 0.8],
+            'text-anchor': 'top',
+            'text-allow-overlap': false,
+          },
+          paint: {
+            'text-color': theme === 'dark' ? '#E2E8F0' : '#334155',
+            'text-halo-color': theme === 'dark' ? '#0F172A' : '#FFFFFF',
+            'text-halo-width': 1.2,
+          },
+        });
+      }
+    } catch (error) {
+      problems.push(describe(error));
+    }
+
+    /* Business entities, last, so a marker is never hidden under a boundary. */
+    addSource(map, IDS.entitySource, entities as unknown as GeoCollection);
+
+    if (!map.getLayer(IDS.entityCircles)) {
+      map.addLayer({
+        id: IDS.entityCircles,
+        type: 'circle',
+        source: IDS.entitySource,
+        paint: {
+          // A halo under the artwork: it keeps a marker findable over a dark
+          // mask or a busy basemap, and it is what remains visible when the
+          // designed icon has not finished decoding.
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 3, 12, 7],
+          'circle-color': theme === 'dark' ? '#38BDF8' : '#0EA5E9',
+          'circle-opacity': ['case', ['get', 'inFocus'], 0.9, 0.25],
+          'circle-stroke-width': 1,
+          'circle-stroke-color': theme === 'dark' ? '#0F172A' : '#FFFFFF',
+        },
+      });
+    }
+
+    if (!map.getLayer(IDS.entityIcons)) {
+      map.addLayer({
+        id: IDS.entityIcons,
+        type: 'symbol',
+        source: IDS.entitySource,
+        layout: {
+          'icon-image': ['get', 'icon'],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 5, 0.5, 12, 1],
+          'icon-anchor': 'bottom',
+        },
+        paint: { 'icon-opacity': ['case', ['get', 'inFocus'], 1, 0.3] },
+      });
+    }
+
+    if (!map.getLayer(IDS.entityLabels)) {
+      map.addLayer({
+        id: IDS.entityLabels,
+        type: 'symbol',
+        // Names only once the map is close enough for them not to collide into
+        // an unreadable mat.
+        minzoom: 9,
+        source: IDS.entitySource,
+        layout: {
+          'text-field': ['get', 'name'],
+          'text-size': 11,
+          'text-offset': [0, 0.9],
+          'text-anchor': 'top',
+          'text-optional': true,
+        },
+        paint: {
+          'text-color': theme === 'dark' ? '#F1F5F9' : '#1E293B',
+          'text-halo-color': theme === 'dark' ? '#020617' : '#FFFFFF',
+          'text-halo-width': 1.2,
+          'text-opacity': ['case', ['get', 'inFocus'], 1, 0.35],
+        },
+      });
+    }
+
+    const failed = await registerMarkerImages(map, markers);
+    if (failed.length) {
+      problems.push(`Marker artwork failed to load for: ${failed.join(', ')}.`);
+    }
+
+    onError(problems.length ? problems.join(' ') : null);
+    setLayerGeneration((generation) => generation + 1);
+    // `entities` and `markers` are applied by their own effects below; including
+    // them here would rebuild every layer on each filter change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme, styleFor, onError]);
+
+  useEffect(() => {
+    if (!ready) return;
+    void applyLayers();
+  }, [ready, applyLayers]);
+
+  /* -------------------------------------------------------------- theme swap */
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+
+    // `setStyle` drops every source and layer this component added, so they are
+    // re-applied once the new basemap reports itself loaded.
+    const rebuild = () => {
+      if (!map.isStyleLoaded()) return;
+      map.off('styledata', rebuild);
+      void applyLayers();
+    };
+    map.on('styledata', rebuild);
+    try {
+      map.setStyle(styleUrl);
+    } catch {
+      // A style URL that cannot be reached leaves a usable, empty map rather
+      // than a blank page: local geometry and business markers still draw.
+      map.setStyle(BLANK_STYLE);
+      onError('The basemap could not be loaded. Boundaries and markers are still shown.');
+    }
+    return () => {
+      map.off('styledata', rebuild);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [styleUrl]);
+
+  /* ------------------------------------------------------------ prop updates */
+
+  // Business data. `setData` swaps the source's contents without touching the
+  // layers reading it, which is what keeps a filter change from restyling.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const source = map.getSource(IDS.entitySource) as GeoJSONSource | undefined;
+    source?.setData(entities as never);
+  }, [entities, ready]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !markers) return;
+    void registerMarkerImages(map, markers);
+  }, [markers, ready]);
+
+  // Level visibility. Toggling a layer is a layout property, not a re-add: the
+  // geometry stays parsed on the GPU and switching it back on is instant.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    for (const level of BOUNDARY_LEVELS) {
+      const visible = activeLevels.includes(level.key) ? 'visible' : 'none';
+      for (const id of [IDS.boundaryFill(level.key), IDS.boundaryLine(level.key)]) {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible);
+      }
+    }
+  }, [activeLevels, ready]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    if (map.getLayer(IDS.maskLayer)) {
+      map.setLayoutProperty(IDS.maskLayer, 'visibility', showMask ? 'visible' : 'none');
+    }
+    if (map.getLayer(IDS.capitalsLayer)) {
+      map.setLayoutProperty(
+        IDS.capitalsLayer, 'visibility', showCapitals ? 'visible' : 'none',
+      );
+    }
+    if (map.getLayer(IDS.linesLayer)) {
+      map.setLayoutProperty(
+        IDS.linesLayer, 'visibility', showAdminLines ? 'visible' : 'none',
+      );
+    }
+  }, [showMask, showCapitals, showAdminLines, ready]);
+
+  // Style changes from the database reach the existing layers as paint updates.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    for (const level of BOUNDARY_LEVELS) {
+      const paint = styleFor(level.key);
+      const fill = IDS.boundaryFill(level.key);
+      const line = IDS.boundaryLine(level.key);
+      if (map.getLayer(fill)) {
+        map.setPaintProperty(fill, 'fill-color', paint.fill_color);
+        map.setPaintProperty(fill, 'fill-opacity', fillOpacity(paint));
+      }
+      if (map.getLayer(line)) {
+        map.setPaintProperty(line, 'line-color', paint.stroke_color);
+        map.setPaintProperty(line, 'line-width', paint.stroke_width);
+        map.setPaintProperty(line, 'line-opacity', paint.stroke_opacity);
+      }
+    }
+  }, [styleFor, ready]);
+
+  /* ------------------------------------------------------------ interaction */
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+
+    const entityLayers = [IDS.entityIcons, IDS.entityCircles];
+    const areaLayers = BOUNDARY_LEVELS.map((level) => IDS.boundaryFill(level.key));
+
+    const openPopup = (
+      lngLat: LngLat, subject: PopupSubject,
+    ) => {
+      setPopup(subject);
+      popupRef.current?.setLngLat(lngLat).addTo(map);
+    };
+
+    const onEntityClick = (event: MapLayerMouseEvent) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      const properties = feature.properties as unknown as EntityFeatureProperties;
+      latest.current.onEntitySelect(properties);
+      openPopup(event.lngLat, { kind: 'entity', entity: properties });
+    };
+
+    const onAreaClick = (event: MapLayerMouseEvent) => {
+      // The topmost boundary wins: clicking where an upazila and its district
+      // overlap should select the finer one, which is what is under the cursor.
+      const feature = event.features?.[0];
+      if (!feature) return;
+      const level = levelOfLayer(feature.layer.id);
+      if (!level) return;
+      const code = String(feature.properties.code ?? '');
+      const name = String(feature.properties.name ?? code);
+      latest.current.onAreaSelect(level, code, name);
+      openPopup(event.lngLat, {
+        kind: 'area',
+        level,
+        code,
+        name,
+        properties: feature.properties as Record<string, unknown>,
+        metric: latest.current.areaMetrics[code],
+      });
+    };
+
+    const setHover = (feature: MapGeoJSONFeature | undefined) => {
+      const map_ = mapRef.current;
+      if (!map_) return;
+      if (hoveredRef.current) {
+        map_.setFeatureState(hoveredRef.current, { hover: false });
+        hoveredRef.current = null;
+      }
+      if (feature?.id !== undefined && feature.source) {
+        hoveredRef.current = { source: feature.source, id: feature.id };
+        map_.setFeatureState(hoveredRef.current, { hover: true });
+      }
+    };
+
+    const pointerOn = () => { map.getCanvas().style.cursor = 'pointer'; };
+    const pointerOff = () => {
+      map.getCanvas().style.cursor = '';
+      setHover(undefined);
+    };
+    const trackHover = (event: MapLayerMouseEvent) => {
+      map.getCanvas().style.cursor = 'pointer';
+      setHover(event.features?.[0]);
+    };
+
+    for (const layer of entityLayers) {
+      if (!map.getLayer(layer)) continue;
+      map.on('click', layer, onEntityClick);
+      map.on('mouseenter', layer, pointerOn);
+      map.on('mouseleave', layer, pointerOff);
+    }
+    for (const layer of areaLayers) {
+      if (!map.getLayer(layer)) continue;
+      map.on('click', layer, onAreaClick);
+      map.on('mousemove', layer, trackHover);
+      map.on('mouseleave', layer, pointerOff);
+    }
+
+    return () => {
+      for (const layer of entityLayers) {
+        map.off('click', layer, onEntityClick);
+        map.off('mouseenter', layer, pointerOn);
+        map.off('mouseleave', layer, pointerOff);
+      }
+      for (const layer of areaLayers) {
+        map.off('click', layer, onAreaClick);
+        map.off('mousemove', layer, trackHover);
+        map.off('mouseleave', layer, pointerOff);
+      }
+    };
+    // Re-bound whenever the layers are rebuilt — after a theme swap the old
+    // layer objects are gone and the handlers with them.
+  }, [ready, layerGeneration]);
+
+  /* ------------------------------------------------------------------- fit */
+
+  const fitBangladesh = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    // The country file's own bbox, so the framing follows the data rather than
+    // a zoom level somebody guessed. Falling back to the constant only matters
+    // when that file is missing, in which case nothing is drawn to frame.
+    loadGeoJson('country')
+      .then((country) => {
+        map.fitBounds(country.bbox ?? BANGLADESH_BOUNDS, { padding: FIT_PADDING });
+      })
+      .catch(() => map.fitBounds(BANGLADESH_BOUNDS, { padding: FIT_PADDING }));
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    fitBangladesh();
+  }, [ready, fitToken, fitBangladesh]);
+
+  /** Frame whatever the filter left on screen, when there is anything. */
+  const fitData = useCallback(() => {
+    const map = mapRef.current;
+    const bounds = collectionBounds(entities);
+    if (!map || !bounds) return;
+    map.fitBounds(bounds, { padding: FIT_PADDING * 2, maxZoom: 12 });
+  }, [entities]);
+
+  /* ------------------------------------------------------------- responsive */
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    // The map's canvas is sized in pixels, so it has to be told when its box
+    // changes — a sidebar collapsing or a phone rotating leaves it stretched
+    // otherwise.
+    const observer = new ResizeObserver(() => mapRef.current?.resize());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  const hasEntities = entities.features.length > 0;
+
+  return (
+    <div className={className ?? 'relative h-[32rem] w-full overflow-hidden rounded-xl'}>
+      {/* Sized with `h-full`, not `absolute inset-0`.
+          MapLibre stamps its own `maplibregl-map` class onto whatever element it
+          is given, and that class carries `position: relative` — same
+          specificity as a Tailwind utility, and its stylesheet is imported
+          after, so it wins. An absolutely-positioned container therefore turns
+          relative on init, `inset-0` stops applying, and the map collapses to a
+          300px default canvas inside a zero-height box. Percentage height off
+          the sized wrapper is what MapLibre's CSS expects. */}
+      <div ref={containerRef} className="h-full w-full" data-testid="maplibre-container" />
+
+      <MapControls
+        activeLevels={activeLevels}
+        onLevelsChange={onLevelsChange}
+        showMask={showMask}
+        showCapitals={showCapitals}
+        showAdminLines={showAdminLines}
+        onReferenceChange={onReferenceChange}
+        onFitCountry={fitBangladesh}
+        onFitData={hasEntities ? fitData : undefined}
+      />
+
+      {popupHostRef.current && popup
+        ? createPortal(
+            <MapPopup subject={popup} formatValue={formatValue} />,
+            popupHostRef.current,
+          )
+        : null}
+    </div>
+  );
+}
+
+/** Add a source, or replace its data if a previous style left one behind. */
+function addSource(
+  map: MapLibreMap,
+  id: string,
+  data: GeoCollection,
+  promoteId?: string,
+): void {
+  const existing = map.getSource(id) as GeoJSONSource | undefined;
+  if (existing) {
+    existing.setData(data as never);
+    return;
+  }
+  map.addSource(id, { type: 'geojson', data: data as never, ...(promoteId ? { promoteId } : {}) });
+}
+
+/**
+ * Fill opacity, lifted for the hovered and selected feature.
+ *
+ * A level with no fill configured stays unfilled at rest but still lights up
+ * under the cursor — otherwise a district boundary would be clickable with no
+ * indication that it is.
+ */
+function fillOpacity(paint: AreaStyle): ExpressionSpecification {
+  const base = paint.fill_opacity ?? 0;
+  return [
+    'case',
+    ['boolean', ['feature-state', 'hover'], false],
+    Math.min(0.75, Math.max(base + 0.22, 0.22)),
+    base,
+  ];
+}
+
+function levelOfLayer(layerId: string): BoundaryLevelKey | null {
+  return (
+    BOUNDARY_LEVELS.find((level) => IDS.boundaryFill(level.key) === layerId)?.key ?? null
+  );
+}
+
+function describe(error: unknown): string {
+  return error instanceof GeoDataUnavailable
+    ? error.message
+    : `A map layer could not be loaded: ${(error as Error)?.message ?? 'unknown error'}`;
+}
+
+export { type EntityFeatureProperties };

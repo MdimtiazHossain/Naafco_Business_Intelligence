@@ -1,0 +1,53 @@
+# --- Python -----------------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Secrets ----------------------------------------------------------------
+# Every .env variant, not just `.env` — .env.bak carries the same JWT secret.
+# .env.example is the committed template and is the one exception.
+.env
+.env.*
+!.env.example
+
+# --- Local databases --------------------------------------------------------
+# `data/` holds ~3 GB of SQLite files: dev.db plus a pre-migration backup for
+# each revision. The backups are named `dev.db.pre0024.bak`, so a bare `*.db`
+# rule misses every one of them — match the stem instead. They hold real
+# transactional data and must never leave this machine.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+dev.db*
+**/data/*.bak*
+**/data/post-rollback-*/
+
+# --- Business data ----------------------------------------------------------
+# The source workbook and everything an operator has uploaded are real Naafco
+# master and transaction data, not fixtures. The pipeline reads them from disk;
+# it does not need them in version control. `data/uploads/` is the staging area
+# `POST /api/data-upload/*` writes to.
+# `**/` because there is a `data/` under both the repo root and `backend/`.
+**/data/uploads/
+**/data/transactions/
+Master Data.xlsx
+**/data/Master Data.xlsx
+~$*.xlsx
+
+# --- Reference geography ----------------------------------------------------
+# Admin boundaries are downloaded from GADM/HDX per README, never bundled —
+# this directory alone is ~118 MB and one file in it exceeds GitHub's limit.
+bgd_admin_boundaries.geojson/
+*.geojson
+
+# --- Generated output -------------------------------------------------------
+# Reproducible from the workbook via scripts/inspect_master_data.py; keep the
+# directory so REPORTS_DIR resolves on a fresh clone.
+reports/*
+!reports/.gitkeep
+
+# --- Editor / local tooling -------------------------------------------------
+.claude/settings.local.json
+.vscode/
