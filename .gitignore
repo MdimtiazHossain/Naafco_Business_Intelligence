@@ -58,6 +58,13 @@ bgd_admin_boundaries.geojson/
 reports/*
 !reports/.gitkeep
 
+# A screenshot of the running Business Map, exported by hand rather than built
+# by anything here -- no script writes it, which is why it reappears after
+# being deleted. The map is drawn at runtime from frontend/public/geo/ and the
+# marker configuration the API serves, so a stale PNG of it documents nothing
+# and goes out of date the moment a design or a boundary changes.
+Business_Map.png
+
 # --- Editor / local tooling -------------------------------------------------
 .claude/settings.local.json
 .vscode/
