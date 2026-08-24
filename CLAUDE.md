@@ -25,6 +25,8 @@ Two packages sit outside that numbering: `app/reporting/` (the `/api/reports/*` 
 
 The virtualenv is `.venv/` at the repo root; on this machine use `.\.venv\Scripts\python.exe` explicitly.
 
+There is no CI, no backend linter and no formatter config in this repo — `pytest` and the frontend's `typecheck`/`lint`/`build` are the whole gate, so run them yourself before calling work done.
+
 ```powershell
 # Tests (1203 backend tests; run from the repo root — pytest.ini sets pythonpath=backend)
 .\.venv\Scripts\python.exe -m pytest
@@ -88,6 +90,8 @@ browser / WhatsApp / CLI
 
 Chat, `/api/dashboard/*` and `/api/pages/*` all take that path — `routes_dashboard.run()` wraps `execute_tool`, and `routes_pages.py` reuses it — which is why a page and the agent cannot disagree about a number. The exception is `/api/reports/*`, which queries the same views through `reporting/service.py` with `deps.enforce_report_scope` applying scope instead of `PermissionFilter`. Adding a report there means re-checking scope yourself; adding it as a tool gets it for free.
 
+**Two surfaces reuse that path rather than opening a second one, and neither may become a way around it.** *Export* (`ai/export.py`, `POST /api/export`) renders only **already-validated** rows — either rows handed back from a chat answer or a stored assistant message the caller owns, re-read under their identity. There is deliberately no "export this query" path, so export cannot become an unscoped query surface; it truncates at `MAX_EXPORT_ROWS` and audits every call. *WhatsApp* (`app/integrations/`) is webhook → identify user by mapped phone number → permission check → the **same** agent the web UI uses, so a question asked in chat and over WhatsApp returns the same numbers under the same permissions. `NullWhatsAppProvider` (no credentials configured) records what it *would* have sent rather than pretending to send it — a dry run never gives a false impression of delivery.
+
 The LLM (`ai/llm.py`, optional — `OPENAI_API_KEY` unset falls back to a deterministic planner that returns the same numbers) does exactly two things: pick one tool from an intent-restricted allow-list, and rephrase already-formatted prose. Intent, entity and date resolution are deterministic (`ai/intent.py`, `entity_resolver.py`, `date_resolver.py`). No SQL, no free-text field, and no unvalidated figure ever crosses the tool boundary; every tool schema is Pydantic with `extra="forbid"`, mandatory date bounds, and `limit` capped at 500.
 
 ### ETL
@@ -109,7 +113,7 @@ authenticated & active  →  role (section's role ceiling)  →  user section AL
 
 A lower layer can narrow access, never lift a restriction from above. Sections are declared once in `app/security/sections.py` and consumed by the `require_section(...)` dependency, `GET /api/admin/sections` and the frontend nav — adding a section is one entry. Scope is checked *before* the query runs and re-checked against the individual record on every write. Tokens carry identity only; role and scope are re-read from the database each request.
 
-### Business map (`app/map/`, 18 modules — the largest package the sections above don't cover)
+### Business map (`app/map/`, 17 modules — the largest package the sections above don't cover)
 
 The package owns *how the map looks*, and the browser owns none of it. A marker design is a database row; `map/render.py` turns it into SVG and `map/adapters.py` — **the only module that knows any mapping SDK exists** — emits either a native vector `symbol` (a path plus colours, cheap enough for thousands of markers) or a data-URI `icon` when a label, badge, plate or shadow makes one path impossible. Neither payload contains a URL back to this server, so a layer draws from one `GET /api/map/marker-config` response with no follow-ups. Marker definitions are never duplicated in the browser; the renderer is a new adapter, not a designer change.
 
