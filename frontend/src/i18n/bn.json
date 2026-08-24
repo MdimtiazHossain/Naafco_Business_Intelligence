@@ -81,6 +81,7 @@
   "auth.hidePassword": "পাসওয়ার্ড লুকান",
   "auth.newPassword": "নতুন পাসওয়ার্ড",
   "auth.password": "পাসওয়ার্ড",
+  "auth.poweredBy": "পরিচালনায় Sales Force Excellence",
   "auth.passwordChanged": "আপনার পাসওয়ার্ড পরিবর্তন হয়েছে।",
   "auth.passwordMismatch": "নতুন পাসওয়ার্ড দুটি মিলছে না।",
   "auth.remember": "সাইন ইন রাখুন",

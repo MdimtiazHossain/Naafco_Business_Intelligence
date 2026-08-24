@@ -152,6 +152,10 @@ export function LoginPage() {
             {resolved === 'dark' ? t('common.themeLight') : t('common.themeDark')}
           </button>
         </div>
+
+        <p className="mt-6 text-center text-xs text-slate-400 dark:text-slate-500">
+          {t('auth.poweredBy')}
+        </p>
       </div>
     </div>
   );

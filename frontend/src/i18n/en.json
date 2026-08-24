@@ -81,6 +81,7 @@
   "auth.hidePassword": "Hide password",
   "auth.newPassword": "New password",
   "auth.password": "Password",
+  "auth.poweredBy": "Powered by Sales Force Excellence",
   "auth.passwordChanged": "Your password has been changed.",
   "auth.passwordMismatch": "The new passwords do not match.",
   "auth.remember": "Keep me signed in",
