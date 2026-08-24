@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Any, Iterator
 
 from sqlalchemy import Engine, create_engine, event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import get_settings
@@ -59,6 +60,90 @@ def _configure_sqlite(engine: Engine) -> None:
             cursor.close()
 
 
+#: Port Supabase's Supavisor pooler serves *transaction* mode on.
+#:
+#: Supabase publishes three ways in and only the port tells the last two apart,
+#: which is why this is a port number rather than a host pattern:
+#:
+#: * the direct connection, 5432 on ``db.<ref>.supabase.co`` — IPv6-only unless
+#:   the project buys the IPv4 add-on, so an IPv4 host cannot reach it at all;
+#: * the pooler in *session* mode, 5432 on ``…pooler.supabase.com`` — one server
+#:   connection held for the life of the client connection, so it behaves like a
+#:   plain PostgreSQL and is what migrations must use;
+#: * the pooler in *transaction* mode, 6543 on the same host — a server
+#:   connection per transaction, which is what makes it scale and also what
+#:   makes a prepared statement unusable (see ``_engine_options``).
+TRANSACTION_POOLER_PORT = 6543
+
+
+def assert_migration_safe(database_url: str) -> None:
+    """Raise when a migration must not be run over this URL.
+
+    Lives here rather than in Alembic's ``env.py`` because it is a fact about
+    ``TRANSACTION_POOLER_PORT``, and that is declared here; ``env.py`` is the
+    caller, not the owner. It also makes the rule reachable from a test without
+    running a migration.
+
+    Behind a transaction-mode pooler each transaction may be handed a different
+    server connection, and a migration depends on one connection twice over: the
+    DDL and the guards that decide whether to apply it belong to a single
+    transaction, and the advisory lock Alembic takes to stop two migrations
+    racing is held *by a connection* -- released the moment the pooler moves the
+    session elsewhere, which reduces the lock to a formality. A half-applied
+    revision on a live warehouse is the outcome this refusal exists to prevent.
+    """
+    try:
+        url = make_url(database_url)
+    except Exception:  # noqa: BLE001 - an unparseable URL is the engine's error to raise
+        return
+    if not url.drivername.startswith("postgresql"):
+        return
+    if url.port != TRANSACTION_POOLER_PORT:
+        return
+    raise RuntimeError(
+        f"Refusing to migrate through port {TRANSACTION_POOLER_PORT}, which is the "
+        "transaction-mode pooler: DDL and Alembic's version lock both need one "
+        "connection for the whole migration and transaction mode does not promise "
+        "one. Set DIRECT_URL to the session-mode pooler (port 5432 on the same "
+        "pooler host) or to the direct connection, and leave DATABASE_URL pointing "
+        "at the transaction pooler for the application."
+    )
+
+
+def _engine_options(database_url: str) -> dict[str, Any]:
+    """Extra ``create_engine`` options this URL needs.
+
+    SQLite needs none — its pool settings are wrong for a file and its pragmas
+    are applied per connection by ``_configure_sqlite`` instead. PostgreSQL gets
+    the pool sizing from configuration, and behind Supavisor's transaction-mode
+    pooler it additionally has to stop psycopg preparing statements.
+
+    psycopg prepares a statement after it has seen it five times, then refers to
+    it by name on the connection that prepared it. In transaction mode the next
+    transaction may land on a *different* server connection, where that name was
+    never declared, so the query fails with ``prepared statement "_pg3_0" does
+    not exist`` — and only under load, once something has run five times, which
+    is the worst possible way to discover it. ``prepare_threshold=None`` turns
+    the mechanism off; nothing else in this application depends on it.
+    """
+    try:
+        url = make_url(database_url)
+    except Exception:  # noqa: BLE001 - an unparseable URL is create_engine's error to raise
+        return {}
+    if not url.drivername.startswith("postgresql"):
+        return {}
+
+    settings = get_settings()
+    options: dict[str, Any] = {
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_recycle": settings.db_pool_recycle_seconds,
+    }
+    if url.port == TRANSACTION_POOLER_PORT:
+        options["connect_args"] = {"prepare_threshold": None}
+    return options
+
+
 def get_engine(database_url: str | None = None, echo: bool = False) -> Engine:
     """Return the process-wide engine, creating it on first use.
 
@@ -68,12 +153,13 @@ def get_engine(database_url: str | None = None, echo: bool = False) -> Engine:
     global _engine, _SessionFactory
     if database_url is not None:
         engine = create_engine(database_url, echo=echo, future=True,
-                               pool_pre_ping=True)
+                               pool_pre_ping=True, **_engine_options(database_url))
         _configure_sqlite(engine)
         return engine
     if _engine is None:
+        url = get_settings().database_url
         _engine = create_engine(
-            get_settings().database_url, echo=echo, future=True, pool_pre_ping=True
+            url, echo=echo, future=True, pool_pre_ping=True, **_engine_options(url)
         )
         _configure_sqlite(_engine)
         _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
@@ -117,4 +203,11 @@ def check_connection(engine: Engine | None = None) -> bool:
         return False
 
 
-__all__ = ["get_engine", "get_session_factory", "session_scope", "check_connection"]
+__all__ = [
+    "get_engine",
+    "get_session_factory",
+    "session_scope",
+    "check_connection",
+    "assert_migration_safe",
+    "TRANSACTION_POOLER_PORT",
+]

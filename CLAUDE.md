@@ -28,7 +28,7 @@ The virtualenv is `.venv/` at the repo root; on this machine use `.\.venv\Script
 There is no CI, no backend linter and no formatter config in this repo — `pytest` and the frontend's `typecheck`/`lint`/`build` are the whole gate, so run them yourself before calling work done.
 
 ```powershell
-# Tests (1203 backend tests; run from the repo root — pytest.ini sets pythonpath=backend)
+# Tests (1229 backend tests; run from the repo root — pytest.ini sets pythonpath=backend)
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pytest backend/tests/test_etl_pipeline.py
 .\.venv\Scripts\python.exe -m pytest backend/tests/test_ai_tools.py::test_name -x
@@ -51,7 +51,11 @@ cd frontend; npm run build     # tsc -b then vite build — the real typecheck g
 docker compose up -d db
 ```
 
-**This machine runs on SQLite, not Postgres** — `.env` sets `DATABASE_URL=sqlite:///.../data/dev.db`. Every migration, query and view is written to be dialect-portable precisely so that works; keep new ones portable (no Postgres-only types or functions without a SQLite path). `data/` holds a `dev.db.preNNNN.bak` for each migration already applied — copy `dev.db` aside before running a new one.
+**This machine now runs both dialects, and which one you get depends on how the process was started.** Development is SQLite: `.env` sets `DATABASE_URL=sqlite:///.../data/dev.db`, and `start-backend.bat` / `start-frontend.bat` serve it on 8010 / 5183. The localhost deployment is PostgreSQL 17 on 5432, and it overrides `.env` by exporting `deploy/local/.env.production` as real environment variables — which works because `config._load_dotenv` uses `os.environ.setdefault`, so a real variable always beats the file. Neither environment can disturb the other, and `data/dev.db` remains a complete fallback because the copy only ever read it. See `deploy/local/README.md`.
+
+Every migration, query and view is written to be dialect-portable precisely so that works; keep new ones portable (no Postgres-only types or functions without a SQLite path). `data/` holds a `dev.db.preNNNN.bak` for each migration already applied — copy `dev.db` aside before running a new one.
+
+**"Portable" was aspirational until the migrations were actually run on PostgreSQL, and four of them were not.** All four failures share one cause — SQLite does not enforce what it is told, so the mistake left no trace there. `0016`/`0018`/`0019`/`0021` compared `is_void = 0` and `0017` compared `is_system_default = 1`: SQLite stores a boolean as an integer, PostgreSQL rejects `boolean = integer` outright. They now read `= FALSE` / `= TRUE`, which is what every view `0009` authored already used. `0020` tested the **bigint** `fact_sales.warehouse_id` against `''`; that clause never excluded a row on either dialect (SQLite orders every integer before every string) and now applies only to the text column beside it. And `migrations/env.py` had to grow `_widen_version_table`, because Alembic hard-codes `alembic_version.version_num` as `VARCHAR(32)` while the longest revision id here — `0011_customer_subterritory_product_company` — is 42 characters; SQLite ignores a declared length, PostgreSQL enforces it and refused the *stamp* after the revision's own DDL had already succeeded, which rolls the revision back and reads as a migration failure with no failing statement. **A new revision is not portable until it has run on both**, and `deploy/local/migrate.ps1` is the cheap way to find out.
 
 Data pipeline scripts (all in `scripts/`, all import `_bootstrap` first to put `backend/` on `sys.path` and force UTF-8 stdout):
 
@@ -69,10 +73,51 @@ python scripts/import_admin_points.py <geojson> --kind capital|point   # publish
 python scripts/map_master_data.py [--apply]  # derive customer sub-territory; report-only by default
 python scripts/manage_users.py create ceo --role MANAGEMENT --name "..."
 python scripts/ask_agent.py "আজকের sales কত?" --user ceo [--interactive]
+python scripts/migrate_sqlite_to_postgres.py [--dry-run]   # SQLite -> Supabase, one transaction
 python scripts/clear_data.py <groups>        # DESTRUCTIVE — confirm with the user before running
 ```
 
 `clear_data.py` (renamed from `clear_demo_data.py`) empties named groups — `masters`, `transactions`, `uploads`, `changelog`, `history`, `users` — and must be told which. It is the one script here that destroys data; never run it speculatively.
+
+## Deployment (Hostinger VPS + Supabase)
+
+`deploy/` holds the production stack — `docker-compose.prod.yml`, a `Caddyfile`,
+`.env.production.example` and `DEPLOY.md`, the runbook. Supabase is **the database and
+nothing else**: authentication, roles, sections and the four-layer data scope all stay in
+this application's own tables, the browser never talks to Supabase, and there is no
+Supabase client dependency (`@supabase/supabase-js` was in `frontend/package.json` unused
+and has been removed). Three containers run on the VPS — uvicorn, the nginx-served bundle
+and Caddy — and only Caddy publishes a port.
+
+**Supabase is reached through two different URLs, and which is which is load-bearing.**
+The direct connection is IPv6-only without the paid add-on, so an IPv4 VPS uses the
+Supavisor pooler: `DATABASE_URL` on port **6543** (transaction mode) for the application,
+`DIRECT_URL` on **5432** (session mode) for anything that must hold one connection.
+`connection._engine_options` detects 6543 and sets psycopg's `prepare_threshold=None`,
+because a prepared statement is named on the connection that prepared it and transaction
+mode may hand the next transaction a different one — a failure that only appears under
+load, after a query has run five times. `connection.assert_migration_safe` **refuses**
+a migration over 6543 (Alembic's version lock is held by a connection, so pooling reduces
+it to a formality), and `migrate_sqlite_to_postgres.py` refuses it too, for the different
+reason that the copy is one long transaction. Pool sizing is `DB_POOL_SIZE` /
+`DB_MAX_OVERFLOW` / `DB_POOL_RECYCLE_SECONDS`: a managed Postgres caps *connections*, so
+idle ones are spent budget.
+
+**Writable state must not live under `data/`.** `upload.files.upload_dir()` derives the
+staging directory from `TRANSACTIONS_DIR`, and `data/` is mounted `:ro` to keep the source
+workbook read-only — so the production compose points `TRANSACTIONS_DIR` and `REPORTS_DIR`
+at `/app/var`, a named volume. Putting them back under `/app/data` fails every upload on a
+read-only filesystem.
+
+`scripts/migrate_sqlite_to_postgres.py` moves the existing warehouse across. It reads and
+writes through the same SQLAlchemy `Table` objects in both directions, which is what makes
+a JSON column arrive as `JSONB`, a SQLite `0`/`1` arrive as a boolean and an ISO string
+arrive as a `timestamp` — the column types convert, not the script. It refuses unless both
+databases are at the same head and **every target table is empty**, copies in
+`sorted_tables` order inside **one transaction**, advances every identity sequence past the
+largest copied key (without which the next upload collides with row 1), and re-counts both
+sides, rolling the whole copy back on any disagreement. `test_supabase_migration.py` pins
+all of it without needing a server.
 
 ## Architecture
 

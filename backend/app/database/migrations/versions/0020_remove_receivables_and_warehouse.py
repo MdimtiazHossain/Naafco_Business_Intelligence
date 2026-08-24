@@ -160,9 +160,14 @@ def upgrade() -> None:
     for column in ("warehouse_id", "warehouse_code"):
         if not _table_exists(bind, "fact_sales"):
             break
+        # ``warehouse_id`` is a surrogate key and ``warehouse_code`` a string, so
+        # only the second can be blank rather than NULL. Testing a bigint against
+        # '' is what SQLite's dynamic typing quietly accepts and PostgreSQL
+        # rejects outright — and it never excluded a row on either, because
+        # SQLite orders every integer before every string.
+        blank = f" AND {column} <> ''" if column.endswith("_code") else ""
         stamped = bind.execute(sa.text(
-            f"SELECT count(*) FROM fact_sales WHERE {column} IS NOT NULL "
-            f"AND {column} <> ''"
+            f"SELECT count(*) FROM fact_sales WHERE {column} IS NOT NULL{blank}"
         )).scalar() or 0
         if stamped:
             raise RuntimeError(

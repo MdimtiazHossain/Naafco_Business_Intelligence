@@ -1,0 +1,87 @@
+# Production stack for a Hostinger VPS, with Supabase as the database.
+#
+# Run it from this directory:  docker compose -f docker-compose.prod.yml up -d
+#
+# Three differences from the development compose file at the repository root,
+# each deliberate:
+#
+#  1. There is no `db` service. The database is Supabase, reached over
+#     DATABASE_URL; nothing here stores warehouse data on the VPS.
+#  2. Neither the API nor the web bundle publishes a port. Caddy is the only
+#     thing the internet can reach, which is what makes TLS unavoidable rather
+#     than optional.
+#  3. Writable state lives on a named volume at /app/var, NOT under /app/data.
+#     data/ is mounted read-only to keep the source workbook read-only, and
+#     `upload.files.upload_dir()` derives the staging directory from
+#     TRANSACTIONS_DIR — so pointing that at /app/var is what stops an upload
+#     trying to write inside a read-only mount.
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: aiba_backend
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      # Read-only: the source workbook must never be modified by the pipeline.
+      MASTER_DATA_FILE: /app/data/Master Data.xlsx
+      # Writable state. See note 3 above — these two are what keep uploads,
+      # staged files and generated reports off the read-only mount.
+      TRANSACTIONS_DIR: /app/var/transactions
+      REPORTS_DIR: /app/var/reports
+    volumes:
+      - ../data:/app/data:ro
+      - backend_var:/app/var
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # Vite inlines this at build time, so it is the URL the BROWSER uses —
+        # the public API hostname, never the container name. Changing it means
+        # rebuilding the image, not restarting the container.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:?set VITE_API_BASE_URL, e.g. https://api.example.com}
+    container_name: aiba_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    expose:
+      - "80"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: aiba_caddy
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN, e.g. app.example.com}
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN, e.g. api.example.com}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account key. Losing this volume means
+      # re-issuing every certificate, and Let's Encrypt rate-limits that.
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  backend_var:
+  caddy_data:
+  caddy_config:

@@ -9,7 +9,11 @@ __pycache__/
 # .env.example is the committed template and is the one exception.
 .env
 .env.*
+# The committed templates. `.env.*` above is deliberately broad — it has to
+# catch .env.bak, which carries the same JWT secret as .env — so every template
+# has to be named back in one at a time.
 !.env.example
+!.env.*.example
 
 # --- Local databases --------------------------------------------------------
 # `data/` holds ~3 GB of SQLite files: dev.db plus a pre-migration backup for
@@ -68,3 +72,22 @@ Business_Map.png
 # --- Editor / local tooling -------------------------------------------------
 .claude/settings.local.json
 .vscode/
+
+# --- Local production deployment --------------------------------------------
+# deploy/local/ holds the localhost stack. The launchers and the nginx config
+# carry no secrets and are worth keeping, so this ignores only the two things
+# that must not leave the machine plus the runtime it generates.
+# (deploy/local/.env.production is already caught by the `.env.*` rule above.)
+deploy/local/credentials.generated.txt
+# The nginx distribution is copied in so the service has a path that does not
+# change when nginx is upgraded — a binary, not source.
+deploy/local/nginx/
+deploy/local/run/
+deploy/local/*.log
+# NSSM is a third-party service manager downloaded onto the machine, not source
+# for this project — the same reason nginx/ above is ignored. deploy/local/README.md
+# says where to get it.
+deploy/local/nssm.exe
+# Timestamped backups the launchers leave beside a config. Git already holds the
+# history of the file they back up.
+deploy/local/*.bak-*

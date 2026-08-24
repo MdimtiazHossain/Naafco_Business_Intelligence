@@ -1,0 +1,51 @@
+# Two hostnames, one process. Caddy obtains and renews Let's Encrypt
+# certificates on its own, so nothing here runs certbot and no renewal cron
+# exists to forget about.
+#
+# Both names must already resolve to this VPS before the stack starts: the ACME
+# HTTP challenge is answered on port 80, and it cannot be answered for a name
+# that does not point here yet.
+
+{
+	# Where Let's Encrypt sends expiry warnings. Set ACME_EMAIL in
+	# .env.production; without it Caddy still issues certificates but nobody is
+	# told when something is wrong.
+	email {$ACME_EMAIL}
+}
+
+# The browser application.
+{$APP_DOMAIN} {
+	reverse_proxy frontend:80
+
+	# The bundle's own nginx already sets X-Content-Type-Options, X-Frame-Options
+	# and Referrer-Policy. HSTS belongs here instead, because it is a statement
+	# about the TLS that terminates at this hop.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	encode gzip zstd
+}
+
+# The API.
+{$API_DOMAIN} {
+	reverse_proxy backend:8000 {
+		# An import runs as a background job and answers 202 immediately, so no
+		# request should ever be long-lived. This ceiling is for the file upload
+		# that starts one: 25 MB over a slow connection is minutes, not seconds.
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	# Not compressed by default anywhere else: the API returns GeoJSON area
+	# payloads that are mostly coordinates and compress by an order of magnitude.
+	encode gzip zstd
+}

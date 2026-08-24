@@ -178,7 +178,7 @@ def upgrade() -> None:
                 "UPDATE map_area_styles "
                 "SET stroke_width = :width, fill_opacity = :fill, "
                 "    z_index = :z "
-                "WHERE entity_type = :entity_type AND is_system_default = 1"
+                "WHERE entity_type = :entity_type AND is_system_default = TRUE"
             ),
             {"width": width, "fill": fill_opacity, "z": z_index,
              "entity_type": entity_type},
@@ -193,7 +193,7 @@ def downgrade() -> None:
         "UPDATE map_area_styles "
         "SET stroke_width = 1.5, fill_opacity = 0.2, z_index = 1 "
         "WHERE entity_type IN ('division', 'district', 'upazila') "
-        "  AND is_system_default = 1"
+        "  AND is_system_default = TRUE"
     ))
 
     op.drop_index("ix_map_admin_points_bbox", table_name="map_admin_points")

@@ -42,6 +42,25 @@ class Settings:
     postgres_user: str = os.getenv("POSTGRES_USER", "postgres")
     postgres_password: str = os.getenv("POSTGRES_PASSWORD", "postgres")
 
+    # --- Connection pool ----------------------------------------------------
+    #: SQLAlchemy pool size and overflow, applied to PostgreSQL only.
+    #:
+    #: Deliberately small. A managed PostgreSQL bills and caps *connections*,
+    #: not queries — Supabase's pooler enforces a per-project client ceiling —
+    #: so a worker sitting on twenty idle connections spends the budget of the
+    #: workers beside it. Every request here is short; the one long transaction
+    #: is an import, and that already runs on its own bounded pool in
+    #: ``upload/jobs.py`` rather than on a request's connection.
+    db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "5"))
+    db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "5"))
+    #: Seconds before a pooled PostgreSQL connection is retired and reopened.
+    #:
+    #: Set below a managed server's own idle timeout so the pool discards a
+    #: connection before the server drops it unannounced. ``pool_pre_ping``
+    #: still catches the case this misses; recycling means the common path does
+    #: not pay for that extra round trip.
+    db_pool_recycle_seconds: int = int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))
+
     master_data_file: Path = Path(
         os.getenv("MASTER_DATA_FILE", str(PROJECT_ROOT / "data" / "Master Data.xlsx"))
     )

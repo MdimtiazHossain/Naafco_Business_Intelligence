@@ -122,7 +122,7 @@ LEFT JOIN dim_storage_location s
        ON s.storage_location_id = f.storage_location_id
 LEFT JOIN dim_material m
        ON m.material_id = f.material_id
-WHERE f.is_void = 0
+WHERE f.is_void = FALSE
 """
 
 #: The 0018 view body, for the downgrade. Kept verbatim rather than derived from
@@ -154,7 +154,7 @@ SELECT
 FROM fact_material_stock f
 LEFT JOIN dim_material_location m
        ON m.material_location_id = f.material_location_id
-WHERE f.is_void = 0
+WHERE f.is_void = FALSE
 """
 
 

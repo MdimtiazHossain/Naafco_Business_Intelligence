@@ -80,7 +80,7 @@ SELECT
 FROM fact_material_stock f
 LEFT JOIN dim_material_location m
        ON m.material_location_id = f.material_location_id
-WHERE f.is_void = 0
+WHERE f.is_void = FALSE
 """
 
 OLD_STOCK_VIEWS = ("vw_stock_detail", "vw_current_stock", "vw_stock_coverage")

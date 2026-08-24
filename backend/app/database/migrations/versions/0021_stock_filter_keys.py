@@ -88,7 +88,7 @@ LEFT JOIN dim_storage_location s
        ON s.storage_location_id = f.storage_location_id
 LEFT JOIN dim_material m
        ON m.material_id = f.material_id
-WHERE f.is_void = 0
+WHERE f.is_void = FALSE
 """
 
 #: The 0019 body, for the downgrade. Verbatim rather than derived from the one
@@ -127,7 +127,7 @@ LEFT JOIN dim_storage_location s
        ON s.storage_location_id = f.storage_location_id
 LEFT JOIN dim_material m
        ON m.material_id = f.material_id
-WHERE f.is_void = 0
+WHERE f.is_void = FALSE
 """
 
 
