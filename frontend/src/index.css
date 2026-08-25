@@ -133,4 +133,54 @@
   .skeleton {
     @apply animate-pulse rounded bg-slate-200 dark:bg-slate-800;
   }
+
+  /* --- Business map: MapLibre's own controls ------------------------------
+     MapLibre ships its zoom, fullscreen and scale controls as square white
+     boxes with a 4px radius. The map's other overlays — the layer panel and
+     the legend in `components/map/MapControls.tsx` — are the application's
+     cards: rounded-lg, a slate border, a soft shadow and a translucent blur.
+     Two different chromes a few pixels apart is what made the map read as an
+     embedded widget rather than part of the dashboard, so the stock controls
+     are restyled to match. Appearance only: no control is moved, resized past
+     its hit area, hidden or rebuilt, so zoom, fullscreen and scale behave
+     exactly as MapLibre intends. */
+  .maplibregl-map .maplibregl-ctrl-group {
+    @apply overflow-hidden rounded-lg border border-slate-200 bg-white/95 shadow-sm backdrop-blur;
+    @apply dark:border-slate-700 dark:bg-slate-900/95;
+  }
+
+  .maplibregl-map .maplibregl-ctrl-group button {
+    @apply bg-transparent text-slate-600 dark:text-slate-300;
+  }
+
+  .maplibregl-map .maplibregl-ctrl-group button:hover {
+    @apply bg-slate-100 dark:bg-slate-800;
+  }
+
+  /* The separator MapLibre draws between stacked buttons, in our border tone. */
+  .maplibregl-map .maplibregl-ctrl-group button + button {
+    @apply border-t border-slate-200 dark:border-slate-700;
+  }
+
+  /* MapLibre colours its control glyphs by inlining an SVG fill, which a text
+     colour cannot reach. Inverting in dark mode is what keeps them visible. */
+  .dark .maplibregl-map .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+    filter: invert(1) hue-rotate(180deg);
+    opacity: 0.85;
+  }
+
+  .maplibregl-map .maplibregl-ctrl-scale {
+    @apply rounded border-slate-300 bg-white/85 text-[10px] font-medium text-slate-600;
+    @apply dark:border-slate-600 dark:bg-slate-900/85 dark:text-slate-300;
+  }
+
+  .maplibregl-map .maplibregl-ctrl-attrib,
+  .maplibregl-map .maplibregl-ctrl-attrib-inner {
+    @apply rounded bg-white/85 text-[10px] text-slate-500;
+    @apply dark:bg-slate-900/85 dark:text-slate-400;
+  }
+
+  .maplibregl-map .maplibregl-ctrl-attrib a {
+    @apply text-slate-600 dark:text-slate-300;
+  }
 }

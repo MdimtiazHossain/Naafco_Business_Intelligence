@@ -85,20 +85,32 @@ export type BoundaryLevelKey = BoundaryLevel['key'];
  * These values are the same ones migrations `0010` and `0017` seed, so the first
  * paint matches the configured one instead of flashing a different map.
  *
- * The hierarchy is carried by stroke *weight*, not by colour: one blue getting
- * heavier as the level broadens reads as a nested hierarchy, where four colours
- * would read as four unrelated things. Only the upazila level is filled — the
- * requirement that its stroke is blue is satisfied by every level being blue.
+ * The hierarchy is carried by stroke *weight* and stroke *value* together, and
+ * still by one hue: four unrelated colours would read as four unrelated things,
+ * but weight alone was not enough separation on an executive display, where the
+ * country outline has to be findable at a glance and the upazila mesh has to
+ * recede behind the business data drawn over it. So the blue darkens as the
+ * level broadens — country darkest and heaviest, upazila lightest and thinnest.
+ * Only the upazila level is filled, and lightly, for the same reason.
  */
-const BOUNDARY_BLUE = '#2563EB';
+const BOUNDARY_BLUE = {
+  country: '#1D4ED8',
+  division: '#2563EB',
+  district: '#60A5FA',
+  upazila: '#93C5FD',
+} as const;
 
-function style(entityType: string, fillOpacity: number, strokeWidth: number): AreaStyle {
+function style(
+  entityType: BoundaryLevelKey,
+  fillOpacity: number,
+  strokeWidth: number,
+): AreaStyle {
   return {
     entity_type: entityType,
     configured: false,
-    fill_color: BOUNDARY_BLUE,
+    fill_color: BOUNDARY_BLUE[entityType],
     fill_opacity: fillOpacity,
-    stroke_color: BOUNDARY_BLUE,
+    stroke_color: BOUNDARY_BLUE[entityType],
     stroke_opacity: 1,
     stroke_width: strokeWidth,
     z_index: 1,
@@ -107,9 +119,9 @@ function style(entityType: string, fillOpacity: number, strokeWidth: number): Ar
 
 export const FALLBACK_AREA_STYLES: Record<BoundaryLevelKey, AreaStyle> = {
   country: style('country', 0, 3),
-  division: style('division', 0, 2),
-  district: style('district', 0, 1.25),
-  upazila: style('upazila', 0.18, 0.75),
+  division: style('division', 0, 1.8),
+  district: style('district', 0, 1),
+  upazila: style('upazila', 0.05, 0.5),
 };
 
 /**
@@ -120,9 +132,53 @@ export const FALLBACK_AREA_STYLES: Record<BoundaryLevelKey, AreaStyle> = {
  * the country reading as an island floating on a flat colour.
  */
 export const MASK_PAINT = {
-  light: { color: '#0F172A', opacity: 0.55 },
-  dark: { color: '#020617', opacity: 0.72 },
+  light: { color: '#1E293B', opacity: 0.32 },
+  dark: { color: '#020617', opacity: 0.55 },
 } as const;
+
+/**
+ * Paint overrides applied to the *basemap's own* layers after it loads.
+ *
+ * OpenFreeMap positron is the right basemap for an executive display — it is
+ * the quietest of the styles the host offers — but two of its choices work
+ * against a business map. Water is `rgb(194,200,202)`, a grey barely separable
+ * from the `rgb(242,243,240)` land, so the Bay of Bengal and the river network
+ * that define Bangladesh's shape read as more land; and the road casings carry
+ * as much visual weight as the administrative boundaries drawn on top of them.
+ *
+ * These are overrides rather than a forked style: the style stays the host's to
+ * maintain, and a layer that disappears from a future release is skipped rather
+ * than breaking the map (`refineBasemap` checks each id exists). Keyed by the
+ * layer ids positron and dark both use, so one table serves both themes.
+ *
+ * Only `line-opacity`, `fill-color` and `line-color` are touched — never a
+ * width, a filter or a layout property, so nothing changes about what the
+ * basemap *shows*, only how loudly it says it.
+ */
+export const BASEMAP_REFINEMENTS: readonly {
+  id: string;
+  property: 'fill-color' | 'line-color' | 'line-opacity';
+  light: string | number;
+  dark: string | number;
+}[] = [
+  // Water, the one thing made *more* prominent: a recognisable blue at a value
+  // that still sits behind the data, rather than the near-grey it ships with.
+  { id: 'water', property: 'fill-color', light: '#BFD6E8', dark: '#0B1F2E' },
+  { id: 'waterway', property: 'line-color', light: '#9DBBD4', dark: '#123243' },
+
+  // Roads: kept, quietened. The casings are the clutter — the white inner lines
+  // still describe the network, so the shape of a city survives at lower weight.
+  { id: 'highway_major_casing', property: 'line-opacity', light: 0.45, dark: 0.45 },
+  { id: 'highway_motorway_casing', property: 'line-opacity', light: 0.45, dark: 0.45 },
+  { id: 'highway_minor', property: 'line-opacity', light: 0.5, dark: 0.5 },
+  { id: 'highway_path', property: 'line-opacity', light: 0.35, dark: 0.35 },
+  { id: 'railway', property: 'line-opacity', light: 0.4, dark: 0.4 },
+
+  // The basemap's own country and state lines, which otherwise compete with the
+  // administrative boundaries this application draws from its own GeoJSON.
+  { id: 'boundary_2', property: 'line-opacity', light: 0.25, dark: 0.25 },
+  { id: 'boundary_3', property: 'line-opacity', light: 0.15, dark: 0.15 },
+] as const;
 
 /**
  * `[west, south, east, north]` — the extent of Bangladesh.

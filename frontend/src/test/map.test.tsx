@@ -46,6 +46,15 @@ interface RecordedLayer {
 
 class FakeMap {
   static last: FakeMap | null = null;
+  /**
+   * What the next map reports from `isStyleLoaded()` when it is created.
+   *
+   * The real MapLibre returns false until the style has parsed, and a request
+   * to add layers during that window used to be dropped for good. Simulating it
+   * needs the flag set *before* construction, because the component asks as
+   * soon as the map reports `load`.
+   */
+  static nextStyleLoaded = true;
 
   sources = new Map<string, { data: unknown; promoteId?: string }>();
   layers = new Map<string, RecordedLayer>();
@@ -56,16 +65,27 @@ class FakeMap {
   styleUrl: string;
   removed = false;
 
+  styleLoaded = true;
+
   constructor(options: { style: string }) {
     this.styleUrl = options.style;
+    this.styleLoaded = FakeMap.nextStyleLoaded;
     FakeMap.last = this;
-    // The real map reports `load` once its style is parsed. Deferred by a
-    // microtask so a component that attaches the handler after construction —
-    // which every component does — still sees it.
-    queueMicrotask(() => this.fire('load', {}));
+    // The real map reports `style.load` when the style is parsed and `load`
+    // once after that. A style that has not parsed yet fires neither, which is
+    // exactly the slow-style case; `parseStyle()` below releases it.
+    queueMicrotask(() => { if (this.styleLoaded) this.parseStyle(); });
   }
 
-  isStyleLoaded() { return true; }
+  isStyleLoaded() { return this.styleLoaded; }
+
+  /** The style finishes parsing: what MapLibre announces as `style.load`. */
+  parseStyle() {
+    this.styleLoaded = true;
+    this.fire('style.load', {});
+    this.fire('load', {});
+    this.fire('styledata', {});
+  }
 
   addSource(id: string, spec: { data: unknown; promoteId?: string }) {
     this.sources.set(id, { data: spec.data, promoteId: spec.promoteId });
@@ -94,7 +114,12 @@ class FakeMap {
   hasImage(name: string) { return this.images.has(name); }
   addImage(name: string) { this.images.add(name); }
   addControl(control: unknown) { this.controls.push(control); }
-  setStyle(style: string) { this.styleUrl = style; this.fire('styledata', {}); }
+  setStyleCalls: unknown[] = [];
+  setStyle(style: string) {
+    this.setStyleCalls.push(style);
+    this.styleUrl = style;
+    this.fire('styledata', {});
+  }
   fitBounds(bounds: unknown) { this.fitted.push(bounds); }
   resize() {}
   remove() { this.removed = true; }
@@ -144,9 +169,17 @@ vi.mock('maplibre-gl', () => ({
   Popup: FakePopup,
   GeoJSONSource: class {},
   LngLat: class {},
+  // BusinessMap points MapLibre at the worker Vite emits; under test there is
+  // no worker and no bundler, so this only has to exist to be callable.
+  setWorkerUrl: () => {},
 }));
 
 vi.mock('maplibre-gl/dist/maplibre-gl.css', () => ({}));
+// `?worker&url` is a Vite build feature; vitest resolves the bare module, so
+// the suffixed specifier needs a stub the same way the stylesheet does.
+vi.mock('maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url', () => ({
+  default: 'maplibre-gl-worker.js',
+}));
 
 // ---------------------------------------------------------------------------
 // The business data adapter — the pure half
@@ -623,16 +656,115 @@ describe('MapPage', () => {
     expect(line?.paint?.['line-width']).toBe(AREA_STYLE.stroke_width);
   });
 
-  it('keeps the upazila stroke blue and the hierarchy carried by weight', () => {
+  it('draws the layers once a slow style parses, rather than dropping them', async () => {
+    // The regression: `applyLayers` returned when the style was not ready and
+    // nothing asked again, so a style that parsed a moment after the map
+    // reported `load` left a basemap with no boundaries, no mask and no
+    // markers — permanently, and with nothing logged.
+    FakeMap.nextStyleLoaded = false;
+    try {
+      const { default: MapPage } = await import('../pages/MapPage');
+      wrap(<MapPage />);
+      await waitFor(() => expect(FakeMap.last).not.toBeNull());
+      const map = FakeMap.last as FakeMap;
+
+      // Nothing is drawn while the style is still parsing — correctly so.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(map.layers.get(IDS.boundaryLine('country'))).toBeUndefined();
+
+      // The style finishes. The deferred request must now run on its own.
+      map.parseStyle();
+
+      await waitFor(() => {
+        expect(map.layers.get(IDS.boundaryLine('country'))).toBeDefined();
+      });
+      expect(map.layers.has(IDS.maskLayer)).toBe(true);
+      expect(map.layers.has(IDS.entityIcons)).toBe(true);
+    } finally {
+      FakeMap.nextStyleLoaded = true;
+    }
+  });
+
+  it('never discards a slow basemap — only a failed one falls back', async () => {
+    // The regression: a watchdog swapped in the empty style once a grace period
+    // expired. `setStyle` discards every source and layer the basemap had, so a
+    // basemap that was merely slow was destroyed and could never come back —
+    // the map kept its boundaries and lost its tiles for good. Slow is not
+    // failed, and waiting must cost the basemap nothing.
+    FakeMap.nextStyleLoaded = false;
+    try {
+      const { default: MapPage } = await import('../pages/MapPage');
+      wrap(<MapPage />);
+      await waitFor(() => expect(FakeMap.last).not.toBeNull());
+      const map = FakeMap.last as FakeMap;
+
+      // The style is still on its way. Whatever else happens, nothing may
+      // replace it — that is what made the basemap unrecoverable.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(map.setStyleCalls).toHaveLength(0);
+
+      // It arrives late. The local layers go on, over the real basemap.
+      map.parseStyle();
+      await waitFor(() => {
+        expect(map.layers.get(IDS.boundaryLine('country'))).toBeDefined();
+      });
+      expect(map.setStyleCalls).toHaveLength(0);
+      expect(map.styleUrl).toContain('positron');
+    } finally {
+      FakeMap.nextStyleLoaded = true;
+    }
+  });
+
+  it('adds no duplicate source or layer when applied repeatedly', async () => {
+    const { default: MapPage } = await import('../pages/MapPage');
+    wrap(<MapPage />);
+    const map = await mountedMap();
+    const sources = map.sources.size;
+    const layers = map.layers.size;
+
+    // A style swap re-runs the whole application; so does any prop change that
+    // rebuilds it. Neither may accumulate a second copy of anything.
+    map.fire('styledata', {});
+    map.fire('styledata', {});
+    await waitFor(() => expect(map.layers.has(IDS.entityIcons)).toBe(true));
+
+    expect(map.sources.size).toBe(sources);
+    expect(map.layers.size).toBe(layers);
+  });
+
+  it('keeps every boundary blue and the hierarchy carried by weight and value', () => {
     // The fallback is what paints the first frame before the API answers, so it
-    // has to agree with the seeded database rather than approximate it.
-    expect(FALLBACK_AREA_STYLES.upazila.stroke_color).toBe('#2563EB');
+    // has to agree with the configured database rather than approximate it.
+    // These four are the values `map_area_styles` holds; changing one here
+    // without changing the row is what this pins.
+    expect(FALLBACK_AREA_STYLES.country.stroke_color).toBe('#1D4ED8');
+    expect(FALLBACK_AREA_STYLES.division.stroke_color).toBe('#2563EB');
+    expect(FALLBACK_AREA_STYLES.district.stroke_color).toBe('#60A5FA');
+    expect(FALLBACK_AREA_STYLES.upazila.stroke_color).toBe('#93C5FD');
+
+    // Weight: broader is heavier.
     expect(FALLBACK_AREA_STYLES.country.stroke_width)
       .toBeGreaterThan(FALLBACK_AREA_STYLES.division.stroke_width);
     expect(FALLBACK_AREA_STYLES.division.stroke_width)
       .toBeGreaterThan(FALLBACK_AREA_STYLES.district.stroke_width);
     expect(FALLBACK_AREA_STYLES.district.stroke_width)
       .toBeGreaterThan(FALLBACK_AREA_STYLES.upazila.stroke_width);
+
+    // Value: broader is darker, and every level stays one hue — a blue whose
+    // blue channel dominates. Four unrelated colours would read as four
+    // unrelated things, which is the thing this ordering exists to prevent.
+    const lightness = (hex: string) => parseInt(hex.slice(1, 3), 16);
+    for (const level of ['country', 'division', 'district', 'upazila'] as const) {
+      const [r, g, b] = [1, 3, 5].map((i) =>
+        parseInt(FALLBACK_AREA_STYLES[level].stroke_color.slice(i, i + 2), 16),
+      );
+      expect(b).toBeGreaterThan(r);
+      expect(b).toBeGreaterThan(g);
+    }
+    expect(lightness(FALLBACK_AREA_STYLES.country.stroke_color))
+      .toBeLessThan(lightness(FALLBACK_AREA_STYLES.district.stroke_color));
+    expect(lightness(FALLBACK_AREA_STYLES.district.stroke_color))
+      .toBeLessThan(lightness(FALLBACK_AREA_STYLES.upazila.stroke_color));
   });
 
   // --- business data --------------------------------------------------------

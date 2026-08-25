@@ -23,17 +23,20 @@ import {
   NavigationControl,
   Popup,
   ScaleControl,
+  setWorkerUrl,
   type ExpressionSpecification,
   type MapLayerMouseEvent,
   type MapGeoJSONFeature,
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { AreaStyle } from '../../types/api';
 import {
   BANGLADESH_BOUNDS,
+  BASEMAP_REFINEMENTS,
   BOUNDARY_LEVELS,
   FALLBACK_AREA_STYLES,
   FIT_PADDING,
@@ -87,6 +90,34 @@ export interface BusinessMapProps {
   className?: string;
 }
 
+/**
+ * Point MapLibre at its own worker, explicitly.
+ *
+ * MapLibre derives the worker URL at *runtime* from `import.meta.url` and a
+ * ternary that picks between `maplibre-gl-worker.mjs` and its `-dev` twin. A
+ * bundler cannot statically analyse that, so Vite never emits the worker as an
+ * asset: in the built app the derived URL resolved against the hashed MapPage
+ * chunk, asked for `/assets/maplibre-gl-worker.mjs`, and got a 404. Every
+ * control still rendered because controls are main-thread, while the canvas
+ * stayed empty because tile and GeoJSON parsing both live in the worker — the
+ * basemap and the boundaries failed together, with nothing logged.
+ *
+ * `?url` is what makes Vite emit the file and hand back its final hashed path;
+ * `setWorkerUrl` replaces the guess with it. Module scope, so this runs before
+ * any `new MapLibreMap(...)` below. Dev never showed the bug — there the module
+ * is served from `node_modules/.vite/deps/`, where the worker sits beside it.
+ */
+setWorkerUrl(maplibreWorkerUrl);
+
+/**
+ * How long to wait for the basemap before drawing the local layers anyway.
+ *
+ * Only unblocks the wait; it never cancels the basemap, so erring long costs
+ * nothing but a later first paint of the boundaries, and erring short costs
+ * nothing at all. Short enough that a user is not left watching an empty panel.
+ */
+const STYLE_LOAD_GRACE_MS = 6000;
+
 /** A style with no layers, so a failed basemap still yields a usable map. */
 const BLANK_STYLE: StyleSpecification = {
   version: 8,
@@ -133,6 +164,36 @@ export function BusinessMap({
    */
   const [layerGeneration, setLayerGeneration] = useState(0);
   const [popup, setPopup] = useState<PopupSubject | null>(null);
+
+  /**
+   * Cancels a deferred `applyLayers`, when one is waiting for the style.
+   *
+   * `applyLayers` can only add a source to a style that has finished parsing.
+   * It used to return when the style was not ready, which silently *dropped*
+   * the request: nothing ever asked again, so a style that parsed a moment
+   * later left the map with a basemap and no boundaries, no mask and no
+   * markers, permanently, with nothing logged. Now the request is deferred
+   * instead, and this holds the unsubscribe for the one deferral in flight —
+   * one, because `styledata` fires repeatedly during a load and a listener per
+   * dropped call would pile up.
+   */
+  const pendingApplyRef = useRef<(() => void) | null>(null);
+  /** `applyLayers`, readable from inside itself without a circular dependency. */
+  const applyLayersRef = useRef<(() => Promise<void>) | null>(null);
+  /**
+   * Has the current style been *parsed*? The only question that matters here.
+   *
+   * Deliberately not `map.isStyleLoaded()`, which was the original gate and is a
+   * different question: it means "parsed **and every source's tiles are
+   * loaded**". A basemap source that never finishes — a tile request that hangs,
+   * a raster source the host is slow with — pins it false indefinitely on a map
+   * that is rendering perfectly, and gating on it meant the boundaries, mask and
+   * markers waited for a condition that never arrived. Measured on this
+   * deployment: `isStyleLoaded()` stayed false for 15s while the basemap was
+   * visibly drawn. Adding a source or layer only requires the style to be
+   * parsed, which is exactly what `style.load` announces.
+   */
+  const styleParsedRef = useRef(false);
 
   // Props the map's own event handlers need. Handlers are attached once, so
   // reading through a ref is what lets them see current props without the
@@ -190,16 +251,72 @@ export function BusinessMap({
     }).setDOMContent(host);
     popupRef.current.on('close', () => setPopup(null));
 
+    let styleFailed = false;
     map.on('error', (event) => {
       // Style and tile failures arrive here rather than as exceptions. They are
       // reported, not thrown: a missing tile must not take the page down.
       const message = event.error?.message;
+
+      /* A style that *failed* — as opposed to one still arriving — is the case
+         `BLANK_STYLE` exists for, and the only case that justifies discarding
+         what `setStyle` discards. Recognised by the style's own URL appearing in
+         the error while the style has never finished parsing; a tile or glyph
+         that 404s names itself instead and must not cost us the basemap. Once
+         only, or a failing style would be swapped repeatedly. */
+      if (!styleFailed && !styleParsedRef.current && message?.includes(styleUrl)) {
+        styleFailed = true;
+        map.setStyle(BLANK_STYLE);
+        setReady(true);
+        onError('The basemap could not be loaded. Boundaries and markers are still shown.');
+        return;
+      }
+
       if (message) onError(`Map: ${message}`);
     });
 
-    map.on('load', () => setReady(true));
+    // `style.load` fires whenever a style finishes parsing — the first one and
+    // every one `setStyle` brings in. That is the moment sources and layers may
+    // be added, so it is what releases the wait in `applyLayers`.
+    /* `style.load` is the signal, for both flags.
+       `load` additionally waits for the first frame to be painted, which waits
+       on tiles — so on a map whose basemap tiles are slow it can lag far behind
+       the style being usable, and gating `ready` on it left the boundaries
+       waiting for the basemap they do not depend on. `style.load` fires as soon
+       as the style is parsed, which is precisely when sources and layers may be
+       added, and it fires again for every style `setStyle` brings in. */
+    const styleReady = () => {
+      styleParsedRef.current = true;
+      setReady(true);
+    };
+    map.on('style.load', styleReady);
+    map.on('load', styleReady);
+
+
+
+    /* `load` fires once, after the style has parsed. A style that never arrives
+       therefore leaves the map permanently blank: no `load`, so nothing ever
+       asks for the layers, and the boundaries, mask and markers this dashboard
+       actually needs are local files that owe the basemap nothing.
+
+       So the wait is unblocked here — but *without* touching the style. An
+       earlier version swapped in `BLANK_STYLE`, and that was worse than the
+       problem: `setStyle` discards every source and layer the basemap had, so a
+       basemap that was merely slow was destroyed the moment the timer expired
+       and could never come back, because nothing sets it again. Slow is not
+       failed. Releasing `ready` is enough on its own: `applyLayers` already
+       waits for the style itself, so the local layers go on as soon as it
+       parses — whenever that is — and the basemap paints under them when it
+       arrives. Nothing is thrown away and there is nothing to recover from.
+
+       `BLANK_STYLE` is still the answer when the style genuinely *fails*, which
+       arrives as a MapLibre `error` event and is handled below. */
+    const watchdog = window.setTimeout(() => {
+      if (styleParsedRef.current) return;
+      setReady(true);
+    }, STYLE_LOAD_GRACE_MS);
 
     return () => {
+      window.clearTimeout(watchdog);
       popupRef.current?.remove();
       popupRef.current = null;
       map.remove();
@@ -222,9 +339,42 @@ export function BusinessMap({
    */
   const applyLayers = useCallback(async () => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map) return;
+
+    /* The style is still parsing. Wait for it rather than dropping the request:
+       this is the whole difference between a map that draws its boundaries a
+       moment late and one that never draws them at all. `styledata` fires many
+       times during a load, so the listener re-checks the parsed flag and only
+       then unsubscribes; `idle` is the backstop for a style that finished
+       before this listener was attached. */
+    if (!styleParsedRef.current) {
+      if (pendingApplyRef.current) return; // already waiting — one is enough
+      const retry = () => {
+        if (!styleParsedRef.current) return;
+        pendingApplyRef.current?.();
+        pendingApplyRef.current = null;
+        void applyLayersRef.current?.();
+      };
+      map.on('styledata', retry);
+      map.on('idle', retry);
+      pendingApplyRef.current = () => {
+        map.off('styledata', retry);
+        map.off('idle', retry);
+      };
+      return;
+    }
+
+    // Got through, so any deferral still armed is stale.
+    pendingApplyRef.current?.();
+    pendingApplyRef.current = null;
 
     const problems: string[] = [];
+
+    /* Quieten the basemap before anything is drawn over it. Runs here rather
+       than through `transformStyle` so it happens on the first load and on every
+       theme swap by the same path, and so a layer the host has renamed is simply
+       skipped instead of throwing. */
+    refineBasemap(map, theme);
 
     /* The mask, first, so it sits above every basemap layer including labels —
        which is the point: a foreign city label at full contrast would undo the
@@ -414,10 +564,22 @@ export function BusinessMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [theme, styleFor, onError]);
 
+  applyLayersRef.current = applyLayers;
+
   useEffect(() => {
     if (!ready) return;
     void applyLayers();
   }, [ready, applyLayers]);
+
+  // Drop any deferral still waiting when the component goes away, so a resolved
+  // style cannot call into an unmounted map.
+  useEffect(
+    () => () => {
+      pendingApplyRef.current?.();
+      pendingApplyRef.current = null;
+    },
+    [],
+  );
 
   /* -------------------------------------------------------------- theme swap */
 
@@ -426,13 +588,19 @@ export function BusinessMap({
     if (!map || !ready) return;
 
     // `setStyle` drops every source and layer this component added, so they are
-    // re-applied once the new basemap reports itself loaded.
+    // re-applied once the new basemap reports itself loaded. `applyLayers` now
+    // waits for the style itself, so this only has to ask again after the swap —
+    // it no longer has to own the retry, and cannot drop the rebuild if the new
+    // style parses more slowly than the old one did.
     const rebuild = () => {
-      if (!map.isStyleLoaded()) return;
+      if (!styleParsedRef.current) return;
       map.off('styledata', rebuild);
       void applyLayers();
     };
     map.on('styledata', rebuild);
+    // The outgoing style is about to be discarded; nothing may be added until
+    // `style.load` announces the new one.
+    styleParsedRef.current = false;
     try {
       map.setStyle(styleUrl);
     } catch {
@@ -700,6 +868,27 @@ function addSource(
     return;
   }
   map.addSource(id, { type: 'geojson', data: data as never, ...(promoteId ? { promoteId } : {}) });
+}
+
+/**
+ * Apply `BASEMAP_REFINEMENTS` to whichever of those layers this style has.
+ *
+ * Every id is checked before it is written: the basemap belongs to OpenFreeMap,
+ * and a layer renamed or dropped in one of their releases must quietly not be
+ * refined rather than throw and take the whole map down with it. Nothing here
+ * adds, removes or reorders a layer — only paint on layers the style already
+ * drew, so the basemap shows exactly what it showed before, more quietly.
+ */
+function refineBasemap(map: MapLibreMap, theme: 'light' | 'dark'): void {
+  for (const rule of BASEMAP_REFINEMENTS) {
+    if (!map.getLayer(rule.id)) continue;
+    try {
+      map.setPaintProperty(rule.id, rule.property, theme === 'dark' ? rule.dark : rule.light);
+    } catch {
+      // A style that has the layer but not this property. Not worth reporting:
+      // the map is fully usable, it is only a shade louder than intended.
+    }
+  }
 }
 
 /**
