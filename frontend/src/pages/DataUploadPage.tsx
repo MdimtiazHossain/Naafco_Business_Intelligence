@@ -12,16 +12,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  AlertCircle,
-  ArrowLeft,
-  CheckCircle2,
-  Download,
-  FileSpreadsheet,
-  RotateCcw,
-  Upload,
-  XCircle,
-} from 'lucide-react';
+import { AlertCircle, ArrowLeft, CheckCircle2, ChevronRight, Download, FileSpreadsheet, RotateCcw, Upload, XCircle } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PageHeader, Section } from '../components/PageHeader';
@@ -439,6 +430,9 @@ function UploadWizard({
           {preview && preview.rows.length > 0 && (
             <div className="mt-4">
               <DataTable
+                // The preview's columns are the file's, so the arrangement follows the
+                // dataset.
+                tableId={`upload.preview.${uploadType.key}`}
                 rows={preview.rows as Record<string, unknown>[]}
                 columns={preview.columns.map((key) => ({
                   key,
@@ -481,6 +475,7 @@ function UploadWizard({
                 </button>
               </div>
               <DataTable
+                tableId="upload.errors"
                 rows={outcome.errors as unknown as Record<string, unknown>[]}
                 columns={[
                   { key: 'row', header: t('upload.row'), width: '5rem' },
@@ -564,6 +559,87 @@ function UploadWizard({
 // ---------------------------------------------------------------------------
 // Type pickers
 // ---------------------------------------------------------------------------
+
+/**
+ * The order the groups are listed in. Order only, never membership.
+ *
+ * A group the server sends that is missing here is appended rather than
+ * dropped: the upload screen is the only way data enters the warehouse, so a
+ * heading must never be able to hide a dataset. `GROUP_BY_KEY` in
+ * `upload/registry.py` is what decides what exists.
+ */
+const GROUP_ORDER = ['SALES', 'MARKET', 'PEOPLE', 'MATERIAL', 'TRANSACTIONS'];
+
+/** The upload types of one tab, in collapsible groups. */
+function TypeGroups({
+  types,
+  onSelect,
+}: {
+  types: UploadType[];
+  onSelect: (type: UploadType) => void;
+}) {
+  const t = useT();
+  // Collapsed by default, and any number may be open: a person loading a file
+  // is looking for one heading, not walking a sequence.
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+
+  const groups = useMemo(() => {
+    const byGroup = new Map<string, UploadType[]>();
+    for (const type of types) {
+      const key = type.group ?? 'SALES';
+      byGroup.set(key, [...(byGroup.get(key) ?? []), type]);
+    }
+    const known = GROUP_ORDER.filter((key) => byGroup.has(key));
+    const extra = [...byGroup.keys()].filter((key) => !GROUP_ORDER.includes(key));
+    return [...known, ...extra].map((key) => ({ key, types: byGroup.get(key) ?? [] }));
+  }, [types]);
+
+  if (types.length === 0) return <EmptyState />;
+
+  return (
+    <div className="space-y-2">
+      {groups.map((group) => {
+        const isOpen = open.has(group.key);
+        const panelId = `upload-group-${group.key}`;
+        return (
+          <div key={group.key} className="rounded-lg border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              aria-expanded={isOpen}
+              aria-controls={panelId}
+              onClick={() =>
+                setOpen((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(group.key)) next.delete(group.key);
+                  else next.add(group.key);
+                  return next;
+                })
+              }
+              className="flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60"
+            >
+              <ChevronRight
+                size={15}
+                aria-hidden="true"
+                className={`shrink-0 text-slate-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+              />
+              <span className="flex-1 text-sm font-semibold">
+                {t(`dataManagement.group.${group.key}`)}
+              </span>
+              <span className="shrink-0 text-xs tabular-nums text-slate-400">
+                {group.types.length}
+              </span>
+            </button>
+            {isOpen && (
+              <div id={panelId} className="border-t border-slate-200 p-3 dark:border-slate-700">
+                <TypeGrid types={group.types} onSelect={onSelect} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function TypeGrid({
   types,
@@ -746,7 +822,7 @@ export default function DataUploadPage({ initialTab }: { initialTab?: Tab } = {}
                   : typesQuery.data?.categories.find((c) => c.key === 'TRANSACTIONAL')
                       ?.description}
               </p>
-              <TypeGrid
+              <TypeGroups
                 types={tab === 'master' ? byCategory.MASTER : byCategory.TRANSACTIONAL}
                 onSelect={setSelected}
               />
@@ -763,6 +839,7 @@ export default function DataUploadPage({ initialTab }: { initialTab?: Tab } = {}
             skeleton={<CardSkeleton rows={6} />}
           >
             <DataTable
+              tableId="upload.history"
               rows={(historyQuery.data?.batches ?? []) as unknown as Record<string, any>[]}
               columns={[
                 { key: 'upload_id', header: t('upload.batchId'), width: '5rem' },
@@ -852,6 +929,7 @@ export default function DataUploadPage({ initialTab }: { initialTab?: Tab } = {}
                 emptyMessage={t('upload.noErrors')}
               >
                 <DataTable
+                  tableId="upload.batch-errors"
                   rows={(batchQuery.data?.errors ?? []) as unknown as Record<string, any>[]}
                   columns={[
                     { key: 'row', header: t('upload.row'), width: '5rem' },
@@ -881,6 +959,7 @@ export default function DataUploadPage({ initialTab }: { initialTab?: Tab } = {}
             skeleton={<CardSkeleton rows={6} />}
           >
             <DataTable
+              tableId="upload.failed"
               rows={(failedQuery.data?.records ?? []) as unknown as Record<string, any>[]}
               columns={[
                 { key: 'upload_id', header: t('upload.batchId'), width: '5rem' },

@@ -146,6 +146,8 @@ class UploadType:
             "key": self.key,
             "label": self.label,
             "category": self.category,
+            # Presentation only; `category` above is still the behaviour.
+            "group": display_group(self.key),
             "description": self.description,
             "table": self.table,
             "data_type": self.data_type,
@@ -715,6 +717,80 @@ TRANSACTION_TYPES: tuple[UploadType, ...] = tuple(
 UPLOAD_TYPES: tuple[UploadType, ...] = (*MASTER_TYPES, *TRANSACTION_TYPES)
 UPLOAD_TYPE_BY_KEY: dict[str, UploadType] = {t.key: t for t in UPLOAD_TYPES}
 
+#: How the two data screens *group* what they list, which is not the same
+#: question as :class:`UploadCategory`.
+#:
+#: ``category`` is MASTER or TRANSACTIONAL and is **behaviour**: it picks the
+#: processing path in ``upload/service.py`` and is stored on every
+#: ``upload_batches`` row, so a batch loaded last year still means what it said.
+#: Repurposing it to group a menu would change how uploads run and would
+#: retroactively change what those stored rows claim.
+#:
+#: This is presentation only. Nothing reads it but the two screens.
+DISPLAY_GROUPS: tuple[dict[str, str], ...] = (
+    {"key": "SALES", "label": "Sales",
+     "description": "The organisational hierarchy, company down to sub-territory."},
+    {"key": "MARKET", "label": "Market",
+     "description": "Administrative geography: division, district and upazila."},
+    {"key": "PEOPLE", "label": "People",
+     "description": "The customers and the sales force who serve them."},
+    {"key": "MATERIAL", "label": "Material",
+     "description": "Plants, storage locations and the material master."},
+    {"key": "TRANSACTIONS", "label": "Transactions",
+     "description": "Sales, material stock and target facts."},
+)
+
+#: Which group each upload type is listed under.
+#:
+#: Hand-written, because no property of an upload type says which heading a
+#: reader expects to find it beneath. That makes it exactly the kind of list
+#: this codebase warns about, so :func:`display_group` **raises** on a key it
+#: does not know rather than defaulting: a new upload type must be placed here
+#: deliberately, and can never be silently dropped from the two screens that
+#: are the only way to load data.
+GROUP_BY_KEY: dict[str, str] = {
+    "dim_company": "SALES",
+    "dim_business_unit": "SALES",
+    "dim_sales_line": "SALES",
+    "dim_zone": "SALES",
+    "dim_region": "SALES",
+    "dim_area": "SALES",
+    "dim_unit": "SALES",
+    "dim_territory": "SALES",
+    "dim_sub_territory": "SALES",
+
+    "dim_division": "MARKET",
+    "dim_district": "MARKET",
+    # The business calls this a thana; the master, the boundaries and the map
+    # all call it an upazila, and one name across the platform beats two.
+    "dim_upazila": "MARKET",
+    "map_entity_locations": "MARKET",
+
+    "dim_customer": "PEOPLE",
+    "dim_sales_force": "PEOPLE",
+
+    "dim_plant": "MATERIAL",
+    "dim_storage_location": "MATERIAL",
+    "dim_material": "MATERIAL",
+
+    "sales": "TRANSACTIONS",
+    "material_stock": "TRANSACTIONS",
+    "target": "TRANSACTIONS",
+}
+
+
+def display_group(key: str) -> str:
+    """The group an upload type is listed under, or a loud failure."""
+    try:
+        return GROUP_BY_KEY[key]
+    except KeyError:  # pragma: no cover - guarded by test
+        raise KeyError(
+            f"Upload type '{key}' has no display group. Add it to GROUP_BY_KEY "
+            "in upload/registry.py, or it will not appear on the Data "
+            "Management or Data Upload screens."
+        ) from None
+
+
 CATEGORIES: tuple[dict[str, Any], ...] = (
     {
         "key": UploadCategory.MASTER,
@@ -758,6 +834,16 @@ def get_upload_type(key: str) -> UploadType:
 def catalogue() -> dict[str, Any]:
     """The whole catalogue, grouped by category, as the API returns it."""
     return {
+        "groups": [
+            {
+                **group,
+                "types": [
+                    t.to_dict() for t in UPLOAD_TYPES
+                    if display_group(t.key) == group["key"]
+                ],
+            }
+            for group in DISPLAY_GROUPS
+        ],
         "categories": [
             {
                 **category,

@@ -98,6 +98,14 @@ export interface ManagedField {
 }
 
 export interface ManagedEntity {
+  /**
+   * The heading this record is listed under on the two data screens.
+   *
+   * Presentation only, and deliberately not `category`: that is MASTER or
+   * TRANSACTIONAL, decides the route and the backend's processing path, and is
+   * stored on every upload batch. A group may mix categories.
+   */
+  group?: string;
   key: string;
   label: string;
   category: EntityCategory;
@@ -296,6 +304,14 @@ export interface UploadColumn {
 }
 
 export interface UploadType {
+  /**
+   * The heading this type is listed under on the two data screens.
+   *
+   * Presentation only. `category` below is MASTER or TRANSACTIONAL, decides
+   * the processing path and is stored on every upload batch; the two are
+   * separate on purpose.
+   */
+  group?: string;
   key: string;
   label: string;
   category: UploadCategory;

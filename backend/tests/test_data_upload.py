@@ -1016,3 +1016,61 @@ def test_upload_errors_are_replaced_not_doubled_on_commit(upload_client,
     assert count == 1                       # the validation run's copy was replaced
     assert batch.status == UploadStatus.PARTIAL
     assert batch.stored_path is None
+
+
+# ---------------------------------------------------------------------------
+# Display grouping
+# ---------------------------------------------------------------------------
+
+
+def test_every_upload_type_has_a_display_group():
+    """A new upload type must be placed, not silently dropped.
+
+    ``GROUP_BY_KEY`` is hand-written — no property of an upload type says which
+    heading a reader expects to find it under — which makes it exactly the kind
+    of list this codebase warns about. The Data Management and Data Upload
+    screens are the only way data is loaded or corrected, so a type missing from
+    the grouping would be a dataset nobody can reach. This is what stops that.
+    """
+    from app.upload.registry import UPLOAD_TYPES, display_group
+
+    for upload_type in UPLOAD_TYPES:
+        assert display_group(upload_type.key), upload_type.key
+
+
+def test_display_group_refuses_an_unknown_key():
+    """It raises rather than defaulting, which is what makes the test above bite."""
+    import pytest as _pytest
+
+    from app.upload.registry import display_group
+
+    with _pytest.raises(KeyError):
+        display_group("dim_not_a_real_type")
+
+
+def test_display_groups_and_categories_are_independent():
+    """Grouping is presentation; ``category`` stays the processing switch.
+
+    ``upload/service.py`` branches on MASTER vs TRANSACTIONAL and every
+    ``upload_batches`` row stores it, so the two must never be conflated: a
+    group is free to mix categories and must not change what a category means.
+    """
+    from app.database.models_admin import UploadCategory
+    from app.upload.registry import UPLOAD_TYPES, display_group
+
+    by_key = {t.key: t for t in UPLOAD_TYPES}
+    # Market mixes a master dimension with the map's own location table, and
+    # Transactions holds exactly the transactional ones.
+    assert by_key["sales"].category == UploadCategory.TRANSACTIONAL
+    assert display_group("sales") == "TRANSACTIONS"
+    assert by_key["dim_company"].category == UploadCategory.MASTER
+    assert display_group("dim_company") == "SALES"
+
+
+def test_both_screens_group_a_record_the_same_way():
+    """One record cannot be filed under two headings depending on the page."""
+    from app.datamgmt.catalogue import ENTITIES
+    from app.upload.registry import display_group
+
+    for entity in ENTITIES:
+        assert entity.to_dict()["group"] == display_group(entity.key)

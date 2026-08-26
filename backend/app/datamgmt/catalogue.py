@@ -40,6 +40,7 @@ from ..reporting.columns import (
 )
 from ..security.sections import SectionKey
 from ..upload.registry import (
+    display_group,
     MASTER_MODEL_BY_TABLE,
     MASTER_TYPES,
     UploadColumn,
@@ -245,6 +246,10 @@ class ManagedEntity:
             "key": self.key,
             "label": self.label,
             "category": self.category,
+            # Taken from the upload registry rather than restated here: the two
+            # screens have to group identically, and one source is the only way
+            # that stays true.
+            "group": display_group(self.key),
             "description": self.description,
             "section": self.section,
             "key_fields": list(self.key_fields),
