@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Collection, Iterable, Sequence
+from typing import Any, Collection, Iterable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -38,6 +38,8 @@ from ..database.models import (
 )
 from ..database.models_warehouse import DimCustomer, DimSalesForce
 from .exceptions import AmbiguousEntityError, EntityNotFoundError
+from .lexicon import EMPTY as LEXICON_EMPTY, Lexicon
+from .mining import normalize_phrase
 from .schemas import EntityType, ResolvedEntity
 
 #: Words that must never be treated as an entity name even if a master record
@@ -183,9 +185,16 @@ class EntityIndex:
 class EntityResolver:
     """Resolves free text against the master data."""
 
-    def __init__(self, session: Session, index: EntityIndex | None = None) -> None:
+    def __init__(self, session: Session, index: EntityIndex | None = None,
+                 lexicon: Lexicon | None = None) -> None:
         self.session = session
         self.index = index if index is not None else EntityIndex.load(session)
+        #: Phrases a reviewer has approved as names for master records.
+        #:
+        #: Consulted only where the master data has no answer of its own — see
+        #: ``candidates`` — so an alias can widen what is findable and can never
+        #: redirect a name the master already knows.
+        self.lexicon = lexicon if lexicon is not None else LEXICON_EMPTY
 
     # -- single-term resolution ---------------------------------------------
 
@@ -234,12 +243,51 @@ class EntityResolver:
             return _dedupe(exact_name)
 
         if len(needle) < 3:
-            return []
+            return _dedupe(self._learned(needle, entity_type))
+
         partial = [
             entry for entry in keep(self.index.entries)
             if any(_starts_a_word(needle, name) for name in entry.names)
         ]
-        return _dedupe(partial)
+        if partial:
+            return _dedupe(partial)
+
+        # Last, and only here: the master data had nothing to say about this
+        # term — no code, no name, no partial name — so an approved alias is
+        # the only thing that can still answer. Placing the lookup after every
+        # master route is what makes "an alias never outranks the master" true
+        # by construction rather than by convention.
+        return _dedupe(self._learned(needle, entity_type))
+
+    def _learned(self, needle: str,
+                 entity_type: EntityType | None) -> list[MasterEntry]:
+        """The master record an approved phrase names, if it still exists.
+
+        The alias stores a code, and the code is looked up in the index rather
+        than trusted: a record retired since the alias was approved is simply
+        not there, so the phrase resolves to nothing instead of to a dangling
+        reference. At most one entry comes back, because only one alias may be
+        active for a phrase — so this can never introduce an ambiguity the
+        resolver would then have to refuse.
+        """
+        if not self.lexicon.entities:
+            return []
+        target = (self.lexicon.entities.get(needle)
+                  or self.lexicon.entities.get(normalize_phrase(needle) or ""))
+        if target is None:
+            return []
+        alias_type, alias_code = target
+        # ``.value``, not ``str()``: ``EntityType`` mixes in ``str`` but is an
+        # ``Enum``, so ``str(EntityType.REGION)`` is "EntityType.REGION" while
+        # the alias stores "region". Comparing the rendered forms silently
+        # matches nothing.
+        wanted = _type_name(alias_type)
+        if entity_type is not None and _type_name(entity_type) != wanted:
+            return []
+        return [
+            entry for entry in self.index.by_code.get(alias_code.casefold(), [])
+            if _type_name(entry.entity_type) == wanted
+        ]
 
     @staticmethod
     def _match_kind(term: str, entry: MasterEntry) -> str:
@@ -327,6 +375,11 @@ class EntityResolver:
             if c.code.casefold() == needle or any(n.casefold() == needle for n in c.names)
         ]
         return len({c.entity_type for c in exact}) > 1 or len(exact) > 1
+
+
+def _type_name(entity_type: Any) -> str:
+    """An entity type as the plain string an alias stores it as."""
+    return getattr(entity_type, "value", entity_type)
 
 
 def _starts_a_word(needle: str, name: str) -> bool:

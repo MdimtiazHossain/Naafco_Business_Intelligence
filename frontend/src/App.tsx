@@ -41,6 +41,7 @@ const AdminRolesPage = lazy(() => import('./pages/AdminRolesPage'));
 const UserPermissionsPage = lazy(() => import('./pages/UserPermissionsPage'));
 const MapPage = lazy(() => import('./pages/MapPage'));
 const MarkerLibraryPage = lazy(() => import('./pages/MarkerLibraryPage'));
+const AgentLearningPage = lazy(() => import('./pages/AgentLearningPage'));
 const MarkerDesignerPage = lazy(() => import('./pages/MarkerDesignerPage'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 
@@ -388,6 +389,20 @@ function AppRoutes() {
                 <AdminRolesPage />
               </Suspense>
             </RequireAdmin>
+          }
+        />
+        {/*
+          Agent Learning sits beside Map Settings and for the same reason: it is
+          its own section, so a reviewer who owns what the assistant's words
+          mean need not be a user administrator. The path is under /admin
+          because that is where the section's route says it is.
+        */}
+        <Route
+          path="/admin/agent-learning"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <AgentLearningPage />
+            </Suspense>
           }
         />
         {/*

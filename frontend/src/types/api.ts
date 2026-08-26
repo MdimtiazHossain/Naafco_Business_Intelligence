@@ -40,6 +40,7 @@ export type SectionKey =
   | 'transaction_data'
   | 'map'
   | 'map_settings'
+  | 'agent_learning'
   | 'admin'
   | 'settings';
 
@@ -1374,6 +1375,8 @@ export interface TransactionsResponse {
 
 export interface ChatMessageResponse {
   conversation_id: string;
+  /** The stored assistant turn, which is what feedback is attached to. */
+  message_id: number | null;
   intent: string;
   answer: string;
   data: Record<string, any>;
@@ -1405,6 +1408,95 @@ export interface ChatHistoryMessage {
   language: string | null;
   created_at: string;
   elapsed_ms: number | null;
+  /** This reader's own verdict, so a reloaded thread shows the thumb they pressed. */
+  feedback: FeedbackRating | null;
+}
+
+export type FeedbackRating = 'UP' | 'DOWN';
+
+// --- Agent learning -------------------------------------------------------
+
+export type SignalStatus = 'NEW' | 'TRIAGED' | 'PROPOSED' | 'DISMISSED';
+export type LearningStatus = 'PROPOSED' | 'ACTIVE' | 'REJECTED' | 'RETIRED';
+export type AliasKind = 'ENTITY' | 'METRIC' | 'GROUP_BY' | 'MODIFIER';
+
+/** One phrase the assistant handled badly, and how often. */
+export interface LearningSignal {
+  signal_id: number;
+  signal_type: string;
+  phrase: string;
+  raw_sample: string | null;
+  language: string | null;
+  occurrences: number;
+  status: SignalStatus;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+/** A phrase somebody taught the assistant, and what it means. */
+export interface TermAlias {
+  alias_id: number;
+  phrase: string;
+  language: string | null;
+  alias_kind: AliasKind;
+  entity_type: string | null;
+  entity_code: string | null;
+  target_keyword: string | null;
+  /** Human-readable rendering of whichever target the kind uses. */
+  target: string;
+  status: LearningStatus;
+  source: string;
+  signal_id: number | null;
+  notes: string | null;
+  created_by: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  retired_at: string | null;
+}
+
+/** A question and the tool call that answered it correctly. */
+export interface LearningExample {
+  example_id: number;
+  question: string;
+  normalized_question: string;
+  language: string | null;
+  intent: string | null;
+  tool_name: string;
+  arguments: Record<string, unknown> | null;
+  status: LearningStatus;
+  source: string;
+  use_count: number;
+  notes: string | null;
+  created_by: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  retired_at: string | null;
+}
+
+/**
+ * What a reviewer may choose from.
+ *
+ * Served by the backend rather than restated here: a keyword added to the
+ * agent's own tables becomes selectable with no frontend change.
+ */
+export interface LearningOptions {
+  alias_kinds: AliasKind[];
+  alias_targets: Record<AliasKind, string[]>;
+  signal_types: string[];
+  signal_statuses: SignalStatus[];
+  statuses: LearningStatus[];
+  sources: string[];
+  /** Read off the tool registry, so it follows the server with no edit here. */
+  tools: { name: string; description: string }[];
+}
+
+export interface FeedbackResponse {
+  message_id: number;
+  rating: FeedbackRating;
+  /** True when this replaced an earlier verdict from the same reader. */
+  updated: boolean;
+  /** True when the note carried injection-style instructions and was stripped. */
+  sanitized: boolean;
 }
 
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';

@@ -23,7 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
 
 from sqlalchemy.orm import Session
@@ -39,7 +39,9 @@ from .exceptions import (
     UnsupportedQuestionError,
     ValidationFailedError,
 )
+from . import lexicon
 from .intent import IntentPrediction, detect_intent
+from .mining import normalize_phrase
 from .llm import LLMClient, NullLLMClient
 from .permission_filter import PermissionFilter, UserContext
 from .prompts import (
@@ -48,6 +50,7 @@ from .prompts import (
     PLANNER_PROMPT,
     build_system_prompt,
     conversation_messages,
+    planner_examples,
     sanitize_message,
 )
 from .response_formatter import ResponseFormatter
@@ -209,6 +212,14 @@ class AgentAnswer:
     context: ConversationContext = field(default_factory=ConversationContext)
     needs_clarification: bool = False
     error_code: str | None = None
+    #: The failed exception's own ``details``, carried rather than discarded.
+    #:
+    #: ``EntityNotFoundError`` knows *which term* it could not resolve, and that
+    #: term is the whole value of the signal: "something failed" is noise, while
+    #: "nobody could look up 'chini'" is a phrase somebody can teach. The field
+    #: never reaches ``ChatResponse`` — it exists so ``ai.mining`` can record
+    #: what failed, not so a client can read it.
+    error_details: dict[str, Any] = field(default_factory=dict)
     language: str = "en"
     injection_detected: bool = False
     elapsed_ms: int = 0
@@ -245,7 +256,12 @@ class Orchestrator:
         self.today = today or dt.date.today()
         self.master_index = MasterDataIndex(session)
         self.permissions = PermissionFilter(session, user, self.master_index)
-        self.entities = EntityResolver(session)
+        # Loaded once per question and handed to both readers, so the classifier
+        # and the entity resolver are always looking at the same approved
+        # vocabulary. Cached on a generation counter, so this is a dictionary
+        # lookup on all but the first question after a reviewer's change.
+        self.lexicon = lexicon.load(session)
+        self.entities = EntityResolver(session, lexicon=self.lexicon)
         self.dates = DateResolver(today=self.today)
         self.formatter = ResponseFormatter()
 
@@ -257,7 +273,8 @@ class Orchestrator:
         context = context or ConversationContext()
 
         cleaned, injections = sanitize_message(message)
-        prediction = detect_intent(cleaned or message)
+        prediction = detect_intent(cleaned or message, self.lexicon)
+        prediction = self._apply_example(cleaned or message, prediction)
 
         if injections and not cleaned:
             # Nothing left once the injection is removed: there was no question.
@@ -277,6 +294,7 @@ class Orchestrator:
                 language=prediction.language,
                 needs_clarification=isinstance(exc, AmbiguousEntityError),
                 error_code=exc.code,
+                error_details=exc.details,
                 injection_detected=bool(injections),
                 context=context,
             ), started)
@@ -481,7 +499,7 @@ class Orchestrator:
 
     def _execute(self, query: StructuredQuery, message: str,
                  history: Sequence[dict[str, str]]) -> AgentAnswer:
-        prediction = detect_intent(message)
+        prediction = detect_intent(message, self.lexicon)
         tool_name = self._select_tool(query, message, history)
         arguments = self.tool_arguments(tool_name, query, prediction)
 
@@ -531,6 +549,39 @@ class Orchestrator:
             language=query.language,
         )
 
+    def _matching_example(self, message: str):
+        """The approved example for this exact question, if there is one."""
+        if not self.lexicon.examples:
+            return None
+        key = normalize_phrase(message)
+        return self.lexicon.examples.get(key) if key else None
+
+    def _apply_example(self, message: str,
+                       prediction: IntentPrediction) -> IntentPrediction:
+        """Let an approved example name the intent — but only where none was found.
+
+        The same rule the aliases follow: what the classifier worked out for
+        itself is never overridden. An example speaks when the shipped rules
+        came back UNKNOWN, which is exactly the case a reviewer approved it to
+        cover, and stays silent otherwise.
+        """
+        if prediction.intent is not Intent.UNKNOWN:
+            return prediction
+        example = self._matching_example(message)
+        if example is None or not example.intent:
+            return prediction
+        try:
+            intent = Intent(example.intent)
+        except ValueError:
+            # An intent that no longer exists. Ignored rather than raised: the
+            # question is simply as unclassified as it was before.
+            logger.info("approved example %s names a retired intent %r",
+                        example.example_id, example.intent)
+            return prediction
+        logger.info("intent %s taken from approved example %s", intent.value,
+                    example.example_id)
+        return replace(prediction, intent=intent)
+
     def _select_tool(self, query: StructuredQuery, message: str,
                      history: Sequence[dict[str, str]]) -> str:
         """Ask the model which tool to run; fall back to the intent mapping.
@@ -542,14 +593,32 @@ class Orchestrator:
         if default is None:
             raise UnsupportedQuestionError()
 
+        allowed = set(tools_for_intent(query.intent)) | {default}
+
+        # An approved example is a person's answer to "which report does this
+        # question want", so it outranks the intent's default tool — but only
+        # within that intent's own allow-list, and only for a tool that still
+        # exists. Its stored *arguments* are never reused: those carried one
+        # past caller's dates and filters, and this question builds its own.
+        example = self._matching_example(message)
+        if example is not None and example.tool_name in allowed:
+            if example.tool_name in REGISTRY:
+                lexicon.note_use(self.session, example.example_id)
+                return example.tool_name
+
         if not self.llm.available:
             return default
-
-        allowed = set(tools_for_intent(query.intent)) | {default}
         definitions = [REGISTRY[name].openai_schema() for name in allowed
                        if name in REGISTRY]
-        system = build_system_prompt(self.user.role, self.user.describe_scope(),
-                                     query.language) + "\n" + PLANNER_PROMPT
+        # The same approved bank the deterministic shortcut reads, shown to the
+        # model as worked examples. It only reaches here when the question was
+        # *not* an exact match — an exact match returned above without asking.
+        system = (
+            build_system_prompt(self.user.role, self.user.describe_scope(),
+                                query.language)
+            + "\n" + PLANNER_PROMPT
+            + planner_examples(self.lexicon.examples.values())
+        )
         try:
             response = self.llm.plan(
                 conversation_messages(system, history, message), definitions

@@ -29,6 +29,7 @@ from app.database import models_warehouse  # noqa: E402,F401  (registers Phase 2
 from app.database import models_ai  # noqa: E402,F401  (registers Phase 3 tables)
 from app.database import models_admin  # noqa: E402,F401  (registers Phase 4 tables)
 from app.database import models_map  # noqa: E402,F401  (registers map-config tables)
+from app.database import models_learning  # noqa: E402,F401  (registers agent-learning tables)
 
 config = context.config
 

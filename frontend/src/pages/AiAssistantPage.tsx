@@ -10,12 +10,13 @@ import { Bot, Loader2, MessageSquarePlus, Send, User as UserIcon } from 'lucide-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { AiResponse, AnswerText } from '../components/AiResponse';
+import { AnswerFeedback } from '../components/AnswerFeedback';
 import { PageHeader } from '../components/PageHeader';
 import { ExportButtons } from '../components/ExportButtons';
 import { useT } from '../contexts/I18nContext';
 import { chatService } from '../services';
 import { formatDateTime } from '../utils/format';
-import type { ChatMessageResponse } from '../types/api';
+import type { ChatMessageResponse, FeedbackRating } from '../types/api';
 
 interface Turn {
   id: string;
@@ -23,6 +24,14 @@ interface Turn {
   text: string;
   /** Present for a live answer; absent for one replayed from history. */
   response?: ChatMessageResponse;
+  /**
+   * The stored message, which is what a rating hangs off. Present for a live
+   * answer and for a replayed one alike, which is what lets both be rated; a
+   * failed request never became a message and has none.
+   */
+  messageId?: number;
+  /** A verdict this reader already recorded, replayed from history. */
+  feedback?: FeedbackRating | null;
   /** A failed request, which is the only thing shown in the error style. */
   isError?: boolean;
 }
@@ -64,6 +73,7 @@ export default function AiAssistantPage() {
           role: 'assistant',
           text: response.answer,
           response,
+          messageId: response.message_id ?? undefined,
         },
       ]);
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
@@ -104,6 +114,8 @@ export default function AiAssistantPage() {
         id: String(message.message_id),
         role: message.role,
         text: message.message,
+        messageId: message.message_id,
+        feedback: message.feedback,
       })),
     );
   }
@@ -218,6 +230,17 @@ export default function AiAssistantPage() {
                     // so its table has to come out of the text.
                     <AnswerText text={turn.text} withTables />
                   )}
+                  {/*
+                    Rated by message, not by payload — so a replayed answer is
+                    as rateable as a live one. A failed request never became a
+                    message, so it has no id and offers no thumbs.
+                  */}
+                  {turn.role === 'assistant' && !turn.isError && turn.messageId ? (
+                    <AnswerFeedback
+                      messageId={turn.messageId}
+                      initial={turn.feedback}
+                    />
+                  ) : null}
                 </div>
                 {turn.role === 'user' && (
                   <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700">

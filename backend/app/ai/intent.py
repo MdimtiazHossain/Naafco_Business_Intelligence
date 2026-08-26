@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .date_resolver import normalize_digits
+from .lexicon import EMPTY as LEXICON_EMPTY, Lexicon
 from .schemas import GroupBy, Intent
 
 BANGLA_RANGE = re.compile(r"[ঀ-৿]")
@@ -223,10 +224,32 @@ class IntentPrediction:
         return modifier in self.modifiers
 
 
-def _find_metric(text: str) -> str | None:
+def _with_learned(shipped: dict[str, tuple[str, ...]],
+                  learned: dict[str, str]) -> dict[str, tuple[str, ...]]:
+    """The shipped keyword table, widened by approved aliases.
+
+    A copy, never a mutation: these dictionaries are module-level and shared by
+    every request, so widening one in place would leak one deployment's
+    vocabulary into every future call and make the classifier depend on
+    whichever question ran first.
+
+    An approved phrase is *appended* to its target's keyword list, so where a
+    shipped keyword and a learned one both match the earliest mention still
+    wins — the same rule that already decided between two shipped keywords.
+    """
+    if not learned:
+        return shipped
+    widened = {key: list(values) for key, values in shipped.items()}
+    for phrase, target in learned.items():
+        if target in widened and phrase not in widened[target]:
+            widened[target].append(phrase)
+    return {key: tuple(values) for key, values in widened.items()}
+
+
+def _find_metric(text: str, learned: dict[str, str] | None = None) -> str | None:
     """The metric family with the earliest mention wins ties naturally."""
     best: tuple[int, str] | None = None
-    for metric, keywords in METRIC_KEYWORDS.items():
+    for metric, keywords in _with_learned(METRIC_KEYWORDS, learned or {}).items():
         for keyword in keywords:
             position = text.find(keyword)
             if position >= 0 and (best is None or position < best[0]):
@@ -234,9 +257,9 @@ def _find_metric(text: str) -> str | None:
     return best[1] if best else None
 
 
-def _find_modifiers(text: str) -> set[str]:
+def _find_modifiers(text: str, learned: dict[str, str] | None = None) -> set[str]:
     found = set()
-    for modifier, keywords in MODIFIERS.items():
+    for modifier, keywords in _with_learned(MODIFIERS, learned or {}).items():
         if any(keyword in text for keyword in keywords):
             found.add(modifier)
     return found
@@ -257,16 +280,42 @@ def _names_a_unit(text: str) -> bool:
     )
 
 
-def _find_group_by(text: str) -> list[GroupBy]:
+def _group_nouns(learned: dict[str, str] | None,
+                 ) -> tuple[tuple[GroupBy, tuple[str, ...]], ...]:
+    """``GROUP_BY_KEYWORDS`` widened by approved aliases, order preserved.
+
+    Order is load-bearing here in a way it is not for metrics: the table is
+    searched top-down and a matched phrase is consumed, which is what stops
+    "sub territory" being re-matched as "territory". A learned noun joins its
+    own group's list and changes nothing about that ordering.
+    """
+    if not learned:
+        return GROUP_BY_KEYWORDS
+    extra: dict[str, list[str]] = {}
+    for phrase, target in learned.items():
+        extra.setdefault(target, []).append(phrase)
+    return tuple(
+        (group, tuple(nouns) + tuple(
+            phrase for phrase in extra.get(group.value, [])
+            if phrase not in nouns
+        ))
+        for group, nouns in GROUP_BY_KEYWORDS
+    )
+
+
+def _find_group_by(text: str,
+                   learned: dict[str, str] | None = None) -> list[GroupBy]:
     """Grouping dimensions explicitly requested by the question.
 
     A dimension only counts when it carries a grouping marker ("-wise", "by X",
     a plural, "ভিত্তিক"). A bare noun — as in "Dhaka region-এর sales" — is left
-    alone so it stays a filter rather than becoming a breakdown.
+    alone so it stays a filter rather than becoming a breakdown. A learned noun
+    is held to the same rule: teaching a word does not make it a breakdown, it
+    makes it a word the existing rules can recognise.
     """
     found: list[GroupBy] = []
     consumed = text
-    for group, nouns in GROUP_BY_KEYWORDS:
+    for group, nouns in _group_nouns(learned):
         matched = False
         for noun in nouns:
             escaped = re.escape(noun)
@@ -285,14 +334,23 @@ def _find_group_by(text: str) -> list[GroupBy]:
     return found
 
 
-def detect_intent(message: str) -> IntentPrediction:
-    """Classify a question into a business intent."""
+def detect_intent(message: str,
+                  lexicon: Lexicon | None = None) -> IntentPrediction:
+    """Classify a question into a business intent.
+
+    ``lexicon`` carries the phrases a reviewer has approved. It is optional and
+    defaults to none, so this stays a pure function of its input for every
+    caller that has no session — a script, a test of the classifier itself —
+    and the shipped keyword tables remain the whole vocabulary unless somebody
+    has deliberately widened them.
+    """
     language = detect_language(message)
     text = normalize_digits(message).lower()
 
-    metric = _find_metric(text)
-    modifiers = _find_modifiers(text)
-    group_by = _find_group_by(text)
+    learned = lexicon or LEXICON_EMPTY
+    metric = _find_metric(text, learned.metrics)
+    modifiers = _find_modifiers(text, learned.modifiers)
+    group_by = _find_group_by(text, learned.group_by)
 
     # Naming a unit asks a volume question even without the word "volume":
     # "July মাসে কত LTR sales হয়েছে?" is about volume, not about taka.

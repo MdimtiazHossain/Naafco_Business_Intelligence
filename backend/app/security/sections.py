@@ -59,6 +59,7 @@ class SectionKey:
     TRANSACTION_DATA = "transaction_data"
     MAP = "map"
     MAP_SETTINGS = "map_settings"
+    AGENT_LEARNING = "agent_learning"
     ADMIN = "admin"
     SETTINGS = "settings"
 
@@ -361,6 +362,29 @@ SECTIONS: tuple[Section, ...] = (
         # off by default for everyone and on by default for administrators, and
         # an administrator can grant it to, say, a marketing lead who owns how
         # the map looks without handing over user administration.
+        default_allow=False,
+        default_roles=Role.ADMIN_ROLES,
+    ),
+    Section(
+        key=SectionKey.AGENT_LEARNING,
+        label="Agent Learning",
+        route="/admin/agent-learning",
+        group=GROUP_SYSTEM,
+        description=(
+            "Questions the assistant handled badly, and the vocabulary and "
+            "worked examples approved from them."
+        ),
+        api_prefixes=("/api/learning",),
+        actions=(Action.VIEW, Action.CREATE, Action.EDIT, Action.EXPORT),
+        # Reviewing vocabulary is a *business* judgement, not an administrative
+        # one: knowing that "chini" means a particular brand is knowledge a
+        # sales analyst has and a system administrator generally does not. So
+        # this is grantable on its own, off by default for everyone, and on by
+        # default for administrators — the same shape as Map Settings, and for
+        # the same reason.
+        #
+        # There is no DELETE. An approved mapping is retired, never removed, so
+        # the record of what the assistant was once taught survives being wrong.
         default_allow=False,
         default_roles=Role.ADMIN_ROLES,
     ),

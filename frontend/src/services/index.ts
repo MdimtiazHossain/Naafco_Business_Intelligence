@@ -26,6 +26,13 @@ import type {
   ChatHistoryMessage,
   ChatMessageResponse,
   Conversation,
+  AliasKind,
+  FeedbackRating,
+  FeedbackResponse,
+  LearningExample,
+  LearningOptions,
+  LearningSignal,
+  TermAlias,
   CustomersPage,
   DashboardResponse,
   DataCatalogue,
@@ -210,6 +217,101 @@ export const chatService = {
       tools: { name: string; description: string }[];
       examples: string[];
     }>('/api/chat/capabilities'),
+  /**
+   * Rate one answer, optionally saying what was expected instead.
+   *
+   * `expected` is free text and the backend sanitises it; `sanitized` comes
+   * back true when it had to, so the reader is told their words were edited
+   * rather than being shown one thing and having another stored.
+   */
+  feedback: (messageId: number, rating: FeedbackRating, expected?: string) =>
+    request<FeedbackResponse>('/api/chat/feedback', {
+      method: 'POST',
+      body: {
+        message_id: messageId,
+        rating,
+        ...(expected ? { expected } : {}),
+      },
+    }),
+};
+
+/**
+ * The agent-learning review queue and the vocabulary approved from it.
+ *
+ * Every write here is a deliberate act by a reviewer: `propose*` writes an
+ * inert row and `approve*` is a separate call, because the two halves are meant
+ * to be done by different people at different times.
+ */
+export const learningService = {
+  options: () => request<LearningOptions>('/api/learning/options'),
+
+  signals: (params: { signal_status?: string; signal_type?: string; limit?: number } = {}) =>
+    request<{ signals: LearningSignal[]; total: number }>('/api/learning/signals', {
+      params,
+    }),
+  setSignalStatus: (signalId: number, status: string) =>
+    request<LearningSignal>(`/api/learning/signals/${signalId}`, {
+      method: 'PATCH',
+      body: { status },
+    }),
+
+  aliases: (params: { alias_status?: string; alias_kind?: string } = {}) =>
+    request<{ aliases: TermAlias[]; total: number }>('/api/learning/aliases', {
+      params,
+    }),
+  proposeAlias: (body: {
+    phrase: string;
+    alias_kind: AliasKind;
+    entity_type?: string | null;
+    entity_code?: string | null;
+    target_keyword?: string | null;
+    language?: string | null;
+    signal_id?: number | null;
+    notes?: string | null;
+  }) => request<TermAlias>('/api/learning/aliases', { method: 'POST', body }),
+  approveAlias: (aliasId: number, replace = false) =>
+    request<TermAlias>(`/api/learning/aliases/${aliasId}/approve`, {
+      method: 'POST',
+      body: { replace },
+    }),
+  rejectAlias: (aliasId: number, reason?: string) =>
+    request<TermAlias>(`/api/learning/aliases/${aliasId}/reject`, {
+      method: 'POST',
+      body: { reason: reason ?? null },
+    }),
+  retireAlias: (aliasId: number, reason?: string) =>
+    request<TermAlias>(`/api/learning/aliases/${aliasId}/retire`, {
+      method: 'POST',
+      body: { reason: reason ?? null },
+    }),
+
+  proposeExample: (body: {
+    question: string;
+    tool_name: string;
+    intent?: string | null;
+    language?: string | null;
+    notes?: string | null;
+  }) => request<LearningExample>('/api/learning/examples', { method: 'POST', body }),
+
+  examples: (params: { example_status?: string } = {}) =>
+    request<{ examples: LearningExample[]; total: number }>('/api/learning/examples', {
+      params,
+    }),
+  approveExample: (exampleId: number, replace = false) =>
+    request<LearningExample>(`/api/learning/examples/${exampleId}/approve`, {
+      method: 'POST',
+      body: { replace },
+    }),
+  rejectExample: (exampleId: number, reason?: string) =>
+    request<LearningExample>(`/api/learning/examples/${exampleId}/reject`, {
+      method: 'POST',
+      body: { reason: reason ?? null },
+    }),
+  retireExample: (exampleId: number, reason?: string) =>
+    request<LearningExample>(`/api/learning/examples/${exampleId}/retire`, {
+      method: 'POST',
+      body: { reason: reason ?? null },
+    }),
 };
 
 export const alertService = {

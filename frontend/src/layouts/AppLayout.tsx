@@ -15,6 +15,7 @@ import {
   Boxes,
   ChevronDown,
   ClipboardCheck,
+  GraduationCap,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -92,6 +93,14 @@ const MAP_NAV: NavItem[] = [
     labelKey: 'nav.mapSettings',
     icon: <MapPin size={18} />,
     section: 'map_settings',
+  },
+  {
+    // Its own section too, so it appears for a reviewer who owns the
+    // assistant's vocabulary without being an administrator.
+    to: '/admin/agent-learning',
+    labelKey: 'nav.agentLearning',
+    icon: <GraduationCap size={18} />,
+    section: 'agent_learning',
   },
 ];
 

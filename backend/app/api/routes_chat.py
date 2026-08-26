@@ -17,10 +17,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from ..ai import feedback as feedback_service
 from ..ai.agent import BusinessIntelligenceAgent
+from ..ai.exceptions import AgentError
 from ..ai.llm import build_llm_client
 from ..ai.permission_filter import UserContext
-from ..ai.schemas import ChatRequest, ChatResponse
+from ..ai.schemas import (
+    ChatRequest,
+    ChatResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+)
 from ..ai.tools import REGISTRY
 from ..auth import audit
 from ..database.models_ai import AuditAction, ChatConversation
@@ -66,6 +73,49 @@ def chat(
     return response
 
 
+@router.post("/chat/feedback", response_model=FeedbackResponse)
+def submit_feedback(
+    request: FeedbackRequest,
+    http_request: Request,
+    session: Session = Depends(get_session),
+    user: UserContext = Depends(require_section(SectionKey.AI_ASSISTANT)),
+) -> FeedbackResponse:
+    """Rate one answer, optionally saying what was expected instead.
+
+    Guarded by the same section as asking the question, because rating an answer
+    is part of using the assistant rather than a separate privilege — and
+    ``ai.feedback`` still checks that the message belongs to a conversation this
+    caller owns, which no section grant can substitute for.
+    """
+    try:
+        result = feedback_service.record(session, user, request)
+        # Audited like the question itself: a verdict is an opinion about
+        # business data, and knowing who recorded one is part of being able to
+        # trust the vocabulary that is eventually approved from it.
+        audit.record(
+            session, action=AuditAction.AI_QUERY, user_id=user.user_id,
+            username=user.username, resource="chat_feedback",
+            ip_address=audit.client_ip(http_request),
+            detail={
+                "message_id": request.message_id,
+                "rating": request.rating,
+                "has_note": bool(request.expected),
+                "sanitized": result.sanitized,
+            },
+        )
+        session.commit()
+    except AgentError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error_code": exc.code, "message": exc.user_message},
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - internals never reach the caller
+        session.rollback()
+        raise internal_error(exc, "chat_feedback") from exc
+    return result
+
+
 @router.get("/chat/conversations")
 def list_conversations(
     limit: int = Query(20, ge=1, le=100),
@@ -106,6 +156,14 @@ def get_conversation(
         # A conversation belonging to someone else is indistinguishable from one
         # that does not exist.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found.")
+    # The caller's own verdicts, so a reloaded conversation shows the thumbs
+    # they actually pressed. Without this the control would come back blank and
+    # invite a second vote on an answer already rated.
+    ratings = feedback_service.for_messages(
+        session, user, [m["message_id"] for m in messages if m.get("message_id")]
+    )
+    for entry in messages:
+        entry["feedback"] = ratings.get(entry.get("message_id"))
     return {"conversation_id": conversation_id, "messages": messages}
 
 

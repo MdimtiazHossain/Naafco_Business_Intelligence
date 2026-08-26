@@ -497,6 +497,15 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     conversation_id: str
+    #: The stored assistant turn this answer became.
+    #:
+    #: ``agent._persist`` has always returned it; until feedback existed nothing
+    #: asked for it, so it never reached the caller and a live answer could not
+    #: be referred back to. It is the same identifier
+    #: ``conversation_history`` already exposes for a replayed turn, so a client
+    #: names a message the same way whether it just arrived or was loaded from
+    #: history. Optional because an answer that was never persisted has none.
+    message_id: int | None = None
     intent: Intent
     answer: str
     data: dict[str, Any] = Field(default_factory=dict)
@@ -510,6 +519,36 @@ class ChatResponse(BaseModel):
     language: str = "en"
     tools_used: list[str] = Field(default_factory=list)
     elapsed_ms: int = 0
+
+
+class FeedbackRequest(BaseModel):
+    """A reader's verdict on one answer, and optionally what they expected.
+
+    ``extra="forbid"`` like every other input schema here: a client that sends a
+    field this does not declare is refused rather than quietly ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: int
+    rating: Literal["UP", "DOWN"]
+    #: Free text, and the only free text a reader can put into the learning
+    #: tables. Bounded here so an unbounded body cannot reach the database, and
+    #: sanitised in ``ai.feedback`` before it is stored.
+    expected: str | None = Field(default=None, max_length=2000)
+
+
+class FeedbackResponse(BaseModel):
+    """What was recorded, so the client can render the current state."""
+
+    message_id: int
+    rating: str
+    #: True when this replaced an earlier verdict from the same reader.
+    updated: bool = False
+    #: Set when the ``expected`` text carried injection-style instructions and
+    #: was stripped. Surfaced so the client can say the text was edited rather
+    #: than silently storing something different from what was typed.
+    sanitized: bool = False
 
 
 class ExportRequest(BaseModel):
@@ -555,6 +594,8 @@ __all__ = [
     "ToolResult",
     "ChatRequest",
     "ChatResponse",
+    "FeedbackRequest",
+    "FeedbackResponse",
     "ExportRequest",
     "MAX_LIMIT",
     "DEFAULT_LIMIT",

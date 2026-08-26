@@ -21,6 +21,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from ..database.models_ai import ChatConversation, ChatMessage, ChatToolCall
+from . import mining
 from .exceptions import AgentError
 from .llm import LLMClient, build_llm_client
 from .orchestrator import AgentAnswer, ConversationContext, Orchestrator
@@ -144,6 +145,18 @@ class BusinessIntelligenceAgent:
         if not conversation.title:
             conversation.title = message[:120]
         self.session.flush()
+
+        # Whatever this turn has to teach, counted into the review queue. Each
+        # write runs in its own SAVEPOINT inside ``mining.record``; this guard
+        # covers the rest of the call, so that no failure in an analytics
+        # side-effect — not a broken table, not a bug in the mining rules — can
+        # cost a user the answer they asked for.
+        try:
+            mining.mine_turn(self.session, message, answer)
+        except Exception:  # noqa: BLE001 - mining never breaks a conversation
+            logger.exception("signal mining failed for conversation %s",
+                             conversation.conversation_id)
+
         return assistant_row.message_id
 
     # -- public API ---------------------------------------------------------
@@ -157,7 +170,7 @@ class BusinessIntelligenceAgent:
             answer = orchestrator.answer(message, state.context, state.history)
         except AgentError as exc:
             answer = AgentAnswer(answer=exc.user_message, intent=Intent.UNKNOWN,
-                                 error_code=exc.code)
+                                 error_code=exc.code, error_details=exc.details)
         except Exception as exc:  # noqa: BLE001 - never surface internals
             logger.exception("agent failed for conversation %s",
                              state.conversation.conversation_id)
@@ -184,6 +197,7 @@ class BusinessIntelligenceAgent:
 
         return ChatResponse(
             conversation_id=state.conversation.conversation_id,
+            message_id=message_id,
             intent=answer.intent,
             answer=answer.answer,
             data=self._payload(answer),

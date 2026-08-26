@@ -289,6 +289,19 @@ class AuditAction:
     RECORD_UNVOIDED = "RECORD_UNVOIDED"
     RECORD_BULK_CHANGE = "RECORD_BULK_CHANGE"
 
+    # --- Agent learning: the review queue and what is approved from it -----
+    #
+    # Their own actions rather than ``ADMIN_CHANGE``, for the reason
+    # ``DATA_IMPORT_CANCELLED`` gives above: an approved alias changes how the
+    # assistant reads a question for every user, and "who decided that, and
+    # when" should be answerable from the audit log without reading the row.
+    # One set for both aliases and examples — ``resource`` already says which.
+    AGENT_SIGNAL_TRIAGED = "AGENT_SIGNAL_TRIAGED"
+    AGENT_LEARNING_PROPOSED = "AGENT_LEARNING_PROPOSED"
+    AGENT_LEARNING_APPROVED = "AGENT_LEARNING_APPROVED"
+    AGENT_LEARNING_REJECTED = "AGENT_LEARNING_REJECTED"
+    AGENT_LEARNING_RETIRED = "AGENT_LEARNING_RETIRED"
+
 
 class Notification(Base):
     """A message for one user, shown in the header dropdown.

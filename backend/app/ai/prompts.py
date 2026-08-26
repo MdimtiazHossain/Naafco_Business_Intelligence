@@ -10,7 +10,7 @@ or invent a number that survives validation.
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from typing import Any, Sequence
 
 SYSTEM_PROMPT = """\
 You are the company's Business Intelligence Assistant.
@@ -118,6 +118,42 @@ question is explicitly about individual material codes, item codes or product
 codes.
 """
 
+#: How many approved examples are shown to the model at most.
+#:
+#: A planner prompt competes for the same context as the conversation history,
+#: and a long list of near-identical questions teaches less than a short one.
+#: The cap keeps the prompt bounded however large the bank grows.
+MAX_PLANNER_EXAMPLES = 12
+
+
+def planner_examples(examples: Sequence[Any],
+                     limit: int = MAX_PLANNER_EXAMPLES) -> str:
+    """Approved question-to-tool pairs, as a block to append to the planner.
+
+    Illustration only. The model still chooses from the intent's allow-list and
+    its arguments are still validated against the tool's schema, so a poor
+    example can make it pick a less apt *report* and can never let it reach data
+    or produce a figure it otherwise could not.
+
+    Only the question and the tool are shown. The stored arguments are left out
+    on purpose: they carry one past caller's dates and filters, and a model
+    shown them tends to copy them rather than read the question in front of it.
+    """
+    lines = [
+        f'- "{question}" -> {example.tool_name}'
+        for example in list(examples)[:limit]
+        if (question := (example.question or "").strip())
+    ]
+    if not lines:
+        return ""
+    return "\n".join([
+        "",
+        "Worked examples approved by a reviewer. Match the tool choice, not the",
+        "argument values — fill those from the question in front of you:",
+        *lines,
+    ])
+
+
 ANSWER_PROMPT = """\
 Write the answer from the tool output supplied below.
 
@@ -213,6 +249,8 @@ def conversation_messages(system: str, history: Sequence[dict[str, str]],
 __all__ = [
     "SYSTEM_PROMPT",
     "PLANNER_PROMPT",
+    "MAX_PLANNER_EXAMPLES",
+    "planner_examples",
     "ANSWER_PROMPT",
     "INJECTION_PATTERNS",
     "INJECTION_REFUSAL",

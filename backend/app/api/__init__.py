@@ -14,6 +14,7 @@ from .routes_data_upload import router as data_upload_router
 from .routes_etl import router as etl_router
 from .routes_export import router as export_router
 from .routes_import import router as import_router
+from .routes_learning import router as learning_router
 from .routes_map import router as map_router
 from .routes_masterdata import router as master_data_router
 from .routes_pages import router as pages_router
@@ -39,6 +40,7 @@ ALL_ROUTERS = (
     data_management_router,
     map_router,
     admin_router,
+    learning_router,
     whatsapp_router,
 )
 
