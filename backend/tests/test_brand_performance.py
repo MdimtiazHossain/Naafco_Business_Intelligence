@@ -1088,6 +1088,34 @@ def test_material_analysis_defaults_to_material_level(client):
     assert {row["code"] for row in body["materials"]["rows"]} >= {"SKU001", "SKU003"}
 
 
+def test_material_analysis_cards_grow_and_rank_on_volume(client):
+    """The two ranking cards measure volume; the table above them still does not.
+
+    The Top 10 and Bottom 10 cards state a volume, so the growth beside it is
+    that volume's growth and the order is by that volume — a growth column is
+    read as the growth of the column it sits next to, and a "top ten" as the top
+    ten of what the card shows. The main table keeps net sales and keeps growing
+    on it, which is why the two growths travel as separate fields.
+    """
+    from app.etl.transforms import growth_percent
+
+    token = login(client, "ceo")
+    body = client.get(f"/api/pages/materials?{HTTP_WINDOW}", headers=auth(token)).json()
+
+    rows = body["materials"]["rows"]
+    assert rows
+    for row in rows:
+        by_amount = growth_percent(row["net_sales"], row["previous_net_sales"])
+        assert row["growth_percent"] == (None if by_amount is None
+                                         else pytest.approx(float(by_amount)))
+        by_volume = growth_percent(row["volume"], row["previous_volume"])
+        assert row["volume_growth_percent"] == (None if by_volume is None
+                                                else pytest.approx(float(by_volume)))
+
+    ranked = [row["volume"] or 0 for row in body["top"]]
+    assert ranked == sorted(ranked, reverse=True)
+
+
 def test_material_analysis_rejects_an_unknown_level(client):
     token = login(client, "ceo")
     response = client.get(f"/api/pages/materials?level=colour&{HTTP_WINDOW}",

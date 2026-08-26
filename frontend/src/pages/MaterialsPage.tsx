@@ -229,7 +229,13 @@ export default function MaterialsPage() {
           )}
 
           <Section title={t('materials.top10')}>
-            <CategoryBarChart data={data?.top ?? []} xKey="label" yKey="net_sales" />
+            <CategoryBarChart
+              data={data?.top ?? []}
+              xKey="label"
+              yKey="volume"
+              valueKind="quantity"
+              valueLabel={t('sales.volume')}
+            />
           </Section>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -238,8 +244,8 @@ export default function MaterialsPage() {
                 rows={data?.top ?? []}
                 columns={[
                   { key: 'label', header: nameHeader },
-                  { key: 'net_sales', header: t('sales.netSales') },
-                  { key: 'growth_percent', header: t('common.growth') },
+                  { key: 'volume', header: t('sales.volume') },
+                  { key: 'volume_growth_percent', header: t('common.growth') },
                 ]}
                 searchable={false}
                 pageSize={10}
@@ -251,8 +257,8 @@ export default function MaterialsPage() {
                 rows={data?.bottom ?? []}
                 columns={[
                   { key: 'label', header: nameHeader },
-                  { key: 'net_sales', header: t('sales.netSales') },
-                  { key: 'growth_percent', header: t('common.growth') },
+                  { key: 'volume', header: t('sales.volume') },
+                  { key: 'volume_growth_percent', header: t('common.growth') },
                 ]}
                 searchable={false}
                 pageSize={10}

@@ -342,8 +342,19 @@ def materials_page(
                 **row,
                 "previous_net_sales": before.get("net_sales"),
                 "growth_percent": _growth(row.get("net_sales"), before.get("net_sales")),
+                # A second growth, of volume, for the Top 10 and Bottom 10 cards
+                # alone: those two state volume, and a growth column beside a
+                # volume column is read as that volume's growth whatever it was
+                # computed from. The table above them still reports net sales
+                # and still grows on it.
+                "previous_volume": before.get("volume"),
+                "volume_growth_percent": _growth(row.get("volume"),
+                                                 before.get("volume")),
             })
-        ranked = sorted(rows, key=lambda r: r.get("net_sales") or 0, reverse=True)
+        # Those two cards also rank by what they show: a "top ten" ordered by an
+        # amount the card does not display would put rows in an order nothing on
+        # screen explains.
+        ranked = sorted(rows, key=lambda r: r.get("volume") or 0, reverse=True)
         return {
             "level": level,
             "levels": list(MATERIAL_ANALYSIS_LEVELS),
