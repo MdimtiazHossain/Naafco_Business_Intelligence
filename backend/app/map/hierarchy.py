@@ -30,7 +30,7 @@ the map.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -50,6 +50,18 @@ from ..database.models import (
     DimZone,
 )
 from ..database.models_warehouse import DimSalesForce
+
+#: One level's requested codes, however a caller spelled them.
+#:
+#: A map filter used to be one code per level, and most callers still send one.
+#: Accepting a bare string as well as a sequence is what lets the two live side
+#: by side: every existing call keeps working unchanged and reads as the
+#: one-element case of the same thing, which is the same compatibility
+#: ``scope_filters`` already relies on for its repeated query parameters.
+FilterValue = str | Sequence[str] | None
+
+#: A hierarchy filter, keyed by *level* ("territory") rather than by column.
+HierarchyFilters = Mapping[str, FilterValue]
 
 #: The organisational chain, shallowest first. Mirrors ``etl.mapping``.
 ORG_CHAIN: tuple[str, ...] = (
@@ -95,6 +107,23 @@ def code_field(level: str) -> str:
     return _LEVELS[level][1] if level in _LEVELS else f"{level}_code"
 
 
+def filter_codes(value: FilterValue) -> list[str]:
+    """One level's codes, from either spelling, de-duplicated and trimmed.
+
+    De-duplicating matters because a repeated parameter is easy to send twice
+    and ``IN ('T1', 'T1')`` is noise; order is preserved so a diagnostic reads
+    back in the order the caller asked. Blanks are dropped rather than matched,
+    since ``?territory_code=`` means "no territory filter", not "a territory
+    whose code is empty" — the same rule ``scope_filters`` applies.
+    """
+    if value is None:
+        return []
+    items: Sequence[Any] = [value] if isinstance(value, str) else value
+    return list(dict.fromkeys(
+        text for text in (str(item).strip() for item in items) if text
+    ))
+
+
 @dataclass
 class HierarchyNode:
     """One organisational entity inside the resolved scope."""
@@ -119,6 +148,15 @@ class OrgScope:
     nodes: list[HierarchyNode] = field(default_factory=list)
     #: The deepest level the user actually filtered on, for diagnostics.
     selected_level: str | None = None
+    #: Every code selected at that level.
+    selected_codes: tuple[str, ...] = ()
+    #: That level's code when exactly one was selected, and ``None`` otherwise.
+    #:
+    #: Kept beside :attr:`selected_codes` rather than replaced by it because a
+    #: single selection is still the common case and every existing reader
+    #: expects one code. Left ``None`` for a multi-code selection on purpose: an
+    #: arbitrary first code would read as *the* selection and misdescribe a scope
+    #: the caller can see in full one attribute over.
     selected_code: str | None = None
     #: True when a filter matched nothing at all.
     empty: bool = False
@@ -166,31 +204,46 @@ def _path_query():
     return statement
 
 
-def resolve_org_scope(session: Session, filters: dict[str, str | None]) -> OrgScope:
+def resolve_org_scope(session: Session, filters: HierarchyFilters) -> OrgScope:
     """Turn organisational filters into every code in scope, at every level.
 
-    Multiple filters intersect: a row must satisfy *all* of them, so
+    Different levels **intersect**: a row must satisfy *all* of them, so
     ``region=Dhaka & territory=T001`` yields T001 only if T001 really sits in
     Dhaka — and yields nothing if it does not.
+
+    Several codes at the *same* level **union**: ``territory=T001&territory=T002``
+    means "either", which is what a multi-select filter says and what an ``IN``
+    does everywhere else in this codebase. The two rules compose, so
+    ``region=Dhaka & territory=T001,T002`` is whichever of the two sit in Dhaka.
+    A single code is the one-element case of the union, so a filter written
+    before this accepted several resolves to exactly the scope it always did.
     """
     supplied = {
-        level: str(value).strip()
-        for level, value in (filters or {}).items()
-        if level in _LEVELS and value not in (None, "")
+        level: codes
+        for level, codes in (
+            (level, filter_codes(value))
+            for level, value in (filters or {}).items()
+            if level in _LEVELS
+        )
+        if codes
     }
 
     rows = session.execute(_path_query()).mappings().all()
 
+    # Membership rather than equality — the one-element case is the same test.
+    wanted = {level: set(codes) for level, codes in supplied.items()}
     matching = [
         row for row in rows
-        if all(row.get(f"{level}_code") == code for level, code in supplied.items())
+        if all(row.get(f"{level}_code") in codes for level, codes in wanted.items())
     ]
 
     scope = OrgScope()
     if supplied:
         deepest = max(supplied, key=lambda level: ORG_CHAIN.index(level))
         scope.selected_level = deepest
-        scope.selected_code = supplied[deepest]
+        scope.selected_codes = tuple(supplied[deepest])
+        if len(scope.selected_codes) == 1:
+            scope.selected_code = scope.selected_codes[0]
     scope.empty = bool(supplied) and not matching
 
     seen: set[tuple[str, str]] = set()
@@ -446,40 +499,61 @@ def _add_master_sales_force(session: Session, scope: OrgScope,
 
 
 def apply_data_scope(user: UserContext, session: Session,
-                     filters: dict[str, str | None]) -> dict[str, str | None]:
+                     filters: HierarchyFilters) -> dict[str, list[str]]:
     """Fold the caller's data scope into the requested filters.
 
     Reuses :class:`PermissionFilter` rather than re-deriving authorisation, so
     the map obeys exactly the rules every report does: an out-of-scope code is
     refused outright, and an unfiltered request is narrowed to the scope instead
-    of returning the whole company.
+    of returning the whole company. Every level is refused or kept as a whole —
+    asking for two territories when one is out of scope is refused, not quietly
+    reduced to the one that was allowed.
+
+    Returns a list per level whatever the caller sent, so the shape a
+    multi-select filter needs is the only shape downstream has to read.
     """
     permissions = PermissionFilter(session, user)
     requested = ScopeFilters()
     from ..ai.permission_filter import FILTER_FIELD_BY_LEVEL
 
-    for level, value in (filters or {}).items():
-        column = code_field(level)
-        field_name = FILTER_FIELD_BY_LEVEL.get(column)
-        if field_name and value:
-            setattr(requested, field_name, [str(value)])
+    merged = {
+        level: codes
+        for level, codes in (
+            (level, filter_codes(value))
+            for level, value in (filters or {}).items()
+        )
+        if codes
+    }
+
+    for level, codes in merged.items():
+        field_name = FILTER_FIELD_BY_LEVEL.get(code_field(level))
+        if field_name:
+            setattr(requested, field_name, list(codes))
 
     # Raises PermissionDeniedError for anything outside the user's scope.
     enforced = permissions.enforce(requested)
 
-    merged = dict(filters or {})
     for column, field_name in FILTER_FIELD_BY_LEVEL.items():
         values = getattr(enforced, field_name, None)
-        if values and not merged.get(column.removesuffix("_code")):
-            # A scope covering several codes cannot be pinned to one filter;
-            # the resolver still narrows through the ancestor chain.
-            if len(values) == 1:
-                merged[column.removesuffix("_code")] = values[0]
+        level = column.removesuffix("_code")
+        if values and not merged.get(level):
+            # Every in-scope code, not just a lone one. This used to pin a
+            # level only when the scope held exactly one code, because a filter
+            # held one code per level and several could not be expressed — so a
+            # user whose scope covered three territories and who filtered on
+            # nothing had that level left unset entirely. A list can say all
+            # three, which narrows to exactly what they may see. It cannot widen
+            # anything: these codes come back from ``enforce``, so they are the
+            # caller's own scope by construction.
+            merged[level] = list(values)
     return merged
 
 
 __all__ = [
     "ORG_CHAIN",
+    "FilterValue",
+    "HierarchyFilters",
+    "filter_codes",
     "BUSINESS_TYPES",
     "ALL_TYPES",
     "HierarchyNode",

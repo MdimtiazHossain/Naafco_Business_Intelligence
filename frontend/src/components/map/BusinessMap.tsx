@@ -43,7 +43,6 @@ import {
   IDS,
   MASK_PAINT,
   type BoundaryLevelKey,
-  type MapModeKey,
 } from './mapConfig';
 import { GeoDataUnavailable, loadGeoJson, type GeoCollection } from './geoData';
 import {
@@ -54,7 +53,7 @@ import {
 } from './businessGeoJson';
 import { MapControls } from './MapControls';
 import { MapPopup, type PopupSubject } from './MapPopup';
-import type { MapLayer, ResolvedMarkerConfig } from '../../types/api';
+import type { ResolvedMarkerConfig } from '../../types/api';
 
 /** One aggregated point, ready to draw. */
 export interface BubbleDatum {
@@ -83,7 +82,6 @@ export interface BusinessMapProps {
   theme: 'light' | 'dark';
   /** Administrative levels currently drawn, outermost first. */
   activeLevels: readonly BoundaryLevelKey[];
-  onLevelsChange: (levels: BoundaryLevelKey[]) => void;
   /** Appearance per level, from `map_area_styles` via the API. */
   areaStyles: Partial<Record<BoundaryLevelKey, AreaStyle>>;
   /** Business entities as GeoJSON, from the business data adapter. */
@@ -120,19 +118,10 @@ export interface BusinessMapProps {
    * click targets and the popups are untouched at any value.
    */
   markerEmphasis: number;
-  /* Passed straight through to the in-map controls. `BusinessMap` owns the map,
-     not the workspace, so it forwards these without reading them. */
-  mode: MapModeKey;
-  onModeChange: (mode: MapModeKey) => void;
-  availableModes: ReadonlyMap<string, boolean>;
-  salesLevel: MapLayer;
-  onSalesLevelChange: (level: MapLayer) => void;
-  salesLevels: readonly { key: MapLayer; labelKey: string; count: number }[];
   /** Dim everything outside Bangladesh. */
   showMask: boolean;
   showCapitals: boolean;
   showAdminLines: boolean;
-  onReferenceChange: (next: { capitals: boolean; lines: boolean; mask: boolean }) => void;
   onEntitySelect: (properties: EntityFeatureProperties) => void;
   onAreaSelect: (level: BoundaryLevelKey, code: string, name: string) => void;
   /** Non-fatal problems, surfaced by the page rather than swallowed. */
@@ -193,7 +182,6 @@ export function BusinessMap({
   styleUrl,
   theme,
   activeLevels,
-  onLevelsChange,
   areaStyles,
   entities,
   markers,
@@ -201,16 +189,9 @@ export function BusinessMap({
   choropleth,
   bubbles,
   markerEmphasis,
-  mode,
-  onModeChange,
-  availableModes,
-  salesLevel,
-  onSalesLevelChange,
-  salesLevels,
   showMask,
   showCapitals,
   showAdminLines,
-  onReferenceChange,
   onEntitySelect,
   onAreaSelect,
   onError,
@@ -1002,20 +983,8 @@ export function BusinessMap({
       <div ref={containerRef} className="h-full w-full" data-testid="maplibre-container" />
 
       <MapControls
-        activeLevels={activeLevels}
-        onLevelsChange={onLevelsChange}
-        showMask={showMask}
-        showCapitals={showCapitals}
-        showAdminLines={showAdminLines}
-        onReferenceChange={onReferenceChange}
         onFitCountry={fitBangladesh}
         onFitData={hasEntities ? fitData : undefined}
-        mode={mode}
-        onModeChange={onModeChange}
-        availableModes={availableModes}
-        salesLevel={salesLevel}
-        onSalesLevelChange={onSalesLevelChange}
-        salesLevels={salesLevels}
       />
 
       {popupHostRef.current && popup

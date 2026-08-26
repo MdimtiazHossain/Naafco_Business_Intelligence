@@ -348,22 +348,33 @@ vi.mock('../contexts/AuthContext', () => ({
   }),
 }));
 
-// The map no longer renders GlobalFilterBar; the mock stays because other
-// imports in the tree may still reach for it.
+// The map takes the global filter bar like every other page; the stub keeps
+// these tests about the map rather than about the bar's own controls.
 vi.mock('../filters/GlobalFilterBar', () => ({
   GlobalFilterBar: () => <div data-testid="filter-bar" />,
 }));
 
-// The map keeps the application's own period control, so the filter mock has to
-// supply the shape `DateFilter` reads — not just the query it builds.
-vi.mock('../contexts/FilterContext', () => ({
+// Only the hook is stubbed. The rest of the module — `FILTER_LABELS` and the
+// level tables the page reads — comes through as itself, because a second copy
+// of those in here would pass while the real ones drifted. The stub supplies
+// every field the page uses: the period `DateFilter` reads, the query it sends,
+// and the filter state and setter the ranking panel drills with.
+vi.mock('../contexts/FilterContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../contexts/FilterContext')>()),
   useFilters: () => ({
     query: { period: 'THIS_MONTH' },
     period: { period: 'THIS_MONTH', date_from: null, date_to: null },
     setPeriod: () => {},
+    filters: {},
+    setFilterResolved: () => {},
   }),
   FilterProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
+
+const RANKING_ROWS = [
+  { code: 'R01', label: 'Dhaka Region', net_sales: 15_000_000 },
+  { code: 'R02', label: 'Chattogram Region', net_sales: 7_200_000 },
+];
 
 /** The configured blue. Nothing in the frontend may hardcode it. */
 const AREA_STYLE = {
@@ -495,9 +506,8 @@ function wrap(ui: React.ReactNode, route = '/map') {
       <I18nProvider>
         <ThemeProvider>
           <MemoryRouter initialEntries={[route]}>
-            {/* The map now uses the application's own DateFilter for period,
-                which reads FilterContext — the same provider App.tsx puts above
-                every page. */}
+            {/* The bar the map renders reads FilterContext — the same provider
+                App.tsx puts above every page. */}
             <FilterProvider>{ui}</FilterProvider>
           </MemoryRouter>
         </ThemeProvider>
@@ -553,6 +563,22 @@ describe('MapPage', () => {
     areasSpy = vi
       .spyOn(services.mapService, 'areas')
       .mockResolvedValue(AREA_METRICS as never);
+    // The ranking panel reads the Performance page's endpoint. Stubbed here for
+    // the same reason the map's own calls are: these tests are about the map.
+    vi.spyOn(services.performanceService, 'page').mockResolvedValue({
+      level: 'region',
+      next_level: 'area',
+      drill_chain: ['zone', 'region', 'area', 'unit', 'territory', 'sub_territory'],
+      performance: { rows: RANKING_ROWS, row_count: RANKING_ROWS.length,
+                     truncated: false, notes: [] },
+      achievement: {
+        rows: [{ code: 'R01', achievement_percent: 88.4 }],
+        row_count: 1, truncated: false, notes: [],
+        // Deliberately not the sum of the rows above: these are the scope's own
+        // totals as the server states them, and the page must show these.
+        values: { target: 24_000_000, actual: 21_000_000, achievement_percent: 87.5 },
+      },
+    } as never);
     vi.spyOn(services.markerService, 'legend').mockResolvedValue({
       generation: 1,
       entries: [
@@ -765,6 +791,74 @@ describe('MapPage', () => {
 
     // Declared, listed, and inert because the platform holds no such data.
     expect(byValue.promotion).toBe(true);
+  });
+
+  it('takes the global filter bar, and keeps its own controls out of the map', async () => {
+    // The map sends the global filters already — they go into all three of its
+    // queries — so the bar is the control for a scope the endpoints have always
+    // honoured. Everything the reader *sets* now lives in the page: what is
+    // drawn, at what grain, and which administrative levels are on. What is
+    // left over the map is only the two framings, which act on the camera and
+    // on nothing else.
+    const { default: MapPage } = await import('../pages/MapPage');
+    wrap(<MapPage />);
+
+    expect(await screen.findByTestId('filter-bar')).toBeInTheDocument();
+
+    // The overlay only exists once the map itself has mounted.
+    await mountedMap();
+    const overlay = screen
+      .getByRole('button', { name: 'Fit to Bangladesh' })
+      .closest('.absolute');
+    expect(overlay).not.toBeNull();
+    for (const control of [
+      screen.getByLabelText('Map view'),
+      screen.getByLabelText('Sales level'),
+      screen.getByLabelText('Division'),
+    ]) {
+      expect(overlay).not.toContainElement(control);
+    }
+  });
+
+  it('shows the scope totals the server states, and derives none of them', async () => {
+    // The strip's money and percentage are `get_target_achievement`'s own
+    // totals. The stub's totals are deliberately not the sum of the rows beside
+    // them, so a browser-side sum would show a different number and fail here —
+    // which is the whole point: no business figure is computed in the browser.
+    const { default: MapPage } = await import('../pages/MapPage');
+    wrap(<MapPage />);
+
+    expect(await screen.findByText('87.5%')).toBeInTheDocument();
+    expect(screen.getByText('৳2.10 Cr')).toBeInTheDocument();
+    expect(screen.getByText('৳2.40 Cr')).toBeInTheDocument();
+  });
+
+  it('offers achievement bands only where the map measures achievement', async () => {
+    // A mode that measures nothing has no band to filter on, and a control that
+    // silently did nothing would be worse than no control at all.
+    const { default: MapPage } = await import('../pages/MapPage');
+
+    wrap(<MapPage />, '/map');
+    await mountedMap();
+    expect(screen.queryByText('Achievement bands')).toBeNull();
+
+    cleanup();
+    wrap(<MapPage />, '/map?mapMode=performance');
+    expect(await screen.findByText('Achievement bands')).toBeInTheDocument();
+
+    const chips = ['Below 50%', '50-70%', '70-90%', '90-100%', 'Above 100%'].map(
+      (label) => screen.getByRole('button', { name: label }),
+    );
+    expect(chips.every((chip) => chip.getAttribute('aria-pressed') === 'true')).toBe(true);
+
+    fireEvent.click(chips[0]);
+    expect(chips[0]).toHaveAttribute('aria-pressed', 'false');
+
+    // The last one on cannot be switched off: an empty map with every chip dark
+    // reads as "no data" rather than as a filter somebody set.
+    chips.slice(1).forEach((chip) => fireEvent.click(chip));
+    expect(chips.filter((chip) => chip.getAttribute('aria-pressed') === 'true'))
+      .toHaveLength(1);
   });
 
   it('reads the map mode from the URL, and falls back when it is not a mode', async () => {

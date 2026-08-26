@@ -33,7 +33,10 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { PageHeader, Section } from '../components/PageHeader';
 import { CardSkeleton, EmptyState, QueryState } from '../components/States';
 import { BusinessMap, type AreaMetric } from '../components/map/BusinessMap';
+import { MapBandChips } from '../components/map/MapBandChips';
+import { MapLayerPanel } from '../components/map/MapLayerPanel';
 import { MapLegend } from '../components/map/MapLegend';
+import { MapRanking, bandColor, type RankRow } from '../components/map/MapRanking';
 import {
   ACHIEVEMENT_BANDS,
   BASEMAP_STYLES,
@@ -47,14 +50,14 @@ import {
   buildEntityCollection,
   type EntityFeatureProperties,
 } from '../components/map/businessGeoJson';
-import { DateFilter } from '../filters/DateFilter';
+import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { useAuth } from '../contexts/AuthContext';
-import { useFilters } from '../contexts/FilterContext';
+import { FILTER_LABELS, useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { mapService, markerService } from '../services';
-import { formatAmount, formatCount } from '../utils/format';
-import type { AreaStyle, MapLayer } from '../types/api';
+import { mapService, markerService, performanceService } from '../services';
+import { formatAmount, formatCount, formatPercent } from '../utils/format';
+import type { AreaStyle, FilterLevel, MapLayer } from '../types/api';
 
 interface Crumb {
   level: MapLayer;
@@ -162,6 +165,9 @@ const MUTED_MARKERS = 0.22;
 const BUBBLE_MIN = 5;
 const BUBBLE_MAX = 34;
 
+/** Every achievement band, derived so the two can never fall out of step. */
+const ALL_BANDS = ACHIEVEMENT_BANDS.map((band) => band.labelKey);
+
 /** A point the server could not score: drawn, but in no achievement colour. */
 const UNSCORED_BUBBLE = '#94A3B8';
 
@@ -194,7 +200,7 @@ export default function MapPage() {
   const focus = useMemo(() => parseFocus(searchParams.get('focus')), [searchParams]);
   // `query` already carries the global filters plus the resolved period, which
   // is exactly what every other report sends.
-  const { query: filterQuery } = useFilters();
+  const { query: filterQuery, filters, setFilterResolved } = useFilters();
 
   /**
    * The map mode, which is what the reader is looking *for*.
@@ -445,6 +451,172 @@ export default function MapPage() {
    */
   const choropleth = null;
 
+  /**
+   * Which achievement bands are drawn.
+   *
+   * In the URL beside the mode, because it changes what the map shows and a map
+   * someone is reading should survive a refresh. Omitted while every band is on,
+   * so the common case leaves no parameter behind. A stale or hand-typed value
+   * naming no band we know falls back to all of them rather than emptying the
+   * map — the same treatment every other parameter on this page gets.
+   */
+  const activeBands = useMemo(() => {
+    const raw = searchParams.get('bands');
+    if (!raw) return new Set(ALL_BANDS);
+    const wanted = new Set(raw.split(',').filter((key) => ALL_BANDS.includes(key)));
+    return wanted.size > 0 ? wanted : new Set(ALL_BANDS);
+  }, [searchParams]);
+
+  const setActiveBands = useCallback(
+    (next: Set<string>) => {
+      setSearchParams(
+        (params) => {
+          const updated = new URLSearchParams(params);
+          if (next.size === ALL_BANDS.length) updated.delete('bands');
+          else updated.set('bands', ALL_BANDS.filter((key) => next.has(key)).join(','));
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  /**
+   * The bubbles the band chips leave on the map.
+   *
+   * A filter over what is drawn, never over what was measured: the figures in
+   * the panels and the ranking still describe the whole scope, because hiding a
+   * band is a way of looking rather than a narrowing of the report. A point the
+   * server could not score has no band and stays — it has no chip that could
+   * bring it back, so nothing may hide it.
+   */
+  const visibleBubbles = useMemo(() => {
+    if (!bubbles || modeSpec.metric !== 'achievement') return bubbles;
+    if (activeBands.size === ALL_BANDS.length) return bubbles;
+    return bubbles.filter((point) => {
+      const achieved = point.achievement;
+      if (achieved === null) return true;
+      const band = ACHIEVEMENT_BANDS.find((b) => b.max === null || achieved < b.max);
+      return band ? activeBands.has(band.labelKey) : true;
+    });
+  }, [bubbles, modeSpec.metric, activeBands]);
+
+  /* ----------------------------------------------------------------- kpis */
+
+  /**
+   * The scope's own totals, and where the money figures on this page come from.
+   *
+   * `get_target_achievement` publishes them in `values`: target, actual and the
+   * achievement between them, summed over every group in scope by the server —
+   * `target_vs_actual` aggregates at `MAX_ROWS` and applies the caller's limit
+   * only to the rows it hands back, so these are the whole scope and not the
+   * top fifty of it. Nothing here is added up in the browser, which is what
+   * makes these safe to show beside the Dashboard's.
+   *
+   * Pinned at region rather than at whatever the ranking is showing: a scope
+   * total does not depend on how it was grouped, and a KPI that vanished
+   * because somebody changed the ranking selector would read as missing data.
+   * When the ranking is at region too, this is the same query.
+   */
+  const summaryQuery = { ...filterQuery, level: 'region', limit: 50 };
+  const summary = useQuery({
+    queryKey: ['map-ranking', summaryQuery],
+    queryFn: () => performanceService.page(summaryQuery),
+    placeholderData: keepPreviousData,
+    staleTime: 60 * 1000,
+  });
+
+  const scopeTotals = summary.data?.achievement?.values as
+    | { target?: number; actual?: number; achievement_percent?: number | null }
+    | undefined;
+
+  /* ------------------------------------------------------------- ranking */
+
+  /**
+   * The level the ranking beside the map ranks.
+   *
+   * In the URL beside the mode and the sales level, for the same reason: a map
+   * someone is reading should still be the map they were reading after a
+   * refresh, and should be shareable as what it shows.
+   */
+  const rankLevel = searchParams.get('rankLevel') ?? 'region';
+  const setRankLevel = useCallback(
+    (next: string) => {
+      setSearchParams(
+        (params) => {
+          const updated = new URLSearchParams(params);
+          if (next === 'region') updated.delete('rankLevel');
+          else updated.set('rankLevel', next);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  /* The same endpoint the Performance page reads, with the same filters. The
+     map ranks nothing itself, so the two surfaces cannot disagree about a
+     number — and the drill chain comes from the response rather than from a
+     list here that could fall behind the one the server walks. */
+  const rankQuery = { ...filterQuery, level: rankLevel, limit: 50 };
+  const ranking = useQuery({
+    queryKey: ['map-ranking', rankQuery],
+    queryFn: () => performanceService.page(rankQuery),
+    placeholderData: keepPreviousData,
+    staleTime: 60 * 1000,
+  });
+
+  const rankRows = useMemo<RankRow[]>(() => {
+    const achievement = new Map<string, number | null>();
+    for (const row of ranking.data?.achievement?.rows ?? []) {
+      const value = row.achievement_percent;
+      achievement.set(String(row.code), value === null || value === undefined
+        ? null
+        : Number(value));
+    }
+    const rows = (ranking.data?.performance?.rows ?? []).map((row) => ({
+      code: String(row.code ?? ''),
+      label: String(row.label ?? row.code ?? ''),
+      achievement: achievement.get(String(row.code)) ?? null,
+      net_sales: Number(row.net_sales ?? 0),
+    }));
+    // Achievement is the order the business asks for. A level no target covers
+    // has none — those rows fall to the bottom rather than being read as zero,
+    // and a level with no targets at all is therefore ordered by net sales.
+    return rows.sort(
+      (left, right) =>
+        (right.achievement ?? -1) - (left.achievement ?? -1) ||
+        right.net_sales - left.net_sales,
+    );
+  }, [ranking.data]);
+
+  /* Every drill level is `<level>_code` as a filter, so this is derived rather
+     than a second table of the same six names kept in step by hand. */
+  const rankFilterLevel = `${rankLevel}_code` as FilterLevel;
+  const rankChain = useMemo(
+    () =>
+      ranking.data?.drill_chain?.length ? ranking.data.drill_chain : [rankLevel],
+    [ranking.data, rankLevel],
+  );
+
+  /**
+   * Clicking a rank does what clicking the map does: it narrows the filters,
+   * which is what every surface on this page already reads. The ancestors come
+   * with it, so the bar shows the whole path rather than one orphaned level,
+   * and the ranking itself moves one level deeper — which is the drill.
+   */
+  const selectRank = useCallback(
+    (row: RankRow) => {
+      setFilterResolved(rankFilterLevel, row.code);
+      const next = rankChain[rankChain.indexOf(rankLevel) + 1];
+      if (next) setRankLevel(next);
+      setFitToken((token) => token + 1);
+    },
+    [rankFilterLevel, rankChain, rankLevel, setFilterResolved, setRankLevel],
+  );
+
   /** Sales Level options, each carrying how many records are in scope. */
   const salesLevelOptions = useMemo(
     () =>
@@ -570,16 +742,17 @@ export default function MapPage() {
         }
       />
 
-      {/* The map is a self-contained workspace: it does not take the dashboard's
-          global filter, because what it needs is an *aggregation level*, which
-          the Sales Level control inside the map chooses. Period stays, because a
-          map of sales is meaningless without one — and it is the application's
-          own `DateFilter`, not a second period system, so a period chosen here
-          and one chosen on the dashboard are the same URL parameter. Every other
-          page keeps its `GlobalFilterBar` untouched. */}
-      <div className="card mb-3 flex flex-wrap items-center gap-3 p-3">
-        <DateFilter />
+      {/* The map reads the same global filters as every other page — and it
+          always sent them: `filterQuery` goes into all three of its queries, so
+          the bar is the control for a scope the endpoints have honoured all
+          along rather than a new one. The period comes with it, the same URL
+          parameter the dashboard uses, so a period chosen here is the period
+          chosen there. The map's own drill is a different thing and stays: the
+          filters say which part of the business is in scope, the breadcrumb
+          says how far into it the reader has walked. */}
+      <GlobalFilterBar />
 
+      <div className="card mb-3 flex flex-wrap items-center gap-3 p-3">
         <span className="h-6 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
 
         {/* Why, not just that. A mode greyed out with no reason reads as a bug;
@@ -622,25 +795,31 @@ export default function MapPage() {
       </div>
 
       {/* ---- workspace counts ----
-          Only figures the map's own API states outright. There is deliberately
-          no Sales or Target tile: no map endpoint returns a scoped total, and
-          summing the per-area values here would produce a number that could
-          disagree with the Dashboard's — the one thing this codebase is built
-          to prevent. Achievement and Growth are absent for the same reason
-          their modes are: the API does not publish them. */}
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          Every figure here is one the server states outright. The money and the
+          percentage come from `get_target_achievement`'s own totals, summed
+          across the scope by the backend; the browser adds nothing up, which is
+          the rule that keeps this strip and the Dashboard from ever disagreeing.
+          Growth stays absent, because no endpoint on this path publishes it. */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
         {[
-          // The chosen level, and Customer — unless they are the same level, in
-          // which case one tile says it once.
-          ...(salesLevel === 'customer'
-            ? []
-            : [{ key: 'level',
-                 label: t(SALES_LEVELS.find((l) => l.key === salesLevel)!.labelKey),
-                 value: formatCount(data.data?.counts[salesLevel] ?? 0) }]),
-          { key: 'customers', label: t('map.layerCustomer'),
-            value: formatCount(data.data?.counts.customer ?? 0) },
+          {
+            key: 'achievement',
+            label: t('target.achievement'),
+            value: formatPercent(scopeTotals?.achievement_percent ?? null),
+            // The bar is the same figure, not a second one: capped at the full
+            // width so an over-achieving scope does not draw past the card.
+            bar: Math.min(Number(scopeTotals?.achievement_percent ?? 0), 100),
+            hint: scopeTotals
+              ? `${formatAmount(scopeTotals.actual ?? 0)} / ${formatAmount(scopeTotals.target ?? 0)}`
+              : undefined,
+          },
+          { key: 'sales', label: t('sales.netSales'),
+            value: formatAmount(scopeTotals?.actual ?? null) },
+          { key: 'target', label: t('target.title'),
+            value: formatAmount(scopeTotals?.target ?? null) },
           { key: 'placed', label: t('map.onTheMap'),
-            value: formatCount(data.data?.totals.placed ?? 0) },
+            value: formatCount(data.data?.totals.placed ?? 0),
+            hint: `${t('common.of')} ${formatCount(data.data?.totals.entities ?? 0)}` },
           { key: 'unplaced', label: t('map.notPlaced'),
             value: formatCount(data.data?.totals.unplaced ?? 0) },
         ].map((tile) => (
@@ -649,6 +828,22 @@ export default function MapPage() {
               {tile.label}
             </p>
             <p className="mt-1 text-xl font-semibold tabular-nums">{tile.value}</p>
+            {tile.bar !== undefined && (
+              <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                <span
+                  className="block h-full rounded-full"
+                  style={{
+                    width: `${Math.max(2, tile.bar)}%`,
+                    background: bandColor(scopeTotals?.achievement_percent ?? null),
+                  }}
+                />
+              </div>
+            )}
+            {tile.hint && (
+              <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                {tile.hint}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -746,7 +941,70 @@ export default function MapPage() {
         </p>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="grid gap-4 xl:grid-cols-[14rem_minmax(0,1fr)_20rem]">
+        {/* ---- left rail: the map's own controls ----
+            Not filters. Choosing a view or a level changes what is *drawn* and
+            selects nothing away, which is why they are here and not in the
+            filter bar above. They used to sit inside the map, over the country
+            they were changing. */}
+        <div className="space-y-4">
+          <div className="card flex flex-col gap-3 p-3">
+          <label
+            className="flex items-center gap-2 text-xs font-medium text-slate-500"
+            htmlFor="map-view-control"
+          >
+            {t('map.mode')}
+            <select
+              id="map-view-control"
+              className="input w-auto min-w-[11rem] py-1.5 text-sm font-normal text-slate-900 dark:text-slate-100"
+              value={mode}
+              onChange={(event) => setMode(event.target.value as MapModeKey)}
+            >
+              {MAP_MODES.map((option) => {
+                const enabled = availableModes.get(option.key);
+                return (
+                  <option key={option.key} value={option.key} disabled={!enabled}>
+                    {t(option.labelKey)}
+                    {enabled ? '' : ` — ${t('map.modeUnavailable')}`}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+
+          <label
+            className="flex items-center gap-2 text-xs font-medium text-slate-500"
+            htmlFor="sales-level-control"
+          >
+            {t('map.salesLevel')}
+            <select
+              id="sales-level-control"
+              className="input w-auto min-w-[10rem] py-1.5 text-sm font-normal text-slate-900 dark:text-slate-100"
+              value={salesLevel}
+              onChange={(event) => setSalesLevel(event.target.value as MapLayer)}
+            >
+              {salesLevelOptions.map((level) => (
+                <option key={level.key} value={level.key}>
+                  {t(level.labelKey)} ({level.count})
+                </option>
+              ))}
+            </select>
+          </label>
+          </div>
+          {modeSpec.metric === 'achievement' && (
+            <MapBandChips active={activeBands} onChange={setActiveBands} />
+          )}
+          <MapLayerPanel
+            activeLevels={boundaryLevels}
+            onLevelsChange={setBoundaryLevels}
+            showMask={reference.mask}
+            showCapitals={reference.capitals}
+            showAdminLines={reference.lines}
+            onReferenceChange={setReference}
+          />
+        </div>
+
+
         <Section title={data.data?.metric_label ?? t('map.title')}>
           <QueryState
             isLoading={config.isLoading || data.isLoading}
@@ -758,24 +1016,16 @@ export default function MapPage() {
               styleUrl={basemapStyle}
               theme={theme}
               activeLevels={boundaryLevels}
-              onLevelsChange={setBoundaryLevels}
               areaStyles={areaStyles}
               entities={entityCollection}
               markers={data.data?.markers}
               areaMetrics={areaMetrics}
               choropleth={choropleth}
-              bubbles={bubbles}
+              bubbles={visibleBubbles}
               markerEmphasis={choropleth ? MUTED_MARKERS : 1}
-              mode={mode}
-              onModeChange={setMode}
-              availableModes={availableModes}
-              salesLevel={salesLevel}
-              onSalesLevelChange={setSalesLevel}
-              salesLevels={salesLevelOptions}
               showMask={reference.mask}
               showCapitals={reference.capitals}
               showAdminLines={reference.lines}
-              onReferenceChange={setReference}
               onEntitySelect={drillInto}
               onAreaSelect={selectArea}
               onError={setMapError}
@@ -798,6 +1048,21 @@ export default function MapPage() {
 
         {/* ---- side panel ---- */}
         <div className="space-y-4">
+          {/* First, because "which is ahead" is the question a reader arrives
+              with; the map answers "where" and the two are read together. */}
+          <MapRanking
+            level={rankLevel}
+            levels={rankChain}
+            levelLabel={(value) =>
+              t(FILTER_LABELS[`${value}_code` as FilterLevel] ?? value)
+            }
+            onLevelChange={setRankLevel}
+            rows={rankRows}
+            activeCode={filters[rankFilterLevel]}
+            onSelect={selectRank}
+            loading={ranking.isFetching}
+          />
+
           <Section title={t('map.inScope')}>
             <p className="mb-2 text-[11px] text-slate-500">{t('map.countsHint')}</p>
             <dl className="space-y-1 text-sm">

@@ -39,6 +39,7 @@ from .hierarchy import (
     BUSINESS_TYPES,
     ORG_CHAIN,
     BusinessEntity,
+    HierarchyFilters,
     OrgScope,
     code_field,
     resolve_business_entities,
@@ -142,7 +143,7 @@ def build_entity_view(
     session: Session,
     user: UserContext,
     *,
-    filters: dict[str, str | None],
+    filters: HierarchyFilters,
     layers: Iterable[str] | None = None,
     metric: str = "net_sales",
     date_from: dt.date | None = None,
@@ -279,14 +280,18 @@ def _cluster_dense_layers(entities: list[MapEntity],
     }
 
 
-def _diagnostics(filters: dict[str, str | None], scope: OrgScope,
+def _diagnostics(filters: HierarchyFilters, scope: OrgScope,
                  business: dict[str, list[BusinessEntity]],
                  view: EntityView) -> dict[str, Any]:
     """What the filter resolved to. Development aid, never shown to normal users."""
     return {
         "selected_filters": {k: v for k, v in (filters or {}).items() if v},
         "selected_level": scope.selected_level,
+        # Both spellings: `selected_code` is what a single selection reads as
+        # and is null for a multi-code one, so the list is what always answers
+        # "what was selected" without a reader having to know which case it is.
         "selected_code": scope.selected_code,
+        "selected_codes": list(scope.selected_codes),
         "resolved_ancestors": {
             level: sorted(scope.of(level))
             for level in ORG_CHAIN
