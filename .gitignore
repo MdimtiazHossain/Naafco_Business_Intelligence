@@ -91,3 +91,10 @@ deploy/local/nssm.exe
 # Timestamped backups the launchers leave beside a config. Git already holds the
 # history of the file they back up.
 deploy/local/*.bak-*
+
+# --- Editor / vault artifacts -----------------------------------------------
+# The repo doubles as an Obsidian vault on this machine. `.obsidian/` is that
+# vault's own workspace state — pane layout, plugin toggles, graph settings —
+# and `*.base` is a saved Obsidian base view. Neither describes the software.
+.obsidian/
+*.base
