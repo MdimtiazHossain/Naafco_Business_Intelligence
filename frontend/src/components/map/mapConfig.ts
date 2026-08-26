@@ -151,23 +151,44 @@ export const MASK_PAINT = {
  * than breaking the map (`refineBasemap` checks each id exists). Keyed by the
  * layer ids positron and dark both use, so one table serves both themes.
  *
- * Only `line-opacity`, `fill-color` and `line-color` are touched — never a
- * width, a filter or a layout property, so nothing changes about what the
- * basemap *shows*, only how loudly it says it.
+ * Only colour and opacity are touched — never a width, a filter or a layout
+ * property, so nothing changes about what the basemap *shows*, only how loudly
+ * it says it.
+ *
+ * The light values are the dashboard's corporate palette: land #F5F7FA, water
+ * #DCEAF5, minor roads #D5D9DE, major roads #B8C0CA, labels #64748B. Stated as
+ * a flat scale of greys and one blue so that every colour a reader sees on this
+ * map that is *not* in that list belongs to the sales data.
  */
 export const BASEMAP_REFINEMENTS: readonly {
   id: string;
-  property: 'fill-color' | 'line-color' | 'line-opacity';
+  property:
+    | 'fill-color'
+    | 'line-color'
+    | 'line-opacity'
+    | 'background-color'
+    | 'text-color'
+    | 'text-halo-color';
   light: string | number;
   dark: string | number;
 }[] = [
+  // Land. positron ships rgb(242,243,240), a faintly warm grey; the corporate
+  // ground is a cool one, so the blues drawn on it read as the same family.
+  { id: 'background', property: 'background-color', light: '#F5F7FA', dark: '#0C0C0C' },
+  { id: 'landuse_residential', property: 'fill-color', light: '#EDF0F5', dark: '#141414' },
+  { id: 'park', property: 'fill-color', light: '#E8EEE9', dark: '#101410' },
+
   // Water, the one thing made *more* prominent: a recognisable blue at a value
   // that still sits behind the data, rather than the near-grey it ships with.
-  { id: 'water', property: 'fill-color', light: '#BFD6E8', dark: '#0B1F2E' },
-  { id: 'waterway', property: 'line-color', light: '#9DBBD4', dark: '#123243' },
+  { id: 'water', property: 'fill-color', light: '#DCEAF5', dark: '#0B1F2E' },
+  { id: 'waterway', property: 'line-color', light: '#BFD6E8', dark: '#123243' },
 
-  // Roads: kept, quietened. The casings are the clutter — the white inner lines
-  // still describe the network, so the shape of a city survives at lower weight.
+  // Roads: kept, quietened, and given the two greys the palette names — minor
+  // #D5D9DE, major #B8C0CA. The casings carry the weight, so they take the
+  // darker of the two and the inner fills stay light.
+  { id: 'highway_minor', property: 'line-color', light: '#D5D9DE', dark: '#181818' },
+  { id: 'highway_major_casing', property: 'line-color', light: '#B8C0CA', dark: '#3C3C3C' },
+  { id: 'highway_motorway_casing', property: 'line-color', light: '#B8C0CA', dark: '#3C3C3C' },
   { id: 'highway_major_casing', property: 'line-opacity', light: 0.45, dark: 0.45 },
   { id: 'highway_motorway_casing', property: 'line-opacity', light: 0.45, dark: 0.45 },
   { id: 'highway_minor', property: 'line-opacity', light: 0.5, dark: 0.5 },
@@ -178,6 +199,26 @@ export const BASEMAP_REFINEMENTS: readonly {
   // administrative boundaries this application draws from its own GeoJSON.
   { id: 'boundary_2', property: 'line-opacity', light: 0.25, dark: 0.25 },
   { id: 'boundary_3', property: 'line-opacity', light: 0.15, dark: 0.15 },
+
+  /* Place labels, on one slate. positron greys them from #000 for a village up
+     to #333 for a country, which is a hierarchy of *place* — useful on a road
+     map, competing noise on a sales map, where the hierarchy that matters is
+     the one the boundaries and the data draw. One tone, #64748B, is the same
+     slate the dashboard writes its own secondary text in. */
+  { id: 'label_country_1', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_country_2', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_country_3', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_state', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_city', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_city_capital', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_town', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_village', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'label_other', property: 'text-color', light: '#64748B', dark: '#94A3B8' },
+  { id: 'water_name_point_label', property: 'text-color', light: '#8FA8BF', dark: '#5B7A93' },
+  { id: 'water_name_line_label', property: 'text-color', light: '#8FA8BF', dark: '#5B7A93' },
+  // Road names are the least of it, and go quieter still.
+  { id: 'highway-name-minor', property: 'text-color', light: '#9AA3AD', dark: '#4A4A4A' },
+  { id: 'highway-name-major', property: 'text-color', light: '#9AA3AD', dark: '#4A4A4A' },
 ] as const;
 
 /**
@@ -209,4 +250,125 @@ export const IDS = {
   entityCircles: 'business-entities-circle',
   entityIcons: 'business-entities-icon',
   entityLabels: 'business-entities-label',
+  bubbleSource: 'business-bubbles',
+  bubbleCircles: 'business-bubbles-circle',
 } as const;
+
+/* -------------------------------------------------------------- map modes */
+
+/**
+ * What the map is *about* right now.
+ *
+ * A mode is a way of reading the same geography, not a different map: every one
+ * of them draws the same boundaries over the same basemap and differs only in
+ * what carries the meaning — the outline, a choropleth fill, or the markers.
+ *
+ * `metric` names a key from `/api/map/config`'s `metrics`, which is the server's
+ * list and the only source of truth for what can be measured. A mode whose
+ * metric the server does not offer is **unavailable**, and is shown that way
+ * rather than hidden: the reader should be able to see that Sales Achievement is
+ * a thing this dashboard means to show and does not have the data for yet.
+ * Nothing here invents a number — an unavailable mode has no fill and no legend.
+ */
+export type MapModeKey =
+  | 'administrative'
+  | 'bubble'
+  | 'performance'
+  | 'density'
+  | 'promotion';
+
+/**
+ * What a mode draws with, kept separate from what it measures.
+ *
+ * Three axes, deliberately independent, so a future choropleth is a new
+ * `geometry` value rather than a rewrite:
+ *
+ * * **geometry** - what carries the value. `point` is every mode today: each
+ *   region, territory or customer has its own coordinate. `area` is reserved
+ *   for a choropleth over administrative polygons and is not yet used, because
+ *   this warehouse attributes no metric to an area (see `map/areas.py`).
+ * * **metric** - a key from `/api/map/config`'s list, which is the server's
+ *   word on what can be measured. Never assumed here.
+ * * **encoding** - how the value reaches the eye: size, colour, both, or
+ *   `count` for a density surface that measures nothing but presence.
+ */
+export type MapGeometry = 'point' | 'area';
+export type MapEncoding = 'none' | 'size' | 'colour' | 'size+colour' | 'count';
+
+export interface MapMode {
+  key: MapModeKey;
+  labelKey: string;
+  geometry: MapGeometry;
+  /** Metric key the mode reads, or null where it measures nothing. */
+  metric: string | null;
+  encoding: MapEncoding;
+  /** Why the mode cannot run, when the data for it does not exist. */
+  unavailableKey?: string;
+}
+
+/**
+ * The modes, in reading order.
+ *
+ * There is deliberately **no choropleth and no area heat map**. Both would need
+ * a metric attributed to administrative polygons, and the warehouse has none:
+ * `map/areas.py` returns an empty mapping from `stock_by_area` and
+ * `_optional_metrics` alike. An earlier version of this page painted the
+ * fallback value those return and so coloured every area identically - a
+ * constant dressed as a measurement. Sales are real per *point*, and that is
+ * what these modes read.
+ */
+export const MAP_MODES: readonly MapMode[] = [
+  {
+    key: 'administrative', labelKey: 'map.modeAdministrative',
+    geometry: 'point', metric: null, encoding: 'none',
+  },
+  {
+    key: 'bubble', labelKey: 'map.modeBubble',
+    geometry: 'point', metric: 'achievement', encoding: 'size+colour',
+  },
+  {
+    key: 'performance', labelKey: 'map.modePerformance',
+    geometry: 'point', metric: 'achievement', encoding: 'size+colour',
+  },
+  {
+    key: 'density', labelKey: 'map.modeDensity',
+    geometry: 'point', metric: null, encoding: 'count',
+  },
+  {
+    key: 'promotion', labelKey: 'map.modePromotion',
+    geometry: 'point', metric: null, encoding: 'none',
+    unavailableKey: 'map.modeNeedsPromotion',
+  },
+] as const;
+
+export const MODE_BY_KEY: Record<MapModeKey, MapMode> = Object.fromEntries(
+  MAP_MODES.map((mode) => [mode.key, mode]),
+) as Record<MapModeKey, MapMode>;
+
+/**
+ * The sequential ramp, light to dark, for a magnitude with no natural midpoint.
+ *
+ * Five steps rather than a continuous interpolation: a reader compares an area
+ * against a legend, and five swatches can be told apart where a gradient cannot.
+ * Light-to-dark of one hue, so the ordering is legible without reading the key —
+ * and the same blue family the boundaries use, because this is the same map.
+ */
+export const SEQUENTIAL_RAMP: readonly string[] = [
+  '#EFF6FF', '#BFDBFE', '#7EB3F5', '#3B82F6', '#1D4ED8',
+];
+
+/**
+ * Achievement bands, in the order a reader thinks about them.
+ *
+ * Not a gradient: these are *thresholds a business has agreed*, so the breaks
+ * are the meaning and must be exact. Red below 50, orange to 70, yellow to 90,
+ * green to 100, dark green above — under-performance warm, target-and-above
+ * cool, with the boundary at 100 the one that matters most.
+ */
+export const ACHIEVEMENT_BANDS: readonly { max: number | null; color: string; labelKey: string }[] = [
+  { max: 50, color: '#DC2626', labelKey: 'map.band0' },
+  { max: 70, color: '#EA580C', labelKey: 'map.band50' },
+  { max: 90, color: '#CA8A04', labelKey: 'map.band70' },
+  { max: 100, color: '#16A34A', labelKey: 'map.band90' },
+  { max: null, color: '#15803D', labelKey: 'map.band100' },
+] as const;

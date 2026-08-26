@@ -43,6 +43,7 @@ import {
   IDS,
   MASK_PAINT,
   type BoundaryLevelKey,
+  type MapModeKey,
 } from './mapConfig';
 import { GeoDataUnavailable, loadGeoJson, type GeoCollection } from './geoData';
 import {
@@ -53,7 +54,23 @@ import {
 } from './businessGeoJson';
 import { MapControls } from './MapControls';
 import { MapPopup, type PopupSubject } from './MapPopup';
-import type { ResolvedMarkerConfig } from '../../types/api';
+import type { MapLayer, ResolvedMarkerConfig } from '../../types/api';
+
+/** One aggregated point, ready to draw. */
+export interface BubbleDatum {
+  code: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  /** Pixel radius, already scaled against the largest value present. */
+  radius: number;
+  /** Achievement band colour, or the unscored grey. */
+  colour: string;
+  netSales: number;
+  targetAmount: number;
+  /** `null` where the server could not score it - never rendered as zero. */
+  achievement: number | null;
+}
 
 export interface AreaMetric {
   stock: number;
@@ -75,6 +92,42 @@ export interface BusinessMapProps {
   markers: Record<string, ResolvedMarkerConfig> | undefined;
   /** Server-computed metric per administrative code. Geometry stays local. */
   areaMetrics: Record<string, AreaMetric>;
+  /**
+   * A colour per administrative code, for the level being measured.
+   *
+   * Handed in already resolved rather than computed here, for the same reason
+   * every other number on this map is: the component draws what it is given and
+   * decides nothing about the data. `null` means no mode is colouring areas, and
+   * the boundaries fall back to the styles `map_area_styles` holds.
+   */
+  choropleth: { level: BoundaryLevelKey; colours: Record<string, string> } | null;
+  /**
+   * Aggregated business points, already encoded as size and colour.
+   *
+   * `null` when the mode measures nothing. Handed in fully resolved for the
+   * same reason everything else is: this component draws, and decides nothing
+   * about what a number means.
+   */
+  bubbles: readonly BubbleDatum[] | null;
+  /**
+   * How strongly the business markers are drawn, 0..1.
+   *
+   * A choropleth and 846 markers are two readings competing for the same
+   * pixels, and the fill loses: the markers sit on top and are the higher
+   * contrast. Muting them lets the area colour be read as the answer while the
+   * markers stay as texture showing where the customers actually are — which is
+   * still worth seeing, so they are dimmed rather than removed. The layers, the
+   * click targets and the popups are untouched at any value.
+   */
+  markerEmphasis: number;
+  /* Passed straight through to the in-map controls. `BusinessMap` owns the map,
+     not the workspace, so it forwards these without reading them. */
+  mode: MapModeKey;
+  onModeChange: (mode: MapModeKey) => void;
+  availableModes: ReadonlyMap<string, boolean>;
+  salesLevel: MapLayer;
+  onSalesLevelChange: (level: MapLayer) => void;
+  salesLevels: readonly { key: MapLayer; labelKey: string; count: number }[];
   /** Dim everything outside Bangladesh. */
   showMask: boolean;
   showCapitals: boolean;
@@ -118,6 +171,16 @@ setWorkerUrl(maplibreWorkerUrl);
  */
 const STYLE_LOAD_GRACE_MS = 6000;
 
+/**
+ * Fill opacity for a measured area.
+ *
+ * Well above the 0.05 a boundary rests at, because in a choropleth the fill
+ * *is* the reading; well below opaque, because the basemap underneath is what
+ * tells the reader which part of the country they are looking at. The boundary
+ * strokes stay exactly as configured on top, so the hierarchy survives the fill.
+ */
+const CHOROPLETH_OPACITY = 0.68;
+
 /** A style with no layers, so a failed basemap still yields a usable map. */
 const BLANK_STYLE: StyleSpecification = {
   version: 8,
@@ -135,6 +198,15 @@ export function BusinessMap({
   entities,
   markers,
   areaMetrics,
+  choropleth,
+  bubbles,
+  markerEmphasis,
+  mode,
+  onModeChange,
+  availableModes,
+  salesLevel,
+  onSalesLevelChange,
+  salesLevels,
   showMask,
   showCapitals,
   showAdminLines,
@@ -505,7 +577,7 @@ export function BusinessMap({
           // designed icon has not finished decoding.
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 3, 12, 7],
           'circle-color': theme === 'dark' ? '#38BDF8' : '#0EA5E9',
-          'circle-opacity': ['case', ['get', 'inFocus'], 0.9, 0.25],
+          'circle-opacity': circleOpacity(markerEmphasis),
           'circle-stroke-width': 1,
           'circle-stroke-color': theme === 'dark' ? '#0F172A' : '#FFFFFF',
         },
@@ -524,7 +596,7 @@ export function BusinessMap({
           'icon-size': ['interpolate', ['linear'], ['zoom'], 5, 0.5, 12, 1],
           'icon-anchor': 'bottom',
         },
-        paint: { 'icon-opacity': ['case', ['get', 'inFocus'], 1, 0.3] },
+        paint: { 'icon-opacity': iconOpacity(markerEmphasis) },
       });
     }
 
@@ -671,9 +743,30 @@ export function BusinessMap({
       const paint = styleFor(level.key);
       const fill = IDS.boundaryFill(level.key);
       const line = IDS.boundaryLine(level.key);
+      /* A mode that measures this level paints it from the data; every other
+         level, and every level in a mode that measures nothing, keeps the
+         configured style. The choropleth is a `match` on the feature's own code
+         so MapLibre resolves it per feature on the GPU — no per-feature state to
+         set and nothing to keep in step as the viewport moves. */
+      const measured = choropleth?.level === level.key ? choropleth : null;
       if (map.getLayer(fill)) {
-        map.setPaintProperty(fill, 'fill-color', paint.fill_color);
-        map.setPaintProperty(fill, 'fill-opacity', fillOpacity(paint));
+        if (measured && Object.keys(measured.colours).length) {
+          // Built through `unknown`: a `match` with a spread body cannot be
+          // expressed in MapLibre's tuple type, which fixes each arm's position.
+          const expression = [
+            'match',
+            ['get', 'code'],
+            ...Object.entries(measured.colours).flatMap(([code, colour]) => [code, colour]),
+            // An area the metric does not cover keeps the level's own fill
+            // rather than being coloured as if it had measured zero.
+            paint.fill_color,
+          ] as unknown as ExpressionSpecification;
+          map.setPaintProperty(fill, 'fill-color', expression);
+          map.setPaintProperty(fill, 'fill-opacity', CHOROPLETH_OPACITY);
+        } else {
+          map.setPaintProperty(fill, 'fill-color', paint.fill_color);
+          map.setPaintProperty(fill, 'fill-opacity', fillOpacity(paint));
+        }
       }
       if (map.getLayer(line)) {
         map.setPaintProperty(line, 'line-color', paint.stroke_color);
@@ -681,7 +774,7 @@ export function BusinessMap({
         map.setPaintProperty(line, 'line-opacity', paint.stroke_opacity);
       }
     }
-  }, [styleFor, ready]);
+  }, [styleFor, ready, choropleth]);
 
   /* ------------------------------------------------------------ interaction */
 
@@ -807,6 +900,71 @@ export function BusinessMap({
     map.fitBounds(bounds, { padding: FIT_PADDING * 2, maxZoom: 12 });
   }, [entities]);
 
+  /* Emphasis is a prop, and the layers outlive it: switching mode must restyle
+     what is already drawn rather than wait for the next rebuild. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    if (map.getLayer(IDS.entityIcons)) {
+      map.setPaintProperty(IDS.entityIcons, 'icon-opacity', iconOpacity(markerEmphasis));
+    }
+    if (map.getLayer(IDS.entityCircles)) {
+      map.setPaintProperty(IDS.entityCircles, 'circle-opacity', circleOpacity(markerEmphasis));
+    }
+  }, [markerEmphasis, ready, layerGeneration]);
+
+  /* The bubble layer: aggregated business points, sized and coloured by the
+     page. Its own source, so a mode change swaps contents with `setData` rather
+     than rebuilding layers, and so it sits above the boundaries without
+     disturbing the marker layers that keep their own meaning. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !styleParsedRef.current) return;
+
+    const collection = {
+      type: 'FeatureCollection' as const,
+      features: (bubbles ?? []).map((bubble) => ({
+        type: 'Feature' as const,
+        properties: {
+          code: bubble.code,
+          label: bubble.label,
+          radius: bubble.radius,
+          colour: bubble.colour,
+          netSales: bubble.netSales,
+          targetAmount: bubble.targetAmount,
+          // A style expression cannot carry null, so "unscored" travels as a
+          // flag beside the number rather than as a zero pretending to be one.
+          achievement: bubble.achievement ?? 0,
+          scored: bubble.achievement !== null,
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [bubble.longitude, bubble.latitude],
+        },
+      })),
+    };
+
+    addSource(map, IDS.bubbleSource, collection as never, 'code');
+    if (!map.getLayer(IDS.bubbleCircles)) {
+      map.addLayer({
+        id: IDS.bubbleCircles,
+        type: 'circle',
+        source: IDS.bubbleSource,
+        paint: {
+          'circle-radius': ['get', 'radius'],
+          'circle-color': ['get', 'colour'],
+          'circle-opacity': 0.72,
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': '#FFFFFF',
+          'circle-stroke-opacity': 0.9,
+        },
+      });
+    }
+    map.setLayoutProperty(
+      IDS.bubbleCircles, 'visibility', bubbles?.length ? 'visible' : 'none',
+    );
+  }, [bubbles, ready, layerGeneration]);
+
   /* ------------------------------------------------------------- responsive */
 
   useEffect(() => {
@@ -815,7 +973,16 @@ export function BusinessMap({
     // The map's canvas is sized in pixels, so it has to be told when its box
     // changes — a sidebar collapsing or a phone rotating leaves it stretched
     // otherwise.
-    const observer = new ResizeObserver(() => mapRef.current?.resize());
+    /* A zero-sized box is skipped rather than resized to it. A collapsed
+       panel, a hidden tab and the frame before layout settles all report 0x0,
+       and resizing the canvas to nothing throws away the rendered frame — the
+       map then comes back blank when the box reopens, because nothing asks it
+       to draw again. Ignoring the degenerate size keeps the last good frame
+       until a real one arrives. */
+    const observer = new ResizeObserver(() => {
+      if (!container.clientWidth || !container.clientHeight) return;
+      mapRef.current?.resize();
+    });
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
@@ -843,6 +1010,12 @@ export function BusinessMap({
         onReferenceChange={onReferenceChange}
         onFitCountry={fitBangladesh}
         onFitData={hasEntities ? fitData : undefined}
+        mode={mode}
+        onModeChange={onModeChange}
+        availableModes={availableModes}
+        salesLevel={salesLevel}
+        onSalesLevelChange={onSalesLevelChange}
+        salesLevels={salesLevels}
       />
 
       {popupHostRef.current && popup
@@ -868,6 +1041,23 @@ function addSource(
     return;
   }
   map.addSource(id, { type: 'geojson', data: data as never, ...(promoteId ? { promoteId } : {}) });
+}
+
+/**
+ * Marker opacity, scaled by how much emphasis the current mode gives them.
+ *
+ * The `inFocus` split is preserved at every emphasis: a focused marker stays
+ * ahead of an unfocused one whether the mode is showing markers as the subject
+ * or as background, so the two meanings never collapse into each other.
+ */
+function iconOpacity(emphasis: number): ExpressionSpecification {
+  return ['case', ['get', 'inFocus'], emphasis, emphasis * 0.3] as ExpressionSpecification;
+}
+
+function circleOpacity(emphasis: number): ExpressionSpecification {
+  return [
+    'case', ['get', 'inFocus'], emphasis * 0.9, emphasis * 0.25,
+  ] as ExpressionSpecification;
 }
 
 /**

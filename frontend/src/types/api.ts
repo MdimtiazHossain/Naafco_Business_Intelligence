@@ -1622,3 +1622,41 @@ export interface WhatsAppStatus {
   require_verified_profile: boolean;
   linked_users: number;
 }
+
+/**
+ * One aggregated business point, as `/api/map/data` returns it.
+ *
+ * `value` is whatever metric was asked for. `measures` carries the rest of the
+ * aggregate row, which for `metric=achievement` includes `net_sales`,
+ * `target_amount` and `achievement_percent` — all summed and divided on the
+ * server, so a bubble's size and its colour come from the same query the
+ * reports read and no business figure is derived in the browser.
+ */
+export interface MapAggregatePoint {
+  code: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  value: number;
+  measures: Record<string, number | string | null>;
+  location_source: string;
+  location_precision: string;
+}
+
+export interface MapPointsResponse {
+  level: string;
+  metric: string;
+  metric_label: string;
+  clustered: boolean;
+  points: MapAggregatePoint[];
+  /** Records the metric covers but that have nowhere to be drawn, and why. */
+  unplaced: { code: string; label: string; value: number; reason: string }[];
+  totals: {
+    plotted: number;
+    unplaced: number;
+    total_value: number;
+    min_value: number;
+    max_value: number;
+  };
+  bounds: { west: number; south: number; east: number; north: number } | null;
+}

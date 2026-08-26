@@ -47,6 +47,7 @@ import type {
   MapConfig,
   MapCoverageRow,
   MapEntitiesResponse,
+  MapPointsResponse,
   MapEntityLocation,
   MarkerAsset,
   MarkerAssignmentRow,
@@ -634,6 +635,29 @@ export const mapService = {
       diagnostics?: boolean;
     },
   ) => request<MapEntitiesResponse>('/api/map/entities', { params: query }),
+
+  /**
+   * Aggregated business points for one level, from the warehouse.
+   *
+   * Distinct from `entities`, which lists records so they can be *drawn*: this
+   * asks the warehouse to **aggregate** a level and hand back one point per
+   * code with its measures. That is what a bubble map reads — a territory's
+   * bubble is its territory's sales, summed by the same query the reports use,
+   * not a count of the pins that happen to sit inside it.
+   *
+   * With `metric: 'achievement'` each point also carries `net_sales`,
+   * `target_amount` and `achievement_percent`, aggregated server-side, so the
+   * browser never divides one business figure by another.
+   */
+  points: (
+    query: ReportQuery & {
+      level?: string;
+      metric?: string;
+      cluster?: boolean;
+      zoom?: number;
+      limit?: number;
+    },
+  ) => request<MapPointsResponse>('/api/map/data', { params: query }),
 
   /**
    * The metric behind each administrative area.

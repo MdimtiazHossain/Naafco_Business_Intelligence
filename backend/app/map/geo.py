@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database.models_map import GeoPrecision, GeoSource, MapEntityLocation
+from ..database.models_warehouse import DimCustomer
 from ..etl.mapping import BINDING_BY_LEVEL, LEVEL_BINDINGS
 from .entities import ENTITY_TYPE_BY_KEY, get_entity_type
 
@@ -278,6 +279,70 @@ def _entity_total(session: Session, entity_type: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+
+def _derive_sub_territories(session: Session, *, actor: str | None = None) -> int:
+    """Place each sub-territory at the centroid of its placed customers.
+
+    The seed for :func:`derive_parents`. Customer is not one of the nine
+    ``LEVEL_BINDINGS`` levels — it is a business type, not a rung of the
+    organisational ladder — so the generic pass cannot reach it, and without
+    this the whole cascade starts from nothing.
+
+    **The result is an approximation and is recorded as one.** A sub-territory
+    holding forty customers of which sixteen are placed is centred on those
+    sixteen: a real centroid of real points, but not the sub-territory's
+    location. It is written ``DERIVED``/``CENTROID`` with ``derived_from``
+    carrying how many customers stood behind it, which is what lets the map say
+    "approximate" and lets a reader judge how much to trust the placement.
+
+    A coordinate somebody placed by hand outranks this and is never touched,
+    which is the same rule the cascade above follows: exact beats derived beats
+    missing.
+    """
+    placed = locations_for(session, "customer")
+    if not placed:
+        return 0
+
+    pairs = session.execute(
+        select(DimCustomer.customer_code, DimCustomer.sub_territory_code)
+        .where(DimCustomer.sub_territory_code.isnot(None),
+               DimCustomer.sub_territory_code != "")
+    ).all()
+
+    grouped: dict[str, list[tuple[float, float]]] = {}
+    for customer_code, sub_territory_code in pairs:
+        location = placed.get(customer_code)
+        if location is None:
+            continue
+        grouped.setdefault(sub_territory_code, []).append(
+            (location.latitude, location.longitude)
+        )
+
+    existing = locations_for(session, "sub_territory")
+    count = 0
+    for code, points in grouped.items():
+        current = existing.get(code)
+        if current is not None and current.source in GeoSource.AUTHORITATIVE:
+            continue                          # a person placed this; leave it
+        latitude, longitude = centroid(points)
+        if current is None:
+            current = MapEntityLocation(
+                entity_type="sub_territory", entity_code=code,
+                latitude=latitude, longitude=longitude,
+            )
+            session.add(current)
+        else:
+            current.latitude, current.longitude = latitude, longitude
+        current.source = GeoSource.DERIVED
+        current.precision = GeoPrecision.CENTROID
+        current.derived_from = len(points)
+        current.updated_by = actor
+        count += 1
+
+    session.flush()
+    return count
+
+
 def derive_parents(session: Session, *, actor: str | None = None) -> dict[str, int]:
     """Give every organisational level above the placed ones a centroid.
 
@@ -289,6 +354,18 @@ def derive_parents(session: Session, *, actor: str | None = None) -> dict[str, i
     rows are recomputed — so this is safe to re-run whenever locations change.
     """
     created: dict[str, int] = {}
+
+    # Seed the chain from the customers.
+    #
+    # ``LEVEL_BINDINGS`` is the nine organisational levels and stops at
+    # sub-territory, so on a warehouse where only customers carry coordinates
+    # the loop below finds nothing to consume and every level stays unplaced.
+    # Customers are the one thing actually placed here, and ``dim_customer``
+    # already records the sub-territory each belongs to, so they can seed the
+    # deepest organisational level and let the existing cascade do the rest.
+    seeded = _derive_sub_territories(session, actor=actor)
+    if seeded:
+        created["sub_territory"] = seeded
 
     # Deepest first: each pass can consume what the previous one produced.
     for binding in reversed(LEVEL_BINDINGS):

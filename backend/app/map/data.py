@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..ai import queries as q
+from ..etl.transforms import achievement_percent
 from ..ai.permission_filter import PermissionFilter, UserContext
 from ..ai.schemas import GroupBy, ScopeFilters
 from ..database.models_map import MapEntityLocation
@@ -56,6 +57,14 @@ GROUP_BY_LEVEL: dict[str, GroupBy] = {
 DRILL_PATH: tuple[str, ...] = (
     "zone", "region", "area", "unit", "territory", "sub_territory",
 )
+
+
+#: The one metric that is derived rather than selected.
+#:
+#: Kept as a constant because three places have to agree on it — the spec, the
+#: branch in :func:`map_data`, and the frontend's mode registry — and a literal
+#: repeated three times is how they drift apart.
+ACHIEVEMENT_KEY = "achievement"
 
 
 @dataclass(frozen=True)
@@ -102,6 +111,18 @@ METRICS: tuple[MetricSpec, ...] = (
     # only because the previous stock fact hung off the sales hierarchy.
     MetricSpec("target_amount", "Target", q.TARGET_MEASURES, "target_amount",
                "currency"),
+    # Volume is summed in the warehouse like quantity and net sales, and carries
+    # no unit anywhere (0022) — so it is plotted as a bare magnitude, exactly as
+    # quantity is. It reads the same measure set; only the field differs.
+    MetricSpec("volume", "Sales Volume", q.SALES_MEASURES, "volume", "quantity",
+               description="Total volume the upload stated."),
+    # Achievement is actual over target, and is the one metric here that is not
+    # a column: it is derived in ``_achievement_points`` from two independently
+    # aggregated sides. Declared with the sales measures because the sales side
+    # is what it ranks and sorts by.
+    MetricSpec(ACHIEVEMENT_KEY, "Achievement %", q.SALES_MEASURES, "net_sales",
+               "percent",
+               description="Net sales against target, as a percentage."),
 )
 
 METRIC_BY_KEY: dict[str, MetricSpec] = {m.key: m for m in METRICS}
@@ -261,6 +282,23 @@ def map_data(session: Session, user: UserContext, *, level: str, metric: str,
         GROUP_BY_LEVEL[level], limit=limit, sort_field=spec.field,
     )
 
+    # Achievement needs the target beside each sales row. The two sides are
+    # aggregated *independently* and joined on the group's own code — never a
+    # raw-to-raw join, which a code with two targets and three sales lines would
+    # turn into six inflated combinations. This is the same rule the executive
+    # brand table follows, for the same reason.
+    targets: dict[str, float] = {}
+    if metric == ACHIEVEMENT_KEY:
+        target_rows, _ = q.aggregate_by(
+            session, q.TARGET_MEASURES, scoped, date_from, date_to,
+            GROUP_BY_LEVEL[level], limit=q.MAX_ROWS, sort_field="target_amount",
+        )
+        targets = {
+            str(row.get("code")): _numeric(row.get("target_amount"))
+            for row in target_rows
+            if row.get("code") not in (None, "(unassigned)")
+        }
+
     locations = locations_for(session, level)
     result = MapResult(level=level, metric=metric)
 
@@ -281,6 +319,28 @@ def map_data(session: Session, user: UserContext, *, level: str, metric: str,
         location = locations.get(code)
         value = _numeric(row.get(spec.field))
         result.total_value += value
+
+        if metric == ACHIEVEMENT_KEY:
+            target = targets.get(str(code), 0.0)
+            achieved = achievement_percent(value, target)
+            # A target of zero or none makes achievement unanswerable, not zero.
+            # The row is real and is reported — as unplaced with its reason, so
+            # it appears in "Not on the map" rather than being silently dropped
+            # or, worse, drawn as if it had achieved nothing.
+            if achieved is None:
+                result.unplaced.append({
+                    "code": code,
+                    "label": row.get("label") or code,
+                    "value": value,
+                    "reason": "no_target",
+                })
+                continue
+            # Both sides travel with the point, which is what lets a tooltip
+            # state sales *and* target without asking the server again.
+            row["net_sales"] = value
+            row["target_amount"] = target
+            row["achievement_percent"] = float(achieved)
+            value = float(achieved)
 
         if location is None:
             result.unplaced.append({

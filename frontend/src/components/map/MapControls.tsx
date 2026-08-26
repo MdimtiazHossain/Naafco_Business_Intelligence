@@ -11,7 +11,13 @@
 import { Crosshair, Layers, Locate, Map as MapIcon } from 'lucide-react';
 import { useState } from 'react';
 import { useT } from '../../contexts/I18nContext';
-import { BOUNDARY_LEVELS, type BoundaryLevelKey } from './mapConfig';
+import {
+  BOUNDARY_LEVELS,
+  MAP_MODES,
+  type BoundaryLevelKey,
+  type MapModeKey,
+} from './mapConfig';
+import type { MapLayer } from '../../types/api';
 
 export interface MapControlsProps {
   activeLevels: readonly BoundaryLevelKey[];
@@ -23,6 +29,18 @@ export interface MapControlsProps {
   onFitCountry: () => void;
   /** Absent when nothing is plotted, so the button is never a no-op. */
   onFitData?: () => void;
+
+  /* The two workspace controls. They live in the map rather than above it
+     because they are what the reader changes *while looking*, and a control
+     that changes the picture belongs beside the picture. */
+  mode: MapModeKey;
+  onModeChange: (mode: MapModeKey) => void;
+  /** Which modes this deployment has data for; the rest render disabled. */
+  availableModes: ReadonlyMap<string, boolean>;
+  /** The business level drawn as points, and the levels worth offering. */
+  salesLevel: MapLayer;
+  onSalesLevelChange: (level: MapLayer) => void;
+  salesLevels: readonly { key: MapLayer; labelKey: string; count: number }[];
 }
 
 export function MapControls({
@@ -34,6 +52,12 @@ export function MapControls({
   onReferenceChange,
   onFitCountry,
   onFitData,
+  mode,
+  onModeChange,
+  availableModes,
+  salesLevel,
+  onSalesLevelChange,
+  salesLevels,
 }: MapControlsProps) {
   const t = useT();
   // Collapsed by default: the panel is a settings surface, and an expanded one
@@ -52,8 +76,49 @@ export function MapControls({
 
   const reference = { capitals: showCapitals, lines: showAdminLines, mask: showMask };
 
+  const chrome =
+    'rounded-lg border border-slate-200 bg-white/95 text-xs shadow-sm backdrop-blur ' +
+    'dark:border-slate-700 dark:bg-slate-900/95';
+
   return (
     <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-col gap-2">
+      {/* Map View and Sales Level: what is drawn, and at what grain. */}
+      <div className="pointer-events-auto flex flex-wrap gap-1">
+        <label className="sr-only" htmlFor="map-view-control">{t('map.mode')}</label>
+        <select
+          id="map-view-control"
+          className={`${chrome} max-w-[11rem] px-2 py-1.5 font-medium`}
+          value={mode}
+          onChange={(event) => onModeChange(event.target.value as MapModeKey)}
+          aria-label={t('map.mode')}
+        >
+          {MAP_MODES.map((option) => {
+            const enabled = availableModes.get(option.key);
+            return (
+              <option key={option.key} value={option.key} disabled={!enabled}>
+                {t(option.labelKey)}
+                {enabled ? '' : ` — ${t('map.modeUnavailable')}`}
+              </option>
+            );
+          })}
+        </select>
+
+        <label className="sr-only" htmlFor="sales-level-control">{t('map.salesLevel')}</label>
+        <select
+          id="sales-level-control"
+          className={`${chrome} max-w-[10rem] px-2 py-1.5 font-medium`}
+          value={salesLevel}
+          onChange={(event) => onSalesLevelChange(event.target.value as MapLayer)}
+          aria-label={t('map.salesLevel')}
+        >
+          {salesLevels.map((level) => (
+            <option key={level.key} value={level.key}>
+              {t(level.labelKey)} ({level.count})
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div className="pointer-events-auto flex gap-1">
         <button
           type="button"

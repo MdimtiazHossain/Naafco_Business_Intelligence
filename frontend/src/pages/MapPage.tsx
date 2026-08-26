@@ -24,9 +24,6 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
   ChevronRight,
-  Eye,
-  EyeOff,
-  Layers,
   MapPin,
   RefreshCw,
   Settings2,
@@ -38,7 +35,11 @@ import { CardSkeleton, EmptyState, QueryState } from '../components/States';
 import { BusinessMap, type AreaMetric } from '../components/map/BusinessMap';
 import { MapLegend } from '../components/map/MapLegend';
 import {
+  ACHIEVEMENT_BANDS,
   BASEMAP_STYLES,
+  MAP_MODES,
+  MODE_BY_KEY,
+  type MapModeKey,
   BOUNDARY_LEVELS,
   type BoundaryLevelKey,
 } from '../components/map/mapConfig';
@@ -46,7 +47,7 @@ import {
   buildEntityCollection,
   type EntityFeatureProperties,
 } from '../components/map/businessGeoJson';
-import { GlobalFilterBar } from '../filters/GlobalFilterBar';
+import { DateFilter } from '../filters/DateFilter';
 import { useAuth } from '../contexts/AuthContext';
 import { useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
@@ -140,6 +141,51 @@ function parseFocus(raw: string | null): { layer: MapLayer; codes: string[] } | 
 const DEFAULT_BOUNDARY_LEVELS = BOUNDARY_LEVELS.filter((level) => level.defaultOn)
   .map((level) => level.key);
 
+/**
+ * The mode named in the URL, or Administrative.
+ *
+ * A hand-typed or stale `?mapMode=` must not break the page, so anything that
+ * is not a known key falls back rather than throwing or rendering an empty
+ * selector — the same treatment a hand-typed filter value gets.
+ */
+/**
+ * Marker opacity while a choropleth is painted.
+ *
+ * Low enough that the area colour is what the eye lands on, high enough that
+ * the customer distribution is still legible as texture — hiding the markers
+ * outright was the alternative and it costs the one thing the choropleth cannot
+ * show, which is *where inside the area* the business actually is.
+ */
+const MUTED_MARKERS = 0.22;
+
+/** Bubble radius range, in pixels, at the scale the map is read at. */
+const BUBBLE_MIN = 5;
+const BUBBLE_MAX = 34;
+
+/** A point the server could not score: drawn, but in no achievement colour. */
+const UNSCORED_BUBBLE = '#94A3B8';
+
+/** The eight business levels the Sales Level control offers, outermost first. */
+const SALES_LEVELS: readonly { key: MapLayer; labelKey: string }[] = [
+  { key: 'company', labelKey: 'map.layerCompany' },
+  { key: 'bu', labelKey: 'map.layerBu' },
+  { key: 'sales_line', labelKey: 'map.layerSalesLine' },
+  { key: 'zone', labelKey: 'map.layerZone' },
+  { key: 'region', labelKey: 'map.layerRegion' },
+  { key: 'area', labelKey: 'map.layerArea' },
+  { key: 'unit', labelKey: 'map.layerUnit' },
+  { key: 'territory', labelKey: 'map.layerTerritory' },
+  { key: 'customer', labelKey: 'map.layerCustomer' },
+];
+
+function parseSalesLevel(raw: string | null): MapLayer {
+  return SALES_LEVELS.some((l) => l.key === raw) ? (raw as MapLayer) : 'customer';
+}
+
+function parseMode(raw: string | null): MapModeKey {
+  return raw && raw in MODE_BY_KEY ? (raw as MapModeKey) : 'administrative';
+}
+
 export default function MapPage() {
   const t = useT();
   const { hasSection } = useAuth();
@@ -150,8 +196,68 @@ export default function MapPage() {
   // is exactly what every other report sends.
   const { query: filterQuery } = useFilters();
 
-  const [metric, setMetric] = useState('net_sales');
+  /**
+   * The map mode, which is what the reader is looking *for*.
+   *
+   * The metric follows from it rather than being chosen separately: a mode with
+   * a metric colours the areas by it, and a mode without one leaves the map
+   * administrative. Keeping one control instead of two is what stops the map
+   * offering a "Sales Achievement" heading over a Net Sales choropleth.
+   */
+  const mode = parseMode(searchParams.get('mapMode'));
+  const modeSpec = MODE_BY_KEY[mode];
+
+  /**
+   * The mode lives in the URL, like every other thing this page is looking at.
+   *
+   * Same reason the filters do: a map someone is reading should survive a
+   * refresh and be shareable as what it shows, not as a starting point the
+   * recipient has to rebuild. `replace` is deliberate — flipping between modes
+   * is looking around, not navigating, and each flip should not become a back
+   * step to walk out of. The filters are untouched, so changing mode cannot
+   * reset them and changing them cannot reset the mode.
+   */
+  const setMode = useCallback(
+    (next: MapModeKey) => {
+      setSearchParams(
+        (params) => {
+          const updated = new URLSearchParams(params);
+          if (next === 'administrative') updated.delete('mapMode');
+          else updated.set('mapMode', next);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  const metric = modeSpec.metric ?? 'net_sales';
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
+  /**
+   * The one business level drawn as points.
+   *
+   * The map used to draw seven layers at once through a row of toggles, which
+   * is a *visibility* control; what a reader of a sales map actually chooses is
+   * the grain they want the business aggregated at. One level at a time is that
+   * question, and it is also what keeps 2,561 markers from stacking into a
+   * single blue mass. Persisted in the URL beside the mode, for the same reason.
+   */
+  const salesLevel = parseSalesLevel(searchParams.get('salesLevel'));
+  const setSalesLevel = useCallback(
+    (next: MapLayer) => {
+      setSearchParams(
+        (params) => {
+          const updated = new URLSearchParams(params);
+          if (next === 'customer') updated.delete('salesLevel');
+          else updated.set('salesLevel', next);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   const [layers, setLayers] = useState<MapLayer[]>(
     // Arriving from a table with a focus, only that layer is drawn: the point
     // of "show these three customers" is to see those three, not to find them
@@ -238,6 +344,117 @@ export default function MapPage() {
     return result;
   }, [areaData.data, metricLevel]);
 
+  /**
+   * Which modes this deployment can actually run.
+   *
+   * A mode is available when the server publishes the metric it names — the
+   * `/api/map/config` metric list is the authority, so a mode becomes real the
+   * day a metric is added behind it and needs nothing here. Modes with no metric
+   * at all (Administrative, Customer Coverage) are available whenever the map
+   * is, and one carrying an `unavailableKey` is always shown disabled: the point
+   * is to say the dashboard means to show this and has no data for it yet.
+   */
+  const availableModes = useMemo(() => {
+    const published = new Set((config.data?.metrics ?? []).map((m) => m.key));
+    return new Map(
+      MAP_MODES.map((m) => [
+        m.key,
+        m.unavailableKey ? false : m.metric === null || published.has(m.metric),
+      ]),
+    );
+  }, [config.data]);
+
+  /**
+   * Aggregated points for the level being read, when a mode measures anything.
+   *
+   * Asked of `/api/map/data`, which aggregates the level in the warehouse and
+   * returns one point per code carrying `net_sales`, `target_amount` and
+   * `achievement_percent` - all summed and divided server-side. The bubble's
+   * size and its colour therefore come from the same query the reports read,
+   * and nothing here divides one business figure by another.
+   */
+  const wantsPoints = modeSpec.metric !== null;
+  const pointQuery = {
+    ...filterQuery,
+    level: salesLevel,
+    metric: modeSpec.metric ?? 'net_sales',
+    cluster: false,
+  };
+  const pointData = useQuery({
+    queryKey: ['map-points', pointQuery],
+    queryFn: () => mapService.points(pointQuery),
+    enabled: config.isSuccess && wantsPoints && (availableModes.get(mode) ?? false),
+    placeholderData: keepPreviousData,
+    staleTime: 60 * 1000,
+  });
+
+  /**
+   * The bubbles, already encoded.
+   *
+   * Size is scaled against the largest sales figure actually present so a quiet
+   * period still spreads across the full range; colour comes from the agreed
+   * achievement bands, which are *not* rescaled because their breaks are the
+   * meaning. A point the server could not score has no achievement and is not
+   * given a colour it did not earn.
+   */
+  const bubbles = useMemo(() => {
+    if (!wantsPoints) return null;
+    const points = pointData.data?.points ?? [];
+    if (!points.length) return null;
+    const sales = points.map((p) => Number(p.measures.net_sales ?? 0));
+    const max = Math.max(...sales, 0);
+    return points.map((point, index) => {
+      const achieved = point.measures.achievement_percent;
+      const band = achieved == null
+        ? null
+        : ACHIEVEMENT_BANDS.find((b) => b.max === null || Number(achieved) < b.max);
+      return {
+        code: point.code,
+        label: point.label,
+        latitude: point.latitude,
+        longitude: point.longitude,
+        radius: max > 0
+          ? BUBBLE_MIN + (sales[index] / max) * (BUBBLE_MAX - BUBBLE_MIN)
+          : BUBBLE_MIN,
+        colour: band?.color ?? UNSCORED_BUBBLE,
+        netSales: sales[index],
+        targetAmount: Number(point.measures.target_amount ?? 0),
+        achievement: achieved == null ? null : Number(achieved),
+      };
+    });
+  }, [wantsPoints, pointData.data]);
+
+  /**
+   * No area choropleth. Deliberately, and this is the reason.
+   *
+   * A choropleth needs a metric attributed to the polygons it paints, and this
+   * warehouse has none: `map/areas.py` returns `{}` from both `stock_by_area`
+   * and `_optional_metrics`, each with a comment explaining that nothing which
+   * replaced the warehouse dimension carries a coordinate or a district. An
+   * earlier version of this page painted `feature.properties.stock` and so
+   * coloured every area by the configured default — one flat value dressed up
+   * as a measurement, which is precisely the invented figure this application
+   * refuses to draw.
+   *
+   * The metrics are real at the *point* level, where each region, territory or
+   * customer has its own coordinate, and that is where the map reads them.
+   * Restoring an area choropleth needs sales attributed to admin areas, which
+   * means point-in-polygon over customer coordinates — and only 846 of 2,561
+   * customers are placed, so it would colour a third of the business and read
+   * as all of it.
+   */
+  const choropleth = null;
+
+  /** Sales Level options, each carrying how many records are in scope. */
+  const salesLevelOptions = useMemo(
+    () =>
+      SALES_LEVELS.map((level) => ({
+        ...level,
+        count: data.data?.counts[level.key] ?? 0,
+      })),
+    [data.data],
+  );
+
   /** Boundary appearance, from the database. Never decided in the browser. */
   const areaStyles = useMemo(() => {
     const styles = config.data?.administrative_areas?.styles ?? {};
@@ -250,7 +467,8 @@ export default function MapPage() {
 
   /* ----------------------------------------------------------- map payload */
 
-  const visibleLayers = useMemo(() => new Set(layers), [layers]);
+  // One level at a time now: the Sales Level control *is* the layer choice.
+  const visibleLayers = useMemo(() => new Set<MapLayer>([salesLevel]), [salesLevel]);
   const focusCodes = useMemo(
     () => (focus ? new Set(focus.codes) : null),
     [focus],
@@ -321,14 +539,6 @@ export default function MapPage() {
     setFitToken((token) => token + 1);
   }
 
-  function toggleLayer(layer: MapLayer) {
-    setLayers((previous) =>
-      previous.includes(layer)
-        ? previous.filter((entry) => entry !== layer)
-        : [...previous, layer],
-    );
-  }
-
   const coverage = config.data?.coverage ?? [];
   const deepest = crumbs[crumbs.length - 1]?.level ?? 'region';
   const levelCoverage = coverage.find((row) => row.entity_type === deepest);
@@ -360,22 +570,26 @@ export default function MapPage() {
         }
       />
 
-      <GlobalFilterBar />
-
-      {/* ---- metric, breadcrumb ---- */}
+      {/* The map is a self-contained workspace: it does not take the dashboard's
+          global filter, because what it needs is an *aggregation level*, which
+          the Sales Level control inside the map chooses. Period stays, because a
+          map of sales is meaningless without one — and it is the application's
+          own `DateFilter`, not a second period system, so a period chosen here
+          and one chosen on the dashboard are the same URL parameter. Every other
+          page keeps its `GlobalFilterBar` untouched. */}
       <div className="card mb-3 flex flex-wrap items-center gap-3 p-3">
-        <select
-          className="input max-w-[13rem]"
-          value={metric}
-          onChange={(event) => setMetric(event.target.value)}
-          aria-label={t('map.metric')}
-        >
-          {(config.data?.metrics ?? []).map((option) => (
-            <option key={option.key} value={option.key}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+        <DateFilter />
+
+        <span className="h-6 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
+
+        {/* Why, not just that. A mode greyed out with no reason reads as a bug;
+            named as "no promotion data exists", it reads as a fact about the
+            platform, which is what it is. */}
+        {modeSpec.unavailableKey && (
+          <p className="max-w-md text-xs text-slate-500 dark:text-slate-400">
+            {t(modeSpec.unavailableKey)}
+          </p>
+        )}
 
         <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label="Drill path">
           <button
@@ -407,35 +621,83 @@ export default function MapPage() {
         </span>
       </div>
 
-      {/* ---- entity layer toggles: visibility only, never the filter ---- */}
-      <div className="card mb-4 flex flex-wrap items-center gap-2 p-3">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-          <Layers size={14} />
-          {t('map.layers')}
-        </span>
-        {LAYERS.map((layer) => {
-          const on = layers.includes(layer.key);
-          const inScope = data.data?.counts[layer.key] ?? 0;
-          return (
-            <button
-              key={layer.key}
-              type="button"
-              onClick={() => toggleLayer(layer.key)}
-              aria-pressed={on}
-              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
-                on
-                  ? 'border-brand-500 bg-brand-50 text-brand-700 dark:bg-slate-800 dark:text-brand-300'
-                  : 'border-slate-200 text-slate-500 hover:border-slate-300 dark:border-slate-700'
-              }`}
-            >
-              {on ? <Eye size={12} /> : <EyeOff size={12} />}
-              {t(layer.labelKey)}
-              <span className="tabular-nums text-slate-400">{inScope}</span>
-            </button>
-          );
-        })}
-        <span className="ml-auto text-[11px] text-slate-400">{t('map.adminLevelsHint')}</span>
+      {/* ---- workspace counts ----
+          Only figures the map's own API states outright. There is deliberately
+          no Sales or Target tile: no map endpoint returns a scoped total, and
+          summing the per-area values here would produce a number that could
+          disagree with the Dashboard's — the one thing this codebase is built
+          to prevent. Achievement and Growth are absent for the same reason
+          their modes are: the API does not publish them. */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {[
+          // The chosen level, and Customer — unless they are the same level, in
+          // which case one tile says it once.
+          ...(salesLevel === 'customer'
+            ? []
+            : [{ key: 'level',
+                 label: t(SALES_LEVELS.find((l) => l.key === salesLevel)!.labelKey),
+                 value: formatCount(data.data?.counts[salesLevel] ?? 0) }]),
+          { key: 'customers', label: t('map.layerCustomer'),
+            value: formatCount(data.data?.counts.customer ?? 0) },
+          { key: 'placed', label: t('map.onTheMap'),
+            value: formatCount(data.data?.totals.placed ?? 0) },
+          { key: 'unplaced', label: t('map.notPlaced'),
+            value: formatCount(data.data?.totals.unplaced ?? 0) },
+        ].map((tile) => (
+          <div key={tile.key} className="card p-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              {tile.label}
+            </p>
+            <p className="mt-1 text-xl font-semibold tabular-nums">{tile.value}</p>
+          </div>
+        ))}
       </div>
+
+      {/* ---- geographic coverage ----
+          Derived organisational points are approximations, and this is where
+          the map says so. Every figure is the server's own count from
+          `geo.coverage` — nothing here is written down, so the day somebody
+          geocodes another two hundred customers the line moves on its own. */}
+      {(() => {
+        const level = coverage.find((row) => row.entity_type === salesLevel);
+        const customers = coverage.find((row) => row.entity_type === 'customer');
+        if (!level && !customers) return null;
+        return (
+          <div className="card mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 p-3 text-xs">
+            {level && (
+              <span className="flex items-center gap-1.5">
+                <MapPin size={13} className="text-slate-400" />
+                <span className="font-medium">{level.label}</span>
+                <span className="tabular-nums">
+                  {formatCount(level.placed)} / {formatCount(level.total)}
+                </span>
+                <span className="text-slate-500">{t('map.coveragePlaced')}</span>
+                {level.derived > 0 && (
+                  <span className="rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                    {formatCount(level.derived)} {t('map.coverageApproximate')}
+                  </span>
+                )}
+                {level.missing > 0 && (
+                  <span className="text-slate-500">
+                    · {formatCount(level.missing)} {t('map.coverageNeedLocation')}
+                  </span>
+                )}
+              </span>
+            )}
+            {customers && (
+              <span className="flex items-center gap-1.5 text-slate-500">
+                <span className="font-medium text-slate-600 dark:text-slate-300">
+                  {customers.label}
+                </span>
+                <span className="tabular-nums">
+                  {formatCount(customers.placed)} / {formatCount(customers.total)}
+                </span>
+                {t('map.coveragePlaced')}
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ---- coverage warning ---- */}
       {config.data && !config.data.has_locations && (
@@ -501,6 +763,15 @@ export default function MapPage() {
               entities={entityCollection}
               markers={data.data?.markers}
               areaMetrics={areaMetrics}
+              choropleth={choropleth}
+              bubbles={bubbles}
+              markerEmphasis={choropleth ? MUTED_MARKERS : 1}
+              mode={mode}
+              onModeChange={setMode}
+              availableModes={availableModes}
+              salesLevel={salesLevel}
+              onSalesLevelChange={setSalesLevel}
+              salesLevels={salesLevelOptions}
               showMask={reference.mask}
               showCapitals={reference.capitals}
               showAdminLines={reference.lines}
@@ -692,6 +963,8 @@ export default function MapPage() {
                 activeLevels={boundaryLevels}
                 areaStyles={areaStyles}
                 drawnTypes={drawnTypes}
+                mode={mode}
+                modeAvailable={availableModes.get(mode) ?? false}
               />
             </QueryState>
           </Section>

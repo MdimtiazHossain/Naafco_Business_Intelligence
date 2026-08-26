@@ -11,9 +11,13 @@ import { MarkerPreview } from '../MarkerPreview';
 import { useT } from '../../contexts/I18nContext';
 import type { AreaStyle, MarkerLegendEntry } from '../../types/api';
 import {
+  ACHIEVEMENT_BANDS,
   BOUNDARY_LEVELS,
   FALLBACK_AREA_STYLES,
+  MODE_BY_KEY,
+  SEQUENTIAL_RAMP,
   type BoundaryLevelKey,
+  type MapModeKey,
 } from './mapConfig';
 
 export interface MapLegendProps {
@@ -22,6 +26,10 @@ export interface MapLegendProps {
   areaStyles: Partial<Record<BoundaryLevelKey, AreaStyle>>;
   /** Entity types with at least one placed record, so the legend matches. */
   drawnTypes: ReadonlySet<string>;
+  /** The mode on screen; the legend explains that and nothing else. */
+  mode: MapModeKey;
+  /** False when the mode is listed but has no data, so no scale is drawn. */
+  modeAvailable: boolean;
 }
 
 export function MapLegend({
@@ -29,6 +37,8 @@ export function MapLegend({
   activeLevels,
   areaStyles,
   drawnTypes,
+  mode,
+  modeAvailable,
 }: MapLegendProps) {
   const t = useT();
 
@@ -41,12 +51,41 @@ export function MapLegend({
 
   const levels = BOUNDARY_LEVELS.filter((level) => activeLevels.includes(level.key));
 
-  if (!markers.length && !levels.length) {
+  /* The scale for the mode being read, when it is colouring anything. A mode
+     with no data draws no scale at all: a key to colours that are not on the
+     map is worse than no key, because it implies they are. */
+  const encoding = modeAvailable ? MODE_BY_KEY[mode].encoding : 'none';
+  const scale: { colour: string; label: string }[] =
+    // Colour means achievement wherever colour means anything, so the key is
+    // the agreed bands. A density surface encodes count, not a business figure,
+    // and says so in words rather than borrowing the achievement palette.
+    encoding === 'size+colour' || encoding === 'colour'
+      ? ACHIEVEMENT_BANDS.map((band) => ({ colour: band.color, label: t(band.labelKey) }))
+      : encoding === 'count'
+        ? [
+            { colour: SEQUENTIAL_RAMP[0], label: t('map.legendLow') },
+            { colour: SEQUENTIAL_RAMP[2], label: t('map.legendMedium') },
+            { colour: SEQUENTIAL_RAMP[4], label: t('map.legendHigh') },
+          ]
+        : [];
+
+  if (!markers.length && !levels.length && !scale.length) {
     return <p className="text-xs text-slate-400">{t('map.legendEmpty')}</p>;
   }
 
   return (
     <ul className="space-y-2">
+      {scale.map((step) => (
+        <li key={step.label} className="flex items-center gap-2">
+          <span
+            aria-hidden="true"
+            className="inline-block h-6 w-6 shrink-0 rounded"
+            style={{ backgroundColor: step.colour }}
+          />
+          <span className="truncate text-sm">{step.label}</span>
+        </li>
+      ))}
+
       {markers.map((entry) => (
         <li key={entry.entity_type} className="flex items-center gap-2">
           <MarkerPreview svg={entry.preview_svg} size={24} />

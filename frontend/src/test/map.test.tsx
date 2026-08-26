@@ -15,11 +15,12 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../contexts/I18nContext';
 import { ThemeProvider } from '../contexts/ThemeContext';
+import { FilterProvider } from '../contexts/FilterContext';
 import {
   buildEntityCollection,
   collectionBounds,
@@ -347,12 +348,20 @@ vi.mock('../contexts/AuthContext', () => ({
   }),
 }));
 
+// The map no longer renders GlobalFilterBar; the mock stays because other
+// imports in the tree may still reach for it.
 vi.mock('../filters/GlobalFilterBar', () => ({
   GlobalFilterBar: () => <div data-testid="filter-bar" />,
 }));
 
+// The map keeps the application's own period control, so the filter mock has to
+// supply the shape `DateFilter` reads — not just the query it builds.
 vi.mock('../contexts/FilterContext', () => ({
-  useFilters: () => ({ query: { period: 'THIS_MONTH' } }),
+  useFilters: () => ({
+    query: { period: 'THIS_MONTH' },
+    period: { period: 'THIS_MONTH', date_from: null, date_to: null },
+    setPeriod: () => {},
+  }),
   FilterProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
@@ -479,13 +488,18 @@ const ENTITIES = {
 
 const EMPTY_GEOJSON = { type: 'FeatureCollection', features: [], bbox: [88, 20.5, 92.7, 26.7] };
 
-function wrap(ui: React.ReactNode) {
+function wrap(ui: React.ReactNode, route = '/map') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <I18nProvider>
         <ThemeProvider>
-          <MemoryRouter>{ui}</MemoryRouter>
+          <MemoryRouter initialEntries={[route]}>
+            {/* The map now uses the application's own DateFilter for period,
+                which reads FilterContext — the same provider App.tsx puts above
+                every page. */}
+            <FilterProvider>{ui}</FilterProvider>
+          </MemoryRouter>
         </ThemeProvider>
       </I18nProvider>
     </QueryClientProvider>,
@@ -575,8 +589,13 @@ describe('MapPage', () => {
       GEO_FILES.country, GEO_FILES.division, GEO_FILES.district,
       GEO_FILES.upazila, GEO_FILES.mask,
     ]));
-    // Every one of them is a static asset path, not an endpoint.
-    for (const url of requested) expect(url).toMatch(/^\/geo\//);
+    // Every *geometry* request is a static asset path, not an endpoint. The
+    // page makes other calls through the same stubbed fetch — period options,
+    // for one — and those are not geometry; what must never happen is a
+    // boundary being asked for from the server.
+    const geometry = requested.filter((url) => url.includes('geojson'));
+    expect(geometry.length).toBeGreaterThan(0);
+    for (const url of geometry) expect(url).toMatch(/^\/geo\//);
   });
 
   it('asks the server for area figures without asking for the polygons again', async () => {
@@ -715,6 +734,61 @@ describe('MapPage', () => {
     }
   });
 
+  it('offers a mode for every real metric and disables the ones with no data', async () => {
+    // The rule this pins: a mode is available only when the server publishes the
+    // metric behind it, and one that carries a reason is always disabled. The
+    // map must never label itself "Sales Achievement" over a fill it computed
+    // from something else, and must never invent the number it lacks.
+    const { default: MapPage } = await import('../pages/MapPage');
+    wrap(<MapPage />);
+
+    const select = (await screen.findByLabelText('Map view')) as HTMLSelectElement;
+    const options = () =>
+      Object.fromEntries([...select.options].map((o) => [o.value, o.disabled]));
+
+    // Availability is derived from `/api/map/config`, so it settles only once
+    // that query resolves — before then every metric mode is correctly disabled.
+    await waitFor(() => expect(options().administrative).toBe(false));
+    const byValue = options();
+
+    // Availability follows the server's metric list, which this fixture sets to
+    // `net_sales` alone. The measuring modes read `achievement`, which this
+    // fixture does not publish, so they are correctly unavailable here even
+    // though the real deployment now publishes it. That is the contract: the
+    // frontend never assumes a metric exists.
+    expect(byValue.bubble).toBe(true);
+    expect(byValue.performance).toBe(true);
+
+    // Modes needing no metric are available whenever the map is.
+    expect(byValue.administrative).toBe(false);
+    expect(byValue.density).toBe(false);
+
+    // Declared, listed, and inert because the platform holds no such data.
+    expect(byValue.promotion).toBe(true);
+  });
+
+  it('reads the map mode from the URL, and falls back when it is not a mode', async () => {
+    // The mode belongs in the URL for the same reason the filters do: a map
+    // someone is reading should survive a refresh and be shareable as what it
+    // shows. A stale or hand-typed value must fall back rather than break the
+    // page, which is the case a shared link degrades into once a mode is renamed.
+    const { default: MapPage } = await import('../pages/MapPage');
+
+    wrap(<MapPage />, '/map?mapMode=density');
+    let select = (await screen.findByLabelText('Map view')) as HTMLSelectElement;
+    expect(select.value).toBe('density');
+
+    cleanup();
+    wrap(<MapPage />, '/map?mapMode=not_a_real_mode');
+    select = (await screen.findByLabelText('Map view')) as HTMLSelectElement;
+    expect(select.value).toBe('administrative');
+
+    cleanup();
+    wrap(<MapPage />, '/map');
+    select = (await screen.findByLabelText('Map view')) as HTMLSelectElement;
+    expect(select.value).toBe('administrative');
+  });
+
   it('adds no duplicate source or layer when applied repeatedly', async () => {
     const { default: MapPage } = await import('../pages/MapPage');
     wrap(<MapPage />);
@@ -769,9 +843,13 @@ describe('MapPage', () => {
 
   // --- business data --------------------------------------------------------
 
-  it('puts every level of business data in one source', async () => {
+  it('puts the drawn business level in one source, whichever level it is', async () => {
+    // One source for business data, not one per level — that is what lets a
+    // filter change swap the contents with `setData` instead of rebuilding
+    // layers. The Sales Level control decides *which* level fills it; the
+    // guarantee is that it is always exactly one source.
     const { default: MapPage } = await import('../pages/MapPage');
-    wrap(<MapPage />);
+    wrap(<MapPage />, '/map?salesLevel=region');
     const map = await mountedMap();
 
     await waitFor(() => {
@@ -779,7 +857,19 @@ describe('MapPage', () => {
         features: { properties: { code: string } }[];
       };
       expect(source.features.map((f) => f.properties.code).sort())
-        .toEqual(['C001', 'REG001', 'REG004']);
+        .toEqual(['REG001', 'REG004']);
+    });
+
+    // And the customers are reachable through the same one source.
+    cleanup();
+    FakeMap.last = null; // or `mountedMap` returns the map we just unmounted
+    wrap(<MapPage />, '/map?salesLevel=customer');
+    const second = await mountedMap();
+    await waitFor(() => {
+      const source = second.sources.get(IDS.entitySource)?.data as {
+        features: { properties: { code: string } }[];
+      };
+      expect(source.features.map((f) => f.properties.code)).toEqual(['C001']);
     });
   });
 
@@ -792,18 +882,22 @@ describe('MapPage', () => {
     expect(map.images.has(iconName('customer'))).toBe(true);
   });
 
-  it('hides a layer without narrowing the scope', async () => {
+  it('changes what is drawn without narrowing the scope', async () => {
+    // The rule this has always guarded: choosing what to *look at* is not the
+    // same as choosing what is *in scope*. It used to be a layer toggle and is
+    // now the Sales Level control, but the guarantee is unchanged — changing it
+    // must not smuggle a filter into the query.
     const { default: MapPage } = await import('../pages/MapPage');
     wrap(<MapPage />);
     await mountedMap();
 
-    fireEvent.click(screen.getByRole('button', { name: /^Customer/ }));
+    const select = (await screen.findByLabelText('Sales level')) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'region' } });
 
     await waitFor(() => {
       const last = entitiesSpy.mock.calls.at(-1)?.[0] as { layers: string };
-      expect(last.layers.split(',')).not.toContain('customer');
+      expect(last.layers.split(',')).toContain('region');
     });
-    // Nothing about the filter changed, so the scope is untouched.
     const last = entitiesSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(last.region_code).toBeUndefined();
   });
@@ -878,7 +972,7 @@ describe('MapPage', () => {
     const { default: MapPage } = await import('../pages/MapPage');
     wrap(<MapPage />);
 
-    await waitFor(() => expect(screen.getByLabelText('Metric')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText('Map view')).toBeInTheDocument());
     const map = await mountedMap();
     const source = map.sources.get(IDS.entitySource)?.data as { features: unknown[] };
     expect(source.features).toHaveLength(0);
