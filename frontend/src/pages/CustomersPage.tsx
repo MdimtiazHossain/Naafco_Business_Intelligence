@@ -92,6 +92,7 @@ export default function CustomersPage() {
           */}
           <Section title={t('customers.inactive')}>
             <DataTable
+              tableId="customers.inactive"
               rows={data?.inactive_customers ?? []}
               columns={[
                 { key: 'label', header: t('filters.customer') },
@@ -108,6 +109,7 @@ export default function CustomersPage() {
 
           <Section title={t('customers.title')}>
             <DataTable
+              tableId="customers.list"
               rows={rows}
               columns={columns}
               pageSize={25}

@@ -78,6 +78,7 @@ export default function DataQualityPage() {
 
           <Section title={t('dataQuality.history')}>
             <DataTable
+              tableId="data-quality.batches"
               rows={batches as unknown as Record<string, any>[]}
               columns={[
                 { key: 'batch_id', header: t('dataQuality.batch') },
@@ -138,6 +139,7 @@ export default function DataQualityPage() {
                     </div>
 
                     <DataTable
+                      tableId="data-quality.error-codes"
                       rows={detail.by_error_code as unknown as Record<string, any>[]}
                       columns={[
                         { key: 'error_code', header: t('admin.action') },
@@ -151,6 +153,7 @@ export default function DataQualityPage() {
 
                     {detail.rejected_records && detail.rejected_records.total > 0 && (
                       <DataTable
+                        tableId="data-quality.rejected"
                         rows={detail.rejected_records.records as unknown as Record<string, any>[]}
                         columns={[
                           { key: 'source_row_number', header: t('common.page') },

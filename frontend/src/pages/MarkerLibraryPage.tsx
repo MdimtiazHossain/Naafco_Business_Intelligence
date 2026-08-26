@@ -195,6 +195,7 @@ export default function MarkerLibraryPage() {
           skeleton={<CardSkeleton rows={6} />}
         >
           <DataTable
+            tableId="markers.designs"
             rows={(designs.data?.designs ?? []) as unknown as Record<string, any>[]}
             searchable={false}
             pageSize={20}
@@ -349,6 +350,7 @@ export default function MarkerLibraryPage() {
           emptyMessage={t('marker.noAssignments')}
         >
           <DataTable
+            tableId="markers.assignments"
             rows={(assignments.data?.assignments ?? []) as unknown as Record<string, any>[]}
             searchable={false}
             pageSize={15}

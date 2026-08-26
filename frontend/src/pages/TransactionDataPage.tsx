@@ -247,6 +247,8 @@ export default function TransactionDataPage() {
           skeleton={<CardSkeleton rows={8} />}
         >
           <DataTable<ManagedRow>
+            // One page serves every dataset, so the arrangement belongs to the dataset.
+            tableId={`transaction-data.${dataType}`}
             serverMode
             rows={list.data?.rows ?? []}
             columns={columns}

@@ -262,6 +262,9 @@ export default function StockPage() {
                 valueLabel={t('stock.total')}
               />
               <DataTable
+                // One arrangement per breakdown: the sections list the same measures
+                // about different things.
+                tableId={`stock.${key}`}
                 rows={result?.rows ?? []}
                 columns={stockColumns(title)}
                 // Says stock, not "records", and names the filters rather than
@@ -281,6 +284,7 @@ export default function StockPage() {
           {/* --- Positions at or past shelf life --------------------------- */}
           <Section title={t('stock.expiringPositions')}>
             <DataTable
+              tableId="stock.expiring"
               rows={data?.expiring.rows ?? []}
               columns={expiringColumns}
               pageSize={25}

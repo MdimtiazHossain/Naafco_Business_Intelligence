@@ -167,6 +167,7 @@ export default function Dashboard() {
           */}
           <Section title={t('dashboard.topBrands')}>
             <DataTable
+              tableId="dashboard.brands"
               rows={brandRows}
               columns={[
                 { key: 'rank', header: t('common.rank') },

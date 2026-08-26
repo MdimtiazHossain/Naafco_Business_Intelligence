@@ -221,6 +221,7 @@ export default function TargetPage() {
             }
           >
             <DataTable
+              tableId="target.region"
               rows={onlyBelow ? visibleRows : regionRows}
               columns={achievementColumns(t('filters.region'))}
               onRowClick={(row) =>
@@ -231,6 +232,7 @@ export default function TargetPage() {
 
           <Section title={t('target.territoryAchievement')}>
             <DataTable
+              tableId="target.territory"
               rows={territoryRows}
               columns={achievementColumns(t('filters.territory'))}
             />
@@ -245,6 +247,7 @@ export default function TargetPage() {
           */}
           <Section title={t('target.brandAchievement')}>
             <DataTable
+              tableId="target.brand"
               rows={brandRows}
               columns={brandColumns}
               searchable={false}

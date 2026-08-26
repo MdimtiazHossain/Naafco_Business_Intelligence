@@ -66,6 +66,8 @@ export function TransactionTable({
   return (
     <QueryState isLoading={isLoading} error={error} onRetry={() => void refetch()}>
       <DataTable
+        // The dataset decides which columns the server returns.
+        tableId={`transactions.${dataType}`}
         rows={data?.rows ?? []}
         columns={columns}
         serverMode

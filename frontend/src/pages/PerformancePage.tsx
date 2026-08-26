@@ -198,6 +198,9 @@ export default function PerformancePage() {
             }
           >
             <DataTable
+              // Every drill level lists the same columns, so the arrangement survives
+              // the drill.
+              tableId="performance.breakdown"
               rows={rows}
               columns={columns}
               onRowClick={data?.next_level ? drillInto : undefined}

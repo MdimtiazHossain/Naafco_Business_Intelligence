@@ -286,6 +286,7 @@ describe('AiResponse', () => {
   function answer(text: string) {
     return {
       conversation_id: 'c1',
+      message_id: 1,
       intent: 'TARGET_ACHIEVEMENT',
       answer: text,
       data: {},

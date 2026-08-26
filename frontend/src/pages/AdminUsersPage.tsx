@@ -365,6 +365,7 @@ export default function AdminUsersPage() {
           skeleton={<CardSkeleton rows={6} />}
         >
           <DataTable
+            tableId="admin.user-list"
             rows={(usersQuery.data?.users ?? []) as unknown as Record<string, any>[]}
             serverMode
             page={page}

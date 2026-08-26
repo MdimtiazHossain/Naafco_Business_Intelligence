@@ -282,6 +282,7 @@ export default function AdminPage() {
             skeleton={<CardSkeleton rows={5} />}
           >
             <DataTable
+              tableId="admin.users"
               rows={(usersQuery.data?.users ?? []) as unknown as Record<string, any>[]}
               columns={[
                 { key: 'username', header: t('auth.username') },
@@ -324,6 +325,7 @@ export default function AdminPage() {
             skeleton={<CardSkeleton rows={6} />}
           >
             <DataTable
+              tableId="admin.audit"
               rows={(auditQuery.data?.logs ?? []) as unknown as Record<string, any>[]}
               columns={[
                 {

@@ -207,6 +207,9 @@ export default function SalesPage() {
             </div>
             <div className="p-4">
               <DataTable
+                // Each tab is a different report, so each remembers its own
+                // arrangement.
+                tableId={`sales.${tab}`}
                 rows={activeRows}
                 columns={tab === 'brand' ? BRAND_COLUMNS(t) : PERFORMANCE_COLUMNS(t)}
                 onRowClick={

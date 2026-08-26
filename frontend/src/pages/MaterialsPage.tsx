@@ -172,6 +172,7 @@ export default function MaterialsPage() {
                 <div className="grid gap-4 lg:grid-cols-2">
                   <Section title={t('materials.byGroup')}>
                     <DataTable
+                      tableId="materials.detail.groups"
                       rows={detail.groups.rows ?? []}
                       columns={groupColumns}
                       searchable={false}
@@ -181,6 +182,7 @@ export default function MaterialsPage() {
                   </Section>
                   <Section title={t('materials.byMaterial')}>
                     <DataTable
+                      tableId="materials.detail.materials"
                       rows={detail.materials.rows ?? []}
                       columns={[
                         { key: 'code', header: t('filters.materialCode') },
@@ -196,6 +198,7 @@ export default function MaterialsPage() {
                   </Section>
                   <Section title={t('sales.byTerritory')}>
                     <DataTable
+                      tableId="materials.detail.territories"
                       rows={detail.territories.rows ?? []}
                       columns={[
                         { key: 'label', header: t('filters.territory') },
@@ -210,6 +213,7 @@ export default function MaterialsPage() {
                   </Section>
                   <Section title={t('sales.byCustomer')}>
                     <DataTable
+                      tableId="materials.detail.customers"
                       rows={detail.customers.rows ?? []}
                       columns={[
                         { key: 'label', header: t('filters.customer') },
@@ -241,6 +245,7 @@ export default function MaterialsPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             <Section title={t('materials.top10')}>
               <DataTable
+                tableId="materials.top"
                 rows={data?.top ?? []}
                 columns={[
                   { key: 'label', header: nameHeader },
@@ -254,6 +259,7 @@ export default function MaterialsPage() {
             </Section>
             <Section title={t('materials.bottom10')}>
               <DataTable
+                tableId="materials.bottom"
                 rows={data?.bottom ?? []}
                 columns={[
                   { key: 'label', header: nameHeader },
@@ -269,6 +275,9 @@ export default function MaterialsPage() {
 
           <Section title={t('materials.title')}>
             <DataTable
+              // The three levels declare different columns, so they cannot share one
+              // arrangement.
+              tableId={`materials.${level}`}
               rows={rows}
               columns={columns}
               pageSize={25}

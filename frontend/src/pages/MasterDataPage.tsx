@@ -313,6 +313,8 @@ export default function MasterDataPage() {
           skeleton={<CardSkeleton rows={8} />}
         >
           <DataTable<ManagedRow>
+            // One page serves every entity, so the arrangement belongs to the entity.
+            tableId={`master-data.${entityKey}`}
             serverMode
             rows={list.data?.rows ?? []}
             columns={columns}
