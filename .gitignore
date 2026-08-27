@@ -4,6 +4,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# --- Node -------------------------------------------------------------------
+# frontend/.gitignore already ignores frontend/node_modules; a root-level
+# install (npm run something from the repo root) puts a second tree here that
+# rule cannot see, so ignore the directory by name at any depth.
+node_modules/
+
 # --- Secrets ----------------------------------------------------------------
 # Every .env variant, not just `.env` — .env.bak carries the same JWT secret.
 # .env.example is the committed template and is the one exception.
@@ -39,6 +45,15 @@ dev.db*
 Master Data.xlsx
 **/data/Master Data.xlsx
 ~$*.xlsx
+# The rules above name the files that existed when they were written, and each
+# new kind of extract has needed another one — the pg-*.dump.sql pair a schema
+# copy left behind matched none of them. Nothing under `data/` has ever been
+# tracked and nothing there belongs in version control: it is the source
+# workbook, the SQLite databases, their per-migration backups, the upload
+# staging area and now database dumps, all real Naafco data. Ignore the whole
+# directory rather than chasing each new file type. `**/` because there is a
+# `data/` under both the repo root and `backend/`.
+**/data/
 
 # --- Reference geography ----------------------------------------------------
 # Admin boundaries are downloaded from GADM/HDX per README, never bundled —
