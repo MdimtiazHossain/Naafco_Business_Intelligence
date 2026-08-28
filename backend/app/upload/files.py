@@ -20,6 +20,7 @@ from typing import BinaryIO
 
 from ..config import get_settings
 from ..etl.readers import CsvSourceReader, ExcelSourceReader, SourceReader
+from ..utils.progress import ProgressReporter
 
 EXTENSION_XLSX = ".xlsx"
 EXTENSION_CSV = ".csv"
@@ -75,11 +76,20 @@ class StoredUpload:
     #: the same file again after fixing the master data it referenced is normal.
     sha256: str | None = None
 
-    def reader(self, sheet_name: str | None = None) -> SourceReader:
-        """A Phase 2 source reader over the staged file."""
+    def reader(self, sheet_name: str | None = None,
+               progress: ProgressReporter | None = None) -> SourceReader:
+        """A Phase 2 source reader over the staged file.
+
+        ``progress`` is the job's reporter, and reading is the one step it could
+        not previously see: the file is parsed before the pipeline starts, so a
+        job spent the whole of the longest phase claiming to be preparing. A
+        reader given no reporter reports nothing, which is what the scripts and
+        the tests get.
+        """
         if self.extension == EXTENSION_XLSX:
-            return ExcelSourceReader(self.path, sheet_name=sheet_name)
-        return CsvSourceReader(self.path)
+            return ExcelSourceReader(self.path, sheet_name=sheet_name,
+                                     progress=progress)
+        return CsvSourceReader(self.path, progress=progress)
 
 
 def upload_dir() -> Path:

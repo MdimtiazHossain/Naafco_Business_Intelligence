@@ -84,7 +84,11 @@ export function MapRanking({
       {rows.length === 0 ? (
         <EmptyState message={loading ? t('common.loading') : t('map.rankEmpty')} />
       ) : (
-        <div className="max-h-80 overflow-auto">
+        <div className="min-h-0 max-h-[32rem] flex-1 overflow-auto xl:max-h-none">
+          {/* Fills the rail it sits in, and is capped only where there is
+              no rail to fill — stacked on a narrow screen this panel has
+              no height to share, so an unbounded fifty-row table would
+              push the map off the screen. */}
           <table className="w-full border-collapse text-xs">
             <thead className="sticky top-0 z-10 bg-white dark:bg-slate-900">
               <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-400 dark:border-slate-800">

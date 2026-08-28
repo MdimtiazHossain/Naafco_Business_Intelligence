@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
+from ..utils.progress import Phase, ProgressReporter
+
 SOURCE_TYPE_EXCEL = "EXCEL"
 SOURCE_TYPE_CSV = "CSV"
 SOURCE_TYPE_API = "API"
@@ -64,14 +66,49 @@ class ExcelSourceReader(SourceReader):
 
     source_type = SOURCE_TYPE_EXCEL
 
-    def __init__(self, path: str | Path, sheet_name: str | None = None) -> None:
+    def __init__(self, path: str | Path, sheet_name: str | None = None,
+                 progress: ProgressReporter | None = None) -> None:
         self.path = Path(path)
         if not self.path.exists():
             raise FileNotFoundError(f"Source file not found: {self.path}")
         self.sheet_name = sheet_name
+        #: Where the read reports itself. A reporter with no job is a working
+        #: no-op, which is what every scripted import and every test gets, so
+        #: the calls below stay unconditional.
+        self.progress = progress or ProgressReporter(None)
         self._headers: list[str] = []
         self._rows: list[SourceRow] = []
+        self._scan_total = -1
         self._loaded = False
+
+    def _scanned(self, done: int, total: int) -> None:
+        """Report how far into the sheet the read has got, and stop if asked to.
+
+        The sheet is streamed, so this is the read: the rows arrive one at a
+        time and this observer sees nearly all of the wait rather than the
+        eighth of it that was left over when openpyxl built the whole sheet
+        first. That is what makes a position honest to report here.
+
+        A file that declares no dimensions gives no denominator, and then only
+        the counter moves — a real number of rows read, with no claim about how
+        far through that is. It is the generated workbooks that omit it; a file
+        exported by Excel states its range.
+
+        ``checkpoint`` is what makes Cancel work during a read. Until it existed
+        the first cancellable moment came after the file had been parsed, so on
+        a large workbook the button did nothing for the whole of the longest
+        step.
+        """
+        if total != self._scan_total:
+            self._scan_total = total
+            if total > 0:
+                self.progress.phase(Phase.READING, total=total)
+        if total > 0:
+            if self.progress.every(done, total):
+                self.progress.rows(done)
+        elif done % 500 == 0:
+            self.progress.counts(processed_records=done)
+            self.progress.checkpoint()
 
     @property
     def source_name(self) -> str:
@@ -82,9 +119,18 @@ class ExcelSourceReader(SourceReader):
             return
         from openpyxl import load_workbook
 
-        from ..master_data.inspector import inspect_sheet
+        from ..master_data.inspector import inspect_streamed_sheet
 
-        workbook = load_workbook(self.path, data_only=True)
+        # ``read_only`` is what makes the read reportable. Opened in full,
+        # openpyxl builds the entire sheet inside one call that offers nothing to
+        # observe — two thirds of the wait, during which the bar cannot move at
+        # all. Streamed, the rows arrive one at a time and the same work is
+        # counted as it happens. It costs about a seventh more wall clock and the
+        # sheet's merged ranges, which nothing on this path reads; see
+        # ``inspect_streamed_sheet``.
+        self.progress.source(self.source_type)
+        self.progress.phase(Phase.READING)
+        workbook = load_workbook(self.path, data_only=True, read_only=True)
         try:
             if self.sheet_name is not None:
                 if self.sheet_name not in workbook.sheetnames:
@@ -96,12 +142,20 @@ class ExcelSourceReader(SourceReader):
             else:
                 worksheet = workbook.worksheets[0]
 
-            sheet_data = inspect_sheet(worksheet)
-            self._headers = list(sheet_data.columns)
-            for record, location in zip(sheet_data.records, sheet_data.source_locations):
-                self._rows.append(SourceRow(_row_number(location), dict(record)))
+            sheet_data = inspect_streamed_sheet(worksheet, on_row=self._scanned)
+            headers = list(sheet_data.columns)
+            rows = [
+                SourceRow(_row_number(location), dict(record))
+                for record, location in zip(sheet_data.records,
+                                            sheet_data.source_locations)
+            ]
         finally:
             workbook.close()
+        # Published only once the whole sheet is in hand. A read abandoned part
+        # way - a cancelled import raises out of the row observer - must not
+        # leave a reader that looks loaded and would answer with half a file.
+        self._headers = headers
+        self._rows = rows
         self._loaded = True
 
     @property
@@ -133,12 +187,14 @@ class CsvSourceReader(SourceReader):
     source_type = SOURCE_TYPE_CSV
 
     def __init__(self, path: str | Path, delimiter: str | None = None,
-                 encoding: str | None = None) -> None:
+                 encoding: str | None = None,
+                 progress: ProgressReporter | None = None) -> None:
         self.path = Path(path)
         if not self.path.exists():
             raise FileNotFoundError(f"Source file not found: {self.path}")
         self.delimiter = delimiter
         self.encoding = encoding
+        self.progress = progress or ProgressReporter(None)
         self._headers: list[str] = []
         self._rows: list[SourceRow] = []
         self._loaded = False
@@ -162,6 +218,8 @@ class CsvSourceReader(SourceReader):
     def _load(self) -> None:
         if self._loaded:
             return
+        self.progress.source(self.source_type)
+        self.progress.phase(Phase.READING)
         text = self._decode()
         delimiter = self.delimiter
         if delimiter is None:
@@ -171,14 +229,31 @@ class CsvSourceReader(SourceReader):
             except csv.Error:
                 delimiter = ","
 
-        reader = csv.DictReader(text.splitlines(), delimiter=delimiter)
-        self._headers = [h for h in (reader.fieldnames or []) if h is not None]
+        lines = text.splitlines()
+        reader = csv.DictReader(lines, delimiter=delimiter)
+        headers = [h for h in (reader.fieldnames or []) if h is not None]
+        # Unlike a workbook, a delimited file is read a line at a time from the
+        # first byte, so the whole of this pass is countable. The position
+        # reported is ``line_num`` rather than the record count because a quoted
+        # field may span several lines: lines consumed against lines present is
+        # the one pair that is exactly true at both ends.
+        total = len(lines)
+        self.progress.phase(Phase.READING, total=total)
+        step = max(1, total // 200)
+        next_report = step
+        rows: list[SourceRow] = []
         # Row 1 is the header, so the first data row is source row 2.
         for offset, record in enumerate(reader, start=2):
             record.pop(None, None)  # extra columns beyond the header
-            if all(_is_empty(v) for v in record.values()):
-                continue
-            self._rows.append(SourceRow(offset, dict(record)))
+            if not all(_is_empty(v) for v in record.values()):
+                rows.append(SourceRow(offset, dict(record)))
+            if reader.line_num >= next_report:
+                next_report = reader.line_num + step
+                self.progress.rows(reader.line_num)
+        # Assigned together and last, so a read stopped part way leaves the
+        # reader unloaded rather than half loaded. See ``ExcelSourceReader``.
+        self._headers = headers
+        self._rows = rows
         self._loaded = True
 
     @property
@@ -243,7 +318,8 @@ READER_BY_EXTENSION = {
 
 
 def reader_for_file(path: str | Path, sheet_name: str | None = None,
-                    delimiter: str | None = None) -> SourceReader:
+                    delimiter: str | None = None,
+                    progress: ProgressReporter | None = None) -> SourceReader:
     """Pick a reader from the file extension."""
     path = Path(path)
     factory = READER_BY_EXTENSION.get(path.suffix.lower())
@@ -253,8 +329,8 @@ def reader_for_file(path: str | Path, sheet_name: str | None = None,
             f"{', '.join(sorted(READER_BY_EXTENSION))}."
         )
     if factory is ExcelSourceReader:
-        return ExcelSourceReader(path, sheet_name=sheet_name)
-    return CsvSourceReader(path, delimiter=delimiter)
+        return ExcelSourceReader(path, sheet_name=sheet_name, progress=progress)
+    return CsvSourceReader(path, delimiter=delimiter, progress=progress)
 
 
 __all__ = [

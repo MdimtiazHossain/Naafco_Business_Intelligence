@@ -302,6 +302,31 @@ class AuditAction:
     AGENT_LEARNING_REJECTED = "AGENT_LEARNING_REJECTED"
     AGENT_LEARNING_RETIRED = "AGENT_LEARNING_RETIRED"
 
+    # --- Target Management: plans and their versions ------------------------
+    #
+    # These sit *beside* ``target_audit``, and the duplication is deliberate.
+    # ``target_audit`` is the business trail a planner reads on the Audit Trail
+    # screen: what a figure was, what it became and why. This is the security
+    # trail an administrator reads across the whole application, in the same
+    # place as a login or a permission change. Neither answers the other's
+    # question, and collapsing them would mean a target action was either
+    # invisible to the administrator or spelled in a vocabulary only planners
+    # understand.
+    TARGET_PLAN_CREATED = "TARGET_PLAN_CREATED"
+    TARGET_VERSION_CREATED = "TARGET_VERSION_CREATED"
+    TARGET_VERSION_UPDATED = "TARGET_VERSION_UPDATED"
+    TARGET_COUNTRY_TARGET_EDITED = "TARGET_COUNTRY_TARGET_EDITED"
+    TARGET_ALLOCATION_STARTED = "TARGET_ALLOCATION_STARTED"
+    TARGET_ADJUSTMENT_SET = "TARGET_ADJUSTMENT_SET"
+    TARGET_SUBMITTED = "TARGET_SUBMITTED"
+    TARGET_APPROVED = "TARGET_APPROVED"
+    TARGET_REJECTED = "TARGET_REJECTED"
+    TARGET_SENT_BACK = "TARGET_SENT_BACK"
+    TARGET_REVISION_REQUESTED = "TARGET_REVISION_REQUESTED"
+    TARGET_REVISION_DECIDED = "TARGET_REVISION_DECIDED"
+    TARGET_MATRIX_UPDATED = "TARGET_MATRIX_UPDATED"
+    TARGET_LOCKED = "TARGET_LOCKED"
+
 
 class Notification(Base):
     """A message for one user, shown in the header dropdown.

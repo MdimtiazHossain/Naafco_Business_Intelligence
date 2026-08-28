@@ -687,3 +687,88 @@ def test_centroid_handles_the_antimeridian():
     latitude, longitude = centroid([(0.0, 179.0), (0.0, -179.0)])
     assert latitude == 0.0
     assert abs(abs(longitude) - 180.0) < 0.001
+
+
+# ==========================================================================
+# Entity trend — the detail panel's monthly history
+# ==========================================================================
+
+
+def test_the_trend_filter_field_is_derived_from_the_query_layer():
+    """Every drawable level maps to a real ``ScopeFilters`` field, by derivation.
+
+    The point of the test is the one level whose field is not
+    ``f"{level}_codes"``. A hand-written map would get ``bu`` wrong the first
+    time somebody extended it, and the failure would be silent: the filter would
+    simply never be applied and the trend would quietly describe the whole
+    business instead of one unit.
+    """
+    from app.ai import queries as q
+    from app.ai.schemas import ScopeFilters
+    from app.map.data import FILTER_FIELD_BY_LEVEL, GROUP_BY_LEVEL, filter_field_for
+
+    assert set(FILTER_FIELD_BY_LEVEL) == set(GROUP_BY_LEVEL)
+    assert filter_field_for("bu") == "business_unit_codes"
+    assert filter_field_for("bu") != "bu_codes"
+
+    # Every derived field is one a tool will actually honour, on both sides.
+    for field in FILTER_FIELD_BY_LEVEL.values():
+        assert field in ScopeFilters.model_fields
+        assert field in q.FILTER_COLUMNS
+
+    with pytest.raises(ValueError):
+        filter_field_for("warehouse")
+
+
+def test_entity_trend_returns_one_row_per_month_for_the_entity_asked_for(map_client):
+    token = login(map_client)
+    response = map_client.get(
+        f"/api/map/entity-trend?level=region&code=REG001&months=6&{WINDOW}",
+        headers=auth(token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["level"] == "region"
+    assert body["code"] == "REG001"
+    # A window of whole months ending with the period on screen, not the period.
+    assert body["period"]["date_from"] == "2026-03-01"
+    assert body["period"]["date_to"] == "2026-08-31"
+    assert body["error"] is None
+    # Actuals only: there is no monthly target to compare against, so no column
+    # here may imply one.
+    for row in body["rows"]:
+        assert "target_amount" not in row
+        assert "achievement_percent" not in row
+
+
+def test_entity_trend_refuses_a_level_the_map_cannot_aggregate(map_client):
+    token = login(map_client)
+    response = map_client.get(
+        f"/api/map/entity-trend?level=upazila&code=X&{WINDOW}", headers=auth(token)
+    )
+    assert response.status_code == 422
+    # Names what it will accept, rather than only what it refused.
+    assert "region" in response.json()["detail"]
+
+
+def test_entity_trend_refuses_an_entity_outside_the_callers_scope(map_client):
+    """A regional manager asking about another region is refused, not emptied.
+
+    Worth pinning as a refusal rather than as "no rows". The endpoint sets the
+    clicked level's filter and scope is applied *after* it by the tool path, so
+    naming another region could never have widened the query — but an empty
+    answer and a forbidden one read very differently to whoever receives them,
+    and this path returns the one that says what happened. The message names the
+    scope the caller does have, which is what makes it actionable.
+    """
+    token = login(map_client, "khulna_rm")
+    mine = map_client.get(
+        f"/api/map/entity-trend?level=region&code=REG002&{WINDOW}", headers=auth(token)
+    )
+    theirs = map_client.get(
+        f"/api/map/entity-trend?level=region&code=REG001&{WINDOW}", headers=auth(token)
+    )
+    assert mine.status_code == 200, mine.text
+    assert theirs.status_code == 403, theirs.text
+    assert "REG002" in theirs.json()["detail"]

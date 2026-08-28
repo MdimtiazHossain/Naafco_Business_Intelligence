@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database.models import plant_key, storage_location_key
+from ..etl.bulk import bulk_insert
 from ..database.models_admin import ImportMode
 from ..database.models_warehouse import (
     STATUS_AVAILABLE,
@@ -35,7 +36,7 @@ from ..database.models_warehouse import (
 from ..etl.readers import SourceReader, SourceRow
 from ..master_data.schema import FieldKind
 from ..utils.cleaning import _clean_value
-from ..utils.progress import Phase, ProgressReporter
+from ..utils.progress import MASTER_SCALE, Phase, ProgressReporter
 from ..utils.text import is_blank, snake_case
 from .errors import UploadIssue, code
 from .registry import MASTER_MODEL_BY_TABLE, UploadColumn, UploadType
@@ -148,6 +149,12 @@ def validate(session: Session, upload_type: UploadType, reader: SourceReader,
              progress: ProgressReporter | None = None) -> MasterValidation:
     """Read, clean and validate a master file without writing anything."""
     progress = progress or ProgressReporter(None)
+    # Chosen before the file is opened, so the reader does not pick the table by
+    # format instead. A master upload's phases run in a different order from the
+    # ETL's — the codes are loaded before the rows are checked — and read against
+    # the transactional table the whole validation pass fell inside a band the
+    # bar had already passed, leaving it motionless on the longest step.
+    progress.use_scale(MASTER_SCALE)
     result = MasterValidation(upload_type=upload_type)
     result.headers = [str(h) for h in reader.headers if h is not None]
 
@@ -195,7 +202,11 @@ def validate(session: Session, upload_type: UploadType, reader: SourceReader,
     # Materialised before the loop so the progress bar has a real denominator.
     # A master file describes one dimension and is orders of magnitude smaller
     # than a transaction file, so holding it is not the cost it would be there.
-    progress.phase(Phase.READING)
+    #
+    # The reader announces READING itself, as it parses — which is where the
+    # wait actually is. By the time this runs the rows are already in hand, so
+    # announcing the phase again here would only reset its counts to zero for a
+    # pass that has finished.
     source_rows = list(reader)
     progress.phase(Phase.VALIDATING, total=len(source_rows))
     valid_so_far = 0
@@ -438,6 +449,23 @@ def load(session: Session, upload_type: UploadType,
     applicable = validation.valid_rows
     progress.phase(Phase.IMPORTING, total=len(applicable))
 
+    # Every record this dimension already holds, keyed the way the file keys its
+    # rows, read in one statement.
+    #
+    # This was a SELECT per row. On SQLite that is invisible — 2,000 customers
+    # cost 4,007 statements and under a second — but every one of them is a
+    # network round trip to a pooled Postgres, where the same upload is tens of
+    # seconds of waiting for answers the database could have given once. A master
+    # dimension is bounded by the business rather than by the file (the largest
+    # here is 2,091 customers), which is the same reason ``etl.mapping`` loads its
+    # whole ``MasterDataIndex`` up front rather than resolving row by row.
+    by_key: dict[tuple, Any] = {
+        tuple(getattr(record, column) for column in key_columns): record
+        for record in session.execute(select(model)).scalars()
+    }
+    #: New records, collected and written together at the end. See below.
+    new_rows: list[dict[str, Any]] = []
+
     for position, row in enumerate(applicable, start=1):
         if progress.every(position, len(applicable)):
             progress.rows(position)
@@ -462,16 +490,22 @@ def load(session: Session, upload_type: UploadType,
             if column in columns:
                 payload[column] = build(*key)
 
-        existing = session.execute(
-            select(model).where(*[
-                getattr(model, column) == value
-                for column, value in zip(key_columns, key)
-            ])
-        ).scalar_one_or_none()
+        existing = by_key.get(key)
 
         if existing is None:
-            session.add(model(**payload))
-            session.flush()
+            # Held back rather than added to the session one at a time. The ORM
+            # emits a separate statement per pending object even when they are
+            # flushed together — measured, not assumed: 2,000 new customers were
+            # 2,000 dispatches to the driver either way — while the same rows
+            # through ``bulk_insert`` are one. On SQLite that is a fifth of a
+            # second either way; against a pooled Postgres it is 2,000 network
+            # round trips against one.
+            #
+            # Nothing downstream needs the ORM object: the map below is only
+            # read when a later row repeats a key, and ``valid_rows`` has already
+            # dropped any repeat as DUPLICATE, so within one file a key is
+            # applied at most once.
+            new_rows.append(payload)
             result.inserted += 1
             continue
 
@@ -498,11 +532,23 @@ def load(session: Session, upload_type: UploadType,
             existing.deleted_at = None
             existing.deleted_by = None
             changed = True
-        session.flush()
         if changed:
             result.updated += 1
         else:
             result.unchanged += 1
+
+    # One flush and one insert for the file, where there was a flush and a
+    # statement per row. Both have to happen before the post-load work below:
+    # ``_promote_source_status`` counts the dimension's rows, and a count taken
+    # with these still pending would miss exactly the records just loaded.
+    #
+    # ``bulk_insert`` is the loader that the fact tables already go through, so
+    # the row alignment and the chunking against the dialect's bind-parameter
+    # ceiling are the ones this project has always used rather than a second
+    # set written here.
+    session.flush()
+    if new_rows:
+        bulk_insert(session, model.__table__, new_rows)
 
     if result.inserted or result.updated:
         _promote_source_status(session, upload_type)

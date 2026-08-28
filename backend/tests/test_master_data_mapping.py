@@ -93,8 +93,8 @@ def test_the_customer_display_name_is_sub_territory_code():
     assert column.name == "Sub Territory Code"
 
 
-def test_the_material_master_is_the_seven_columns_the_business_states():
-    """No SKU bridge, no pack columns, no prices — and no eighth column.
+def test_the_material_master_is_seven_identifying_columns_plus_two_inputs():
+    """No SKU bridge, no pack size, no unit of measure — and no tenth column.
 
     The order is the contract, not just the set: revision 0023 put Company Code
     **first**, before the classification and before the material itself, and the
@@ -102,6 +102,12 @@ def test_the_material_master_is_the_seven_columns_the_business_states():
     CSV export are all derived from this one tuple. Asserting the list in order
     is what stops a column being added, moved or hidden anywhere without this
     failing first.
+
+    Revision 0027 appended ``conversion_factor`` and ``transfer_price``, the two
+    inputs Target Management derives Quantity and Value from. They come last and
+    they are **optional**, which is the whole of the difference between them and
+    the seven above: a Material Master extract produced before they were asked
+    for does not carry them, and requiring them would reject every such file.
     """
     from app.upload.registry import get_upload_type
 
@@ -111,24 +117,43 @@ def test_the_material_master_is_the_seven_columns_the_business_states():
         "material_group_code", "material_group_name",
         "material_brand_code", "material_brand",
         "material_code", "material_description",
+        "conversion_factor", "transfer_price",
     ]
 
 
+def test_the_two_derivation_inputs_are_the_only_optional_columns():
+    """Everything that *identifies* a material is still required.
+
+    The pairing matters: an optional column is one a file may omit, and if that
+    ever crept onto the material code or its classification, a row missing it
+    would load as a half-identified material rather than being rejected.
+    """
+    from app.upload.registry import get_upload_type
+
+    optional = [c.target for c in get_upload_type("dim_material").columns
+                if not c.required]
+    assert optional == ["conversion_factor", "transfer_price"]
+
+
 def test_every_material_master_column_is_visible_in_the_table():
-    """None of the seven is hidden by the narrow-table heuristic.
+    """None of the nine is hidden by the narrow-table heuristic.
 
     ``_master_field`` promotes a column when it is a key, one of the first
     three, or matches a known suffix — everything else starts hidden behind the
     column picker. Moving Material Description to seventh took it out of the
     first-three window and would have hidden the only human-readable column in
     the table, which is why ``_description`` is a promoted suffix.
+
+    The two derivation inputs are promoted by name for a different reason: on
+    most deployments they are empty, and they are exactly what a reader needs to
+    see is empty — a column hidden by default gives no hint that it exists.
     """
     from app.datamgmt.catalogue import get_master
 
     entity = get_master("dim_material")
     visible = entity.to_dict()["default_columns"]
     assert visible == [field.name for field in entity.fields]
-    assert len(visible) == 7
+    assert len(visible) == 9
 
 
 def test_no_existing_customer_field_was_removed_or_renamed():

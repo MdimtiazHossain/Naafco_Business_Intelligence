@@ -49,6 +49,7 @@ class SectionKey:
     SALES = "sales"
     STOCK = "stock"
     TARGET = "target"
+    TARGET_MANAGEMENT = "target_management"
     PERFORMANCE = "performance"
     MATERIALS = "materials"
     CUSTOMERS = "customers"
@@ -65,7 +66,19 @@ class SectionKey:
 
 
 class Action:
-    """Granular actions the permission model is architected for."""
+    """Granular actions the permission model is architected for.
+
+    ``APPROVE`` and ``REVISE`` were added for Target Management, and are
+    deliberately two actions rather than one. Approving is signing off on a
+    figure somebody else proposed; revising is asking for it to change. A sales
+    officer may do the second for their own sub-territory and must never do the
+    first, and an approver two levels up is the reverse — so a single "workflow"
+    permission could not express either.
+
+    Neither is a synonym for ``EDIT``. Editing is typing the country target
+    directly; both of these act on a figure the allocation engine generated,
+    inside a workflow that records who did it and why.
+    """
 
     VIEW = "VIEW"
     CREATE = "CREATE"
@@ -73,8 +86,10 @@ class Action:
     DELETE = "DELETE"
     EXPORT = "EXPORT"
     UPLOAD = "UPLOAD"
+    APPROVE = "APPROVE"
+    REVISE = "REVISE"
 
-    ALL = (VIEW, CREATE, EDIT, DELETE, EXPORT, UPLOAD)
+    ALL = (VIEW, CREATE, EDIT, DELETE, EXPORT, UPLOAD, APPROVE, REVISE)
 
 
 ALLOW = "ALLOW"
@@ -87,6 +102,33 @@ ACCESS_VALUES = (ALLOW, DENY)
 #: an editor unless it is deliberately made read-only.
 EDITOR_ROLES: tuple[str, ...] = tuple(
     role for role in Role.ALL if role not in (Role.VIEWER, Role.SALES_OFFICER)
+)
+
+#: Roles that may sign off on a target by default.
+#:
+#: The line managers, and deliberately **not** the two administrator roles. An
+#: administrator configures the approval matrix and owns the run; signing off on
+#: a business number is a business judgement, and an administrator who is also
+#: an approver holds the business role that says so. Territory Manager and
+#: Sales Officer are absent for the opposite reason: a target is questioned at
+#: their level, not approved there.
+#:
+#: This is the coarse gate only. *Which* node a holder may approve, in what
+#: order and within what adjustment limit, is ``target_approval_matrix``.
+APPROVER_ROLES: tuple[str, ...] = (
+    Role.MANAGEMENT, Role.BUSINESS_UNIT_HEAD, Role.ZONE_MANAGER,
+    Role.REGIONAL_MANAGER, Role.AREA_MANAGER, Role.UNIT_MANAGER,
+)
+
+#: Roles that may ask for an allocated figure to be changed.
+#:
+#: Everyone who runs part of the business, Sales Officer included — asking is
+#: not changing, a revision states a reason and goes to an approver, and the
+#: person closest to the customer is the one who knows the target is wrong.
+#: Only ``VIEWER`` is excluded, because a read-only role has nothing to request
+#: a change to.
+REVISER_ROLES: tuple[str, ...] = tuple(
+    role for role in Role.ALL if role != Role.VIEWER
 )
 
 #: Which roles hold each action when nobody has said otherwise. ``None`` means
@@ -103,6 +145,12 @@ DEFAULT_ACTION_ROLES: dict[str, tuple[str, ...] | None] = {
     Action.EDIT: EDITOR_ROLES,
     Action.UPLOAD: EDITOR_ROLES,
     Action.DELETE: Role.ADMIN_ROLES,
+    # Both are explicit rather than absent. ``resolve_action`` reads ``None`` as
+    # "any role that holds the section", so an action missing from this map
+    # would default to *everyone* — which is the right answer for VIEW and
+    # EXPORT and precisely the wrong one for signing off on a target.
+    Action.APPROVE: APPROVER_ROLES,
+    Action.REVISE: REVISER_ROLES,
 }
 
 #: Section groups, used only for presentation ordering in the admin UI.
@@ -230,6 +278,32 @@ SECTIONS: tuple[Section, ...] = (
         api_prefixes=("/api/pages/target", "/api/reports/target",
                       "/api/pages/transactions/target"),
         actions=_REPORT_ACTIONS,
+    ),
+    Section(
+        key=SectionKey.TARGET_MANAGEMENT,
+        label="Target Management",
+        route="/target-management",
+        group=GROUP_REPORTING,
+        description=(
+            "Build a target rather than read one: country volume by material, "
+            "allocation down the hierarchy, review, approval, versions and the "
+            "audit trail behind every figure."
+        ),
+        api_prefixes=("/api/target-management",),
+        actions=(Action.VIEW, Action.CREATE, Action.EDIT, Action.EXPORT,
+                 Action.UPLOAD, Action.APPROVE, Action.REVISE),
+        # Off by default for everyone, unlike the Target section beside it.
+        # Reading achievement against a target is reporting; setting the target
+        # the whole sales force is measured on is not, and a role that should
+        # see one does not automatically get the other. Granted per role or per
+        # user by an administrator — the same shape as Data Upload, and for the
+        # same reason.
+        #
+        # There is no DELETE. A plan is superseded by a new version and a
+        # version is never removed, so the action has nothing to do here and
+        # cannot be granted by mistake.
+        default_allow=False,
+        default_roles=Role.ADMIN_ROLES,
     ),
     Section(
         key=SectionKey.PERFORMANCE,
@@ -439,6 +513,8 @@ __all__ = [
     "ACCESS_VALUES",
     "DEFAULT_ACTION_ROLES",
     "EDITOR_ROLES",
+    "APPROVER_ROLES",
+    "REVISER_ROLES",
     "ALLOW",
     "DENY",
     "GROUP_REPORTING",

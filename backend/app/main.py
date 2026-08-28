@@ -89,15 +89,22 @@ def close_interrupted_imports() -> None:
     from sqlalchemy.orm import Session
 
     from .database.connection import get_engine
+    from .targetmgmt.jobs import sweep_interrupted as sweep_allocations
     from .upload.jobs import sweep_interrupted
 
     logger = logging.getLogger("app.startup")
     try:
         with Session(get_engine()) as session:
             swept = sweep_interrupted(session)
+            # Allocation runs die with their process too, and leave a job row
+            # stuck at 40% waiting for a worker that no longer exists.
+            allocations = sweep_allocations(session)
             session.commit()
         if swept:
             logger.warning("closed %s import(s) interrupted by a restart", swept)
+        if allocations:
+            logger.warning("closed %s allocation(s) interrupted by a restart",
+                           allocations)
     except Exception:  # noqa: BLE001 - never block startup
         logger.warning("could not sweep interrupted imports", exc_info=True)
 
@@ -111,9 +118,11 @@ def stop_import_workers() -> None:
     was interrupted, and the same one blocking would reach more slowly. The
     startup sweep closes the batch row on the way back up.
     """
+    from .targetmgmt.jobs import shutdown as shutdown_allocations
     from .upload.jobs import shutdown
 
     shutdown(wait=False)
+    shutdown_allocations(wait=False)
 
 
 @app.get("/health", tags=["system"])

@@ -18,7 +18,16 @@ from app.security.sections import ALLOW, SectionKey
 from app.etl.pipeline import run_import
 from app.etl.readers import RecordsSourceReader
 from app.utils import progress as progress_registry
-from app.utils.progress import Phase, ProgressReporter
+from app.utils.progress import (
+    DEFAULT_SCALE,
+    DELIMITED_PHASE_WEIGHTS,
+    EXCEL_PHASE_WEIGHTS,
+    MASTER_PHASE_WEIGHTS,
+    PHASE_WEIGHTS_BY_SOURCE,
+    Phase,
+    ProgressReporter,
+    scale_for,
+)
 
 from test_data_upload import (  # noqa: F401 - fixtures are used by name
     SALES_HEADERS,
@@ -395,6 +404,189 @@ def test_the_job_endpoint_requires_the_data_upload_section(upload_client):
     assert response.status_code == 403
     assert upload_client.get("/api/data-upload/jobs",
                              headers=auth(token)).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Phase weights
+# ---------------------------------------------------------------------------
+
+
+def test_every_weight_table_covers_the_whole_bar():
+    """A table that does not sum to 100 leaves the bar short of the end.
+
+    The percentage is a phase's start plus its share, and the starts are derived
+    by accumulating the weights — so a table summing to 96 would have the last
+    phase finish at 96% and jump, and one summing to 104 would claim work that
+    has not happened.
+    """
+    for name, weights in (("delimited", DELIMITED_PHASE_WEIGHTS),
+                          ("excel", EXCEL_PHASE_WEIGHTS)):
+        assert sum(weights.values()) == 100, f"{name} sums to {sum(weights.values())}"
+
+
+def test_every_weight_table_names_only_real_phases():
+    """A weight for a phase nobody enters is a share of the bar nothing can fill."""
+    for weights in (DELIMITED_PHASE_WEIGHTS, EXCEL_PHASE_WEIGHTS):
+        assert set(weights) <= set(Phase.ALL)
+
+
+def test_every_phase_a_run_passes_through_has_a_weight():
+    """The reverse: a phase with no entry contributes nothing and the bar stalls."""
+    passed_through = (Phase.QUEUED, Phase.PREPARING, Phase.READING, Phase.STAGING,
+                      Phase.VALIDATING, Phase.MAPPING, Phase.IMPORTING, Phase.WRITING)
+    for weights in (DELIMITED_PHASE_WEIGHTS, EXCEL_PHASE_WEIGHTS):
+        assert set(passed_through) <= set(weights)
+
+
+def test_the_weight_tables_are_keyed_by_real_source_types():
+    """The keys are spelled in ``progress`` but owned by ``etl.readers``.
+
+    ``progress`` cannot import ``readers`` — ``readers`` imports it — so the
+    source-type strings are written out by hand there. This is what stops the
+    two drifting: renaming a source type fails here rather than silently
+    dropping that format back to the default table, which would look like
+    nothing more than a slightly wrong bar.
+    """
+    from app.etl import readers
+
+    known = {readers.SOURCE_TYPE_EXCEL, readers.SOURCE_TYPE_CSV,
+             readers.SOURCE_TYPE_API, readers.SOURCE_TYPE_MEMORY}
+    assert set(PHASE_WEIGHTS_BY_SOURCE) <= known
+
+
+def test_an_unknown_source_falls_back_rather_than_failing():
+    """A future reader gets a working bar, not an exception."""
+    assert scale_for("SAP") is DEFAULT_SCALE
+    assert scale_for(None) is DEFAULT_SCALE
+    assert scale_for("") is DEFAULT_SCALE
+
+
+def test_a_scale_never_reports_backwards_within_a_phase():
+    """Percent is monotonic in rows processed, for every phase of every table."""
+    for scale in (scale_for("EXCEL"), scale_for("CSV")):
+        for phase in (Phase.READING, Phase.STAGING, Phase.VALIDATING,
+                      Phase.MAPPING, Phase.IMPORTING, Phase.WRITING):
+            seen = [scale.percent(phase, done, 100) for done in range(0, 101, 5)]
+            assert seen == sorted(seen), f"{scale.name}/{phase}: {seen}"
+
+
+def test_the_phases_of_a_scale_do_not_overlap_or_leave_gaps():
+    """Each phase ends exactly where the next begins.
+
+    Derived from the weights rather than declared, so this is really a check
+    that the derivation is right — an overlap would let the bar go backwards
+    between two phases and a gap would make it jump.
+    """
+    for scale in (scale_for("EXCEL"), scale_for("CSV")):
+        running = 0
+        for phase, weight in scale.weights.items():
+            assert scale.starts[phase] == running, f"{scale.name}: {phase}"
+            running += weight
+        assert running == 100
+
+
+def test_a_reader_tells_the_reporter_which_format_it_is(tmp_path):
+    """The scale is chosen by the source, and before anything is reported."""
+    from app.etl.readers import CsvSourceReader, ExcelSourceReader
+
+    csv_path = tmp_path / "rows.csv"
+    csv_path.write_text("Code,Name\nA,Alpha\n", encoding="utf-8")
+    reporter = ProgressReporter(None)
+    CsvSourceReader(csv_path, progress=reporter).headers
+    assert reporter._scale is scale_for("CSV")
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    book.active.append(["Code", "Name"])
+    book.active.append(["A", "Alpha"])
+    xlsx_path = tmp_path / "rows.xlsx"
+    book.save(xlsx_path)
+    reporter = ProgressReporter(None)
+    ExcelSourceReader(xlsx_path, progress=reporter).headers
+    assert reporter._scale is scale_for("EXCEL")
+
+
+def test_reading_is_weighted_differently_for_the_two_formats():
+    """The whole reason there are two tables.
+
+    Reading a workbook is most of an Excel import and a rounding error in a
+    delimited one, because openpyxl builds the entire sheet before yielding a
+    row while a CSV is read a line at a time. One table for both left the bar
+    frozen through most of an Excel run.
+    """
+    assert EXCEL_PHASE_WEIGHTS[Phase.READING] > 50
+    assert DELIMITED_PHASE_WEIGHTS[Phase.READING] < 10
+
+
+def test_the_default_table_under_reports_rather_than_over_reports():
+    """An unnamed source must not have its progress overstated.
+
+    The default is the delimited table, whose READING share is the smaller of
+    the two: a source that in fact spends longer reading will sit low on the bar
+    rather than claiming work it has not done. Erring the other way would show a
+    file as half imported while it was still being opened.
+    """
+    assert DEFAULT_SCALE.weights[Phase.READING] == min(
+        DELIMITED_PHASE_WEIGHTS[Phase.READING], EXCEL_PHASE_WEIGHTS[Phase.READING]
+    )
+
+
+def test_a_master_upload_runs_its_phases_in_the_order_its_table_declares():
+    """A master upload maps before it validates — the reverse of the ETL.
+
+    ``master_loader.validate`` loads the codes a file will be checked against
+    and only then checks the rows. Read against the transactional table, where
+    MAPPING sits after VALIDATING, the whole validation pass fell inside a band
+    the bar had already passed and sat motionless on the longest step of the
+    run. Its own table puts the phases in the order they happen.
+    """
+    order = [p for p in MASTER_PHASE_WEIGHTS if p != Phase.QUEUED]
+    assert order.index(Phase.MAPPING) < order.index(Phase.VALIDATING)
+    assert sum(MASTER_PHASE_WEIGHTS.values()) == 100
+    # It stages nothing and writes no fact, so those bands would be dead weight.
+    assert Phase.STAGING not in MASTER_PHASE_WEIGHTS
+    assert Phase.WRITING not in MASTER_PHASE_WEIGHTS
+
+
+def test_an_explicit_scale_is_not_displaced_by_the_file_format():
+    """The shape of the run outranks the format it happens to arrive in.
+
+    ``master_loader`` fixes its table before the file is opened; the reader then
+    announces CSV or Excel as it starts. If that announcement won, a master
+    upload would be measured against the transactional table again.
+    """
+    reporter = ProgressReporter(None)
+    reporter.use_scale(scale_for("EXCEL"))
+    reporter.source("CSV")
+    assert reporter._scale is scale_for("EXCEL")
+
+    # Without an explicit choice the format still decides.
+    other = ProgressReporter(None)
+    other.source("CSV")
+    assert other._scale is scale_for("CSV")
+
+
+def test_a_cancelled_run_records_the_position_it_reached():
+    """Not the highest position ever announced.
+
+    ``jobs._mark_cancelled`` copies this figure onto the batch and the audit
+    keeps it, so it outlives the run. A clamp that only ever raised it was tried
+    here and filed a run stopped a fifth of the way through validation at the
+    position meaning validation was complete, making the two indistinguishable
+    in the permanent record.
+    """
+    job = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    progress_registry.clear()
+    reporter = progress_registry.start(job, operation="IMPORT")
+    reporter.use_scale(scale_for("CSV"))
+    reporter.phase(Phase.VALIDATING, total=100)
+    reporter.rows(20)
+    reached = progress_registry.snapshot(job)["percent"]
+    assert reached == scale_for("CSV").percent(Phase.VALIDATING, 20, 100)
+    reporter.finish(cancelled=True)
+    assert progress_registry.snapshot(job)["percent"] == reached
+    progress_registry.clear()
 
 
 def upload(client, token, content, upload_type: str = "sales"):

@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -31,6 +31,15 @@ from ..utils.text import (
 )
 
 Orientation = Literal["row_records", "column_records", "empty"]
+
+#: Called with ``(rows done, rows to do)`` during a row-wise pass over a sheet.
+#:
+#: The inspector is the only place that walks a worksheet a row at a time, so it
+#: is the only place that can say how far a read has got. It reports rather than
+#: renders: what the caller does with the pair — throttle it, turn it into a
+#: percentage, raise to stop the read — is the caller's business, and a reader
+#: with no observer pays one ``is None`` test per row for the privilege.
+RowObserver = Callable[[int, int], None]
 
 #: How far into a sheet we look for the header before giving up.
 HEADER_SCAN_ROWS = 30
@@ -108,7 +117,7 @@ class SheetData:
 # ---------------------------------------------------------------------------
 
 
-def _cell_grid(ws: Worksheet) -> dict[tuple[int, int], Any]:
+def _cell_grid(ws: Worksheet, on_row: RowObserver | None = None) -> dict[tuple[int, int], Any]:
     """Map ``(row, col) -> value`` for every cell that holds a value.
 
     Excel files routinely report a large ``max_row``/``max_column`` because of
@@ -120,7 +129,11 @@ def _cell_grid(ws: Worksheet) -> dict[tuple[int, int], Any]:
     during header detection and never form a record on their own.
     """
     grid: dict[tuple[int, int], Any] = {}
-    for row in ws.iter_rows():
+    # ``max_row`` is what ``iter_rows`` will yield, so it is an exact denominator
+    # for this pass even where it overstates the rows that hold data — the two
+    # are different questions and this one is "how far through the sheet are we".
+    total = ws.max_row or 0
+    for index, row in enumerate(ws.iter_rows(), start=1):
         for cell in row:
             value = cell.value
             if value is None:
@@ -128,15 +141,45 @@ def _cell_grid(ws: Worksheet) -> dict[tuple[int, int], Any]:
             if isinstance(value, float) and value != value:  # NaN
                 continue
             grid[(cell.row, cell.column)] = value
+        if on_row is not None:
+            on_row(index, total)
     return grid
 
 
-def _row_has_content(grid: dict[tuple[int, int], Any], row: int) -> bool:
-    return any(not is_blank(v) for (r, _), v in grid.items() if r == row)
+def _rows_with_content(grid: dict[tuple[int, int], Any]) -> set[int]:
+    """Every row index holding at least one non-blank value.
+
+    Answered for the whole grid in one pass, and deliberately *not* as a
+    ``_row_has_content(grid, row)`` predicate. That is what this was, and because
+    such a predicate has to scan the grid to answer for a single row, asking it
+    once per row made layout detection quadratic in the row count: a 20,000-row
+    workbook spent 123 of its 131 seconds here, and every doubling of the file
+    quadrupled it. The set is identical to what the predicate answered row by
+    row — it is built once and asked by membership.
+
+    The ``row not in found`` guard is not a micro-optimisation: ``is_blank``
+    is a call per cell, and skipping it for a row already known to be populated
+    is most of the remaining cost on a wide sheet.
+    """
+    found: set[int] = set()
+    for (row, _), value in grid.items():
+        if row not in found and not is_blank(value):
+            found.add(row)
+    return found
 
 
-def _column_has_content(grid: dict[tuple[int, int], Any], col: int) -> bool:
-    return any(not is_blank(v) for (_, c), v in grid.items() if c == col)
+def _columns_with_content(grid: dict[tuple[int, int], Any]) -> set[int]:
+    """Every column index holding at least one non-blank value.
+
+    The transposed twin of :func:`_rows_with_content`, one pass for the same
+    reason: a column-oriented sheet is inspected the same way and would be
+    quadratic in its column count.
+    """
+    found: set[int] = set()
+    for (_, column), value in grid.items():
+        if column not in found and not is_blank(value):
+            found.add(column)
+    return found
 
 
 def _dominant_type(value: Any) -> str:
@@ -149,23 +192,62 @@ def _dominant_type(value: Any) -> str:
     return "text"
 
 
-def _homogeneity(vectors: list[list[Any]]) -> float:
+def _homogeneity(tallies: dict[Any, dict[str, int]]) -> float:
     """Mean fraction of the dominant value-type within each vector.
 
     A table laid out in rows has type-homogeneous *columns*; a transposed table
     has type-homogeneous *rows*. Comparing the two scores detects transposition
     without hard-coding any field names.
+
+    Takes tallies of ``value type -> count`` per vector rather than the vectors
+    themselves. It only ever needed the counts, and building the vectors to get
+    them meant materialising the grid twice over: on a 100,000-row sheet that was
+    2.1 million dictionary lookups into two lists of a million slots, and every
+    cell classified twice, to produce two floating-point numbers. ``max`` of the
+    counts is what ``Counter.most_common(1)[0][1]`` returned and ``sum`` is what
+    ``len(values)`` was. A vector with no values scores nothing, which is why an
+    empty tally is absent rather than zero — a zero would drag the mean down, and
+    a blank column is not evidence of a layout either way.
     """
-    scores: list[float] = []
-    for vec in vectors:
-        values = [v for v in vec if not is_blank(v)]
-        if not values:
-            continue
-        counts = Counter(_dominant_type(v) for v in values)
-        scores.append(counts.most_common(1)[0][1] / len(values))
+    scores = [max(counts.values()) / sum(counts.values())
+              for counts in tallies.values() if counts]
     if not scores:
         return 0.0
     return sum(scores) / len(scores)
+
+
+def _type_tallies(
+    grid: dict[tuple[int, int], Any], rows: set[int], columns: set[int],
+) -> tuple[dict[int, dict[str, int]], dict[int, dict[str, int]]]:
+    """Per-column and per-row type counts, from one pass over the grid.
+
+    ``rows`` and ``columns`` are the bodies each tally is taken over — the
+    orientation test excludes the first row from the column vectors and the first
+    column from the row vectors, because those are where a header would sit and a
+    header is text whichever way the sheet runs.
+
+    Plain dictionaries rather than ``Counter``, and each fetched before it is
+    created: this loop runs once per populated cell, so a ``setdefault`` that
+    builds a throwaway counter on every one of a million iterations costs more
+    than the tallying it was there to do.
+    """
+    by_column: dict[int, dict[str, int]] = {}
+    by_row: dict[int, dict[str, int]] = {}
+    for (row, column), value in grid.items():
+        if is_blank(value):
+            continue
+        kind = _dominant_type(value)
+        if row in rows:
+            counts = by_column.get(column)
+            if counts is None:
+                counts = by_column[column] = {}
+            counts[kind] = counts.get(kind, 0) + 1
+        if column in columns:
+            counts = by_row.get(row)
+            if counts is None:
+                counts = by_row[row] = {}
+            counts[kind] = counts.get(kind, 0) + 1
+    return by_column, by_row
 
 
 def _label_affinity(labels: list[str], known_fields: set[str]) -> float:
@@ -178,19 +260,20 @@ def _label_affinity(labels: list[str], known_fields: set[str]) -> float:
 
 
 def _labels_at_row(grid: dict[tuple[int, int], Any], row: int) -> list[str]:
-    return [
-        label for label in
-        (normalize_text(v) for (r, _), v in sorted(grid.items()) if r == row)
-        if label
-    ]
+    """The text labels along one row, left to right.
+
+    The cells of the row are collected and then sorted, rather than the whole
+    grid being sorted so that one row can be read out of it. Sorting a million
+    cells to order eleven of them was the entire cost of this function.
+    """
+    cells = sorted((c, v) for (r, c), v in grid.items() if r == row)
+    return [label for label in (normalize_text(v) for _, v in cells) if label]
 
 
 def _labels_at_column(grid: dict[tuple[int, int], Any], col: int) -> list[str]:
-    return [
-        label for label in
-        (normalize_text(v) for (_, c), v in sorted(grid.items()) if c == col)
-        if label
-    ]
+    """The text labels down one column, top to bottom. See :func:`_labels_at_row`."""
+    cells = sorted((r, v) for (r, c), v in grid.items() if c == col)
+    return [label for label in (normalize_text(v) for _, v in cells) if label]
 
 
 def detect_orientation(
@@ -221,12 +304,9 @@ def detect_orientation(
     if len(rows) == 1:
         return "row_records"
 
-    body_rows = rows[1:]
-    body_cols = cols[1:]
-    col_vectors = [[grid.get((r, c)) for r in body_rows] for c in cols]
-    row_vectors = [[grid.get((r, c)) for c in body_cols] for r in rows]
-    row_layout_score = _homogeneity(col_vectors)
-    column_layout_score = _homogeneity(row_vectors)
+    by_column, by_row = _type_tallies(grid, set(rows[1:]), set(cols[1:]))
+    row_layout_score = _homogeneity(by_column)
+    column_layout_score = _homogeneity(by_row)
 
     if abs(row_layout_score - column_layout_score) <= 0.05 and known_fields:
         row_affinity = _label_affinity(_labels_at_row(grid, rows[0]), known_fields)
@@ -253,28 +333,45 @@ def _label_score(values: list[Any]) -> int:
 
 
 def detect_header_row(grid: dict[tuple[int, int], Any]) -> int | None:
-    """Topmost row within the scan window carrying the most text labels."""
+    """Topmost row within the scan window carrying the most text labels.
+
+    The window's cells are gathered in one pass. Scanning the grid once per
+    candidate meant thirty passes over every cell in the sheet to look at its
+    first thirty rows.
+    """
     rows = sorted({r for r, _ in grid})
     if not rows:
         return None
+    window = set(rows[:HEADER_SCAN_ROWS])
+    values_by_row: dict[int, list[Any]] = {}
+    for (row, _), value in grid.items():
+        if row in window:
+            values_by_row.setdefault(row, []).append(value)
     best_row, best_score = None, 0
+    # Ascending, and strictly greater, so the earliest of equal scores still wins.
     for r in rows[:HEADER_SCAN_ROWS]:
-        values = [v for (rr, _), v in grid.items() if rr == r]
-        score = _label_score(values)
+        score = _label_score(values_by_row.get(r, []))
         if score > best_score:
             best_row, best_score = r, score
     return best_row
 
 
 def detect_header_column(grid: dict[tuple[int, int], Any]) -> int | None:
-    """Leftmost column within the scan window carrying the most text labels."""
+    """Leftmost column within the scan window carrying the most text labels.
+
+    One pass, for the reason :func:`detect_header_row` gives.
+    """
     cols = sorted({c for _, c in grid})
     if not cols:
         return None
+    window = set(cols[:HEADER_SCAN_COLS])
+    values_by_column: dict[int, list[Any]] = {}
+    for (_, column), value in grid.items():
+        if column in window:
+            values_by_column.setdefault(column, []).append(value)
     best_col, best_score = None, 0
     for c in cols[:HEADER_SCAN_COLS]:
-        values = [v for (_, cc), v in grid.items() if cc == c]
-        score = _label_score(values)
+        score = _label_score(values_by_column.get(c, []))
         if score > best_score:
             best_col, best_score = c, score
     return best_col
@@ -300,17 +397,91 @@ def _dedupe_labels(labels: list[str]) -> tuple[list[str], list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def inspect_sheet(ws: Worksheet, orientation_override: Orientation | None = None) -> SheetData:
-    """Discover the layout of one worksheet and extract its records."""
-    grid = _cell_grid(ws)
-    structure = SheetStructure(
-        sheet_name=ws.title,
-        orientation="empty",
-        max_row=ws.max_row or 0,
+def inspect_sheet(ws: Worksheet, orientation_override: Orientation | None = None,
+                  on_row: RowObserver | None = None) -> SheetData:
+    """Discover the layout of one worksheet and extract its records.
+
+    Reads the sheet's own account of itself — its declared dimensions and its
+    merged ranges — which is available because the caller opened the workbook in
+    full. :func:`inspect_streamed_sheet` is the same inspection for a workbook
+    opened read-only, which cannot answer either question.
+    """
+    grid = _cell_grid(ws, on_row)
+    return _inspect_grid(
+        grid, sheet_name=ws.title, max_row=ws.max_row or 0,
         max_column=ws.max_column or 0,
         merged_ranges=[str(r) for r in ws.merged_cells.ranges],
+        declared_range=ws.dimensions,
+        orientation_override=orientation_override,
     )
-    if structure.merged_ranges:
+
+
+def inspect_streamed_sheet(ws: Any, on_row: RowObserver | None = None,
+                           orientation_override: Orientation | None = None) -> SheetData:
+    """The same inspection, over a worksheet opened ``read_only=True``.
+
+    Worth the separate entry point because a streamed sheet answers two fewer
+    questions about itself, and pretending otherwise would report an absence as
+    a fact:
+
+    * **Merged ranges are not read.** openpyxl's read-only worksheet does not
+      parse them, and the information sits past the cell data in the sheet XML,
+      so recovering it would mean reading the file twice. Nothing that streams a
+      sheet consumes them — the ETL reader takes the columns, the records and
+      their locations and nothing else — and a note says so rather than leaving
+      an empty list to be read as "none".
+    * **The declared range may be absent.** A workbook written by a generator
+      often carries no ``<dimension>``; every file exported by Excel itself does.
+      Where it is missing the used range is taken from the data, and the note
+      contrasting the two is simply not made rather than being made against a
+      guess.
+
+    What this buys is the reason it exists: opened in full, two thirds of a read
+    is inside one ``load_workbook`` call that reports nothing, so the bar cannot
+    move through the longest part of an import. Streamed, that same work happens
+    a row at a time under ``on_row``.
+    """
+    grid = _cell_grid(ws, on_row)
+    rows = [r for r, _ in grid]
+    cols = [c for _, c in grid]
+    return _inspect_grid(
+        grid, sheet_name=ws.title,
+        # ``max_row`` is the declared dimension where the file states one and
+        # ``None`` where it does not; the data itself is the fallback.
+        max_row=ws.max_row or (max(rows) if rows else 0),
+        max_column=ws.max_column or (max(cols) if cols else 0),
+        merged_ranges=None,
+        declared_range=None,
+        orientation_override=orientation_override,
+    )
+
+
+def _inspect_grid(grid: dict[tuple[int, int], Any], *, sheet_name: str,
+                  max_row: int, max_column: int,
+                  merged_ranges: list[str] | None,
+                  declared_range: str | None,
+                  orientation_override: Orientation | None) -> SheetData:
+    """Everything the inspection decides from the cells alone.
+
+    Split out so the grid can arrive either from a fully-loaded worksheet or
+    streamed from a read-only one; every rule below is the same either way.
+    ``merged_ranges=None`` means "not read", which is a different statement from
+    an empty list and is reported as one.
+    """
+    structure = SheetStructure(
+        sheet_name=sheet_name,
+        orientation="empty",
+        max_row=max_row,
+        max_column=max_column,
+        merged_ranges=list(merged_ranges) if merged_ranges else [],
+    )
+    if merged_ranges is None:
+        structure.notes.append(
+            "Merged ranges were not read: the sheet was streamed. Merged cells "
+            "still take their value from the top-left anchor, as they do on any "
+            "other read."
+        )
+    elif structure.merged_ranges:
         structure.notes.append(
             f"{len(structure.merged_ranges)} merged range(s) present; merged cells are read "
             "from their top-left anchor."
@@ -325,16 +496,16 @@ def inspect_sheet(ws: Worksheet, orientation_override: Orientation | None = None
     structure.used_range = (
         f"{get_column_letter(cols[0])}{rows[0]}:{get_column_letter(cols[-1])}{rows[-1]}"
     )
-    if (ws.max_row or 0) > rows[-1] or (ws.max_column or 0) > cols[-1]:
+    if declared_range is not None and (max_row > rows[-1] or max_column > cols[-1]):
         structure.notes.append(
-            f"Excel reports the used range as {ws.dimensions}, but the last cell holding a "
+            f"Excel reports the used range as {declared_range}, but the last cell holding a "
             f"value is {get_column_letter(cols[-1])}{rows[-1]}; trailing cells carry "
             "formatting only."
         )
 
     from .schema import spec_for_sheet  # local import: avoids a cycle at module load
 
-    spec = spec_for_sheet(ws.title)
+    spec = spec_for_sheet(sheet_name)
     known_fields = set(spec.source_fields) if spec else None
     structure.orientation = orientation_override or detect_orientation(grid, known_fields)
 
@@ -343,6 +514,9 @@ def inspect_sheet(ws: Worksheet, orientation_override: Orientation | None = None
     else:
         _inspect_row_records(grid, structure)
 
+    # The observer is deliberately not passed on. Extraction is a second pass
+    # with a different denominator, and reporting it would restart the phase and
+    # walk the bar back over the scan it has already covered.
     records, locations = _extract_records(grid, structure)
     structure.record_count = len(records)
     return SheetData(structure=structure, records=records, source_locations=locations)
@@ -367,8 +541,9 @@ def _inspect_row_records(grid: dict[tuple[int, int], Any], structure: SheetStruc
 
     data_rows = [r for r in rows if header_row is not None and r > header_row]
     if data_rows:
+        populated = _rows_with_content(grid)
         for r in range(min(data_rows), max(data_rows) + 1):
-            if not _row_has_content(grid, r):
+            if r not in populated:
                 structure.blank_rows_within_data.append(r)
     if structure.blank_rows_within_data:
         structure.notes.append(
@@ -395,9 +570,13 @@ def _inspect_column_records(grid: dict[tuple[int, int], Any], structure: SheetSt
     structure.first_data_column = (header_column + 1) if header_column else None
 
     data_cols = [c for c in cols if header_column is not None and c > header_column]
+    # Computed outside the block below because the note at the end of this
+    # function asks the same question again, and an empty ``data_cols`` still
+    # has to reach it.
+    populated = _columns_with_content(grid)
     if data_cols:
         for c in range(min(data_cols), max(data_cols) + 1):
-            if not _column_has_content(grid, c):
+            if c not in populated:
                 structure.blank_columns_within_block.append(get_column_letter(c))
 
     structure.notes.append(
@@ -405,7 +584,7 @@ def _inspect_column_records(grid: dict[tuple[int, int], Any], structure: SheetSt
         f"{get_column_letter(header_column) if header_column else '?'}; each record would "
         "occupy one column to the right of the labels."
     )
-    if not any(_column_has_content(grid, c) for c in data_cols):
+    if populated.isdisjoint(data_cols):
         structure.notes.append(
             "No record columns follow the label column: this sheet defines the field list "
             "only and carries zero data records."
@@ -413,7 +592,8 @@ def _inspect_column_records(grid: dict[tuple[int, int], Any], structure: SheetSt
 
 
 def _extract_records(
-    grid: dict[tuple[int, int], Any], structure: SheetStructure
+    grid: dict[tuple[int, int], Any], structure: SheetStructure,
+    on_row: RowObserver | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Pull raw records out of the grid according to the detected layout."""
     records: list[dict[str, Any]] = []
@@ -425,8 +605,11 @@ def _extract_records(
         header_positions = sorted(c for (r, c) in grid if r == structure.header_row)
         label_by_col = dict(zip(header_positions, structure.columns))
         data_rows = sorted({r for r, _ in grid if r > structure.header_row})
-        for r in data_rows:
+        total = len(data_rows)
+        for index, r in enumerate(data_rows, start=1):
             record = {label: grid.get((r, col)) for col, label in label_by_col.items()}
+            if on_row is not None:
+                on_row(index, total)
             if all(is_blank(v) for v in record.values()):
                 continue
             records.append(record)
@@ -557,6 +740,7 @@ __all__ = [
     "SheetData",
     "WorkbookInspection",
     "inspect_sheet",
+    "inspect_streamed_sheet",
     "inspect_workbook",
     "detect_orientation",
     "detect_header_row",

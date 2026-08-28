@@ -112,15 +112,23 @@ class EntityView:
 
 def _metric_by_entity(session: Session, spec: MetricSpec, scope: OrgScope,
                       level: str, filters: ScopeFilters,
-                      date_from: dt.date, date_to: dt.date) -> dict[str, float]:
-    """Aggregate the chosen metric per entity of one type, in one query."""
+                      date_from: dt.date, date_to: dt.date,
+                      codes: set[str] | None = None) -> dict[str, float]:
+    """Aggregate the chosen metric per entity of one type, in one query.
+
+    ``codes`` restricts the aggregation to entities the caller already has.
+    An organisational level takes them from the scope; a business type has no
+    ``scope.of`` of its own and passes the codes it resolved instead, which is
+    what keeps both branches bounded by what is actually going to be drawn.
+    """
     table = q.view(session, spec.measures.view_name)
     column_name = code_field(level) if level in ORG_CHAIN else f"{level}_code"
     if column_name not in table.c or spec.field not in table.c:
         return {}
 
     conditions = q.filter_conditions(table, filters, date_from, date_to)
-    codes = scope.of(level) if level in ORG_CHAIN else None
+    if codes is None and level in ORG_CHAIN:
+        codes = scope.of(level)
     if codes:
         conditions.append(table.c[column_name].in_(sorted(codes)))
 
@@ -180,7 +188,16 @@ def build_entity_view(
     # --- coordinates, one query per type -----------------------------------
     locations = _locations(session, requested_layers)
 
-    # --- metrics, one query per organisational level actually drawn --------
+    # --- metrics, one query per level actually drawn -----------------------
+    #
+    # Customers and sales force are scored here too, and were not until this
+    # was fixed: the map opens on the customer layer, so every dealer arrived
+    # with no figure at all and the browser drew the resulting null as a
+    # measured zero. A business type has no ``scope.of`` to bound it, so it is
+    # bounded by the codes `resolve_business_entities` already resolved under
+    # the caller's scope — the same shape as the organisational branch, and
+    # capped by `limit` so the ``IN`` list stays far inside every dialect's
+    # bind-parameter ceiling.
     metric_values: dict[str, dict[str, float]] = {}
     if date_from and date_to:
         for level in requested_layers:
@@ -188,6 +205,12 @@ def build_entity_view(
                 metric_values[level] = _metric_by_entity(
                     session, spec, scope, level,
                     business_filters or ScopeFilters(), date_from, date_to,
+                )
+            elif business.get(level):
+                metric_values[level] = _metric_by_entity(
+                    session, spec, scope, level,
+                    business_filters or ScopeFilters(), date_from, date_to,
+                    codes={item.code for item in business[level]},
                 )
 
     # --- organisational entities -------------------------------------------
@@ -206,7 +229,7 @@ def build_entity_view(
         for item in items:
             view.entities.append(_to_entity(
                 item.type, item.code, item.name, item.parent_type, item.parent_code,
-                locations, {},
+                locations, metric_values.get(entity_type, {}),
             ))
 
     # --- placement and clustering ------------------------------------------

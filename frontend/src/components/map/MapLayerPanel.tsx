@@ -7,10 +7,17 @@
  * where it is visible without hiding anything.
  *
  * The state it edits is not its own: the levels and the reference toggles live
- * in `MapPage` and are handed to `BusinessMap` to apply, so this panel is a
+ * in the page and are handed to `BusinessMap` to apply, so this panel is a
  * control and never the authority.
+ *
+ * `children` and `footer` let the rail put its other controls — the search, the
+ * hierarchy selects, the band chips — inside *this* card rather than stacking a
+ * column of separate ones. They are slots, not state: this component still owns
+ * only the levels and the reference toggles, and renders whatever it is handed
+ * without knowing what it is. Both absent is the panel exactly as it was.
  */
 
+import type { ReactNode } from 'react';
 import { Locate } from 'lucide-react';
 import { useT } from '../../contexts/I18nContext';
 import { BOUNDARY_LEVELS, type BoundaryLevelKey } from './mapConfig';
@@ -22,6 +29,8 @@ export function MapLayerPanel({
   showCapitals,
   showAdminLines,
   onReferenceChange,
+  children,
+  footer,
 }: {
   activeLevels: readonly BoundaryLevelKey[];
   onLevelsChange: (levels: BoundaryLevelKey[]) => void;
@@ -29,6 +38,10 @@ export function MapLayerPanel({
   showCapitals: boolean;
   showAdminLines: boolean;
   onReferenceChange: (next: { capitals: boolean; lines: boolean; mask: boolean }) => void;
+  /** Rendered inside this card, above the administrative levels. */
+  children?: ReactNode;
+  /** Rendered inside this card, below the reference toggles and the hint. */
+  footer?: ReactNode;
 }) {
   const t = useT();
 
@@ -46,9 +59,17 @@ export function MapLayerPanel({
 
   const reference = { capitals: showCapitals, lines: showAdminLines, mask: showMask };
 
+  // A rule only where two groups actually meet. Drawing it unconditionally
+  // would put a line under nothing at the top of the card.
+  const divider = 'mt-3 border-t border-slate-200 pt-3 dark:border-slate-700';
+
   return (
     <div className="card p-3 text-xs">
-      <p className="mb-1.5 font-medium text-slate-500">{t('map.adminLevels')}</p>
+      {children}
+
+      <p className={`mb-1.5 font-medium text-slate-500 ${children ? divider : ''}`}>
+        {t('map.adminLevels')}
+      </p>
       <ul className="space-y-1">
         {BOUNDARY_LEVELS.map((level) => (
           <li key={level.key}>
@@ -111,6 +132,8 @@ export function MapLayerPanel({
         <Locate size={11} className="mt-0.5 shrink-0" />
         {t('map.controlsHint')}
       </p>
+
+      {footer && <div className={divider}>{footer}</div>}
     </div>
   );
 }

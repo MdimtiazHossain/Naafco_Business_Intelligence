@@ -700,7 +700,15 @@ class EtlPipeline:
         # Step 3 (continued): read the file. The row count is not known until the
         # last row is in hand, so this phase reports rows read rather than a
         # fraction — there is no honest denominator yet.
-        self.progress.phase(Phase.READING)
+        # READING belongs to whoever does the reading. A file reader announces it
+        # as it parses; a reader handed to this pipeline ready-made — the
+        # in-memory one behind ``/api/import/*``, or any caller that wired no
+        # reporter into its own — never does, and that band would then be one
+        # nothing ever fills. So it is claimed here only if it is still unspent.
+        # Announcing it unconditionally would recompute the bar from the phase's
+        # start and walk it back over ground the reader had already covered.
+        if not self.progress.entered(Phase.READING):
+            self.progress.phase(Phase.READING)
         rows: list[tuple[SourceRow, dict[str, Any]]] = []
         for source_row in self.reader:
             rows.append((source_row, self._to_canonical(source_row, header_map)))
@@ -713,9 +721,11 @@ class EtlPipeline:
         self.session.flush()
 
         # Staging is a bulk insert of every source row and is a real part of the
-        # wait, so the READING phase is re-entered with the row count now known
-        # and the insert drives it to the end of its share.
-        self.progress.phase(Phase.READING, total=len(rows))
+        # wait, so it drives a phase of its own to the end of its share. It used
+        # to re-enter READING for this, which worked only while nothing else
+        # reported that phase; the reader does now, so the two would have been
+        # competing for one band and the insert would have had none of it left.
+        self.progress.phase(Phase.STAGING, total=len(rows))
         self._load_staging(rows)
 
         # Steps 5, 8, 9: required fields, dates and numerics, row by row.
@@ -760,21 +770,33 @@ class EtlPipeline:
         self.progress.phase(Phase.IMPORTING, total=len(cleaned_rows))
         status_by_row: dict[int, tuple[str, str | None]] = {}
         seen: dict[str, int] = {}
+        repeats: dict[str, int] = {}
+        reject_repeats = get_settings().etl_reject_duplicate_in_file
         candidates: list[tuple[SourceRow, dict[str, Any], dict[str, Any], str]] = []
         for source_row, cleaned, dimensions in cleaned_rows:
             key = self.spec.build_business_key(cleaned, self.source_system)
             if key in seen:
-                self._reject(
-                    source_row, errors.DUPLICATE_IN_FILE,
-                    "Duplicate line found within uploaded file: "
-                    f"{self._describe_line(cleaned)} already appears at row "
-                    f"{seen[key]}.",
-                    field_value=key,
-                )
-                status_by_row[source_row.row_number] = (
-                    STAGING_DUPLICATE, errors.DUPLICATE_IN_FILE.code
-                )
-                continue
+                if reject_repeats:
+                    self._reject(
+                        source_row, errors.DUPLICATE_IN_FILE,
+                        "Duplicate line found within uploaded file: "
+                        f"{self._describe_line(cleaned)} already appears at row "
+                        f"{seen[key]}.",
+                        field_value=key,
+                    )
+                    status_by_row[source_row.row_number] = (
+                        STAGING_DUPLICATE, errors.DUPLICATE_IN_FILE.code
+                    )
+                    continue
+                # The check is off, so the repeat loads. It cannot load under
+                # the key its twin already holds: `business_key` is UNIQUE, and
+                # the upsert applies a repeated key as two parameter sets that
+                # resolve to whichever was written last — one line's figures
+                # would silently replace the other's. Numbering the repeat keeps
+                # both lines, and keeps a re-upload idempotent, because the same
+                # file yields the same keys in the same order.
+                repeats[key] = repeats.get(key, 1) + 1
+                key = f"{key}#{repeats[key]}"
             seen[key] = source_row.row_number
             candidates.append((source_row, cleaned, dimensions, key))
 
@@ -926,8 +948,12 @@ def run_import(
     rejections are all committed, or nothing is. ``dry_run`` performs every step
     and rolls back, which is the safe way to inspect a new file's data quality.
     """
+    # A reader built here is handed the reporter as well, so a run given a path
+    # reports its read exactly as one given a ready-made reader does. A caller
+    # that supplied its own reader has already wired it up, or deliberately has
+    # not.
     reader = source if isinstance(source, SourceReader) else reader_for_file(
-        source, sheet_name=sheet_name
+        source, sheet_name=sheet_name, progress=progress
     )
 
     session = Session(bind=engine, expire_on_commit=False, future=True)

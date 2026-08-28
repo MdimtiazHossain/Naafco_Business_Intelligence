@@ -224,6 +224,7 @@ export function GlobalFilterBar({
   groups,
   sticky = true,
   showDate = true,
+  layout = 'bar',
 }: {
   levels?: FilterLevel[];
   showIndependent?: boolean;
@@ -247,6 +248,20 @@ export function GlobalFilterBar({
    * filter set exactly once.
    */
   groups?: FilterGroup[];
+  /**
+   * Whether this is the horizontal bar across the top of a page, or a column
+   * in a page's own rail.
+   *
+   * **Layout only, and that is the whole point of it being a prop rather than a
+   * second component.** The cascade, the ancestor resolution, the auto-selected
+   * marks, "clear all", the chips and the single `FilterContext` state are the
+   * same code in both — a rail that reimplemented any of it would be a second
+   * copy of the one thing this application insists on declaring once. What
+   * changes is that a rail is one column wide, is always open (there is no
+   * room for a disclosure button and nothing to disclose), and never sticks,
+   * because the rail it sits in scrolls on its own.
+   */
+  layout?: 'bar' | 'rail';
   /**
    * Keep the bar in view while the page scrolls. **On by default**, so every
    * page that renders this bar gets the behaviour from here rather than from
@@ -283,7 +298,13 @@ export function GlobalFilterBar({
 }) {
   const t = useT();
   const { autoSelected, clearLevels, filters, setFilter } = useFilters();
-  const [expanded, setExpanded] = useState(false);
+  const rail = layout === 'rail';
+  // A rail is always open. There is no room for a disclosure button in a column
+  // this narrow, and nothing to gain by hiding controls that are the only thing
+  // in it — so `expanded` is a bar-only idea and the rail ignores its state.
+  const [barExpanded, setBarExpanded] = useState(false);
+  const expanded = rail || barExpanded;
+  const setExpanded = setBarExpanded;
 
   /**
    * The filters this bar is responsible for on this page.
@@ -321,7 +342,15 @@ export function GlobalFilterBar({
    * so in practice it is always drawn.
    */
   const globals = GLOBAL_FILTERS.filter((level) => managed.includes(level));
-  const inGrid = (level: FilterLevel) => !globals.includes(level);
+  /**
+   * A control belongs in the grid unless the bar is drawing it somewhere else.
+   *
+   * In the bar that means Company, which sits in the always-visible row beside
+   * the period; excluding it here is what stops it appearing twice. A rail has
+   * no such row — it is one column all the way down — so there Company is an
+   * ordinary grid control and appears exactly once.
+   */
+  const inGrid = (level: FilterLevel) => rail || !globals.includes(level);
 
   /** One control, chosen by what kind of filter the level is. */
   const control = (level: FilterLevel) => {
@@ -336,15 +365,39 @@ export function GlobalFilterBar({
     );
   };
 
-  const grid =
-    'grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5';
+  const grid = rail
+    ? 'grid grid-cols-1 gap-2'
+    : 'grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5';
 
   return (
     <div
-      className={`card mb-4 p-3 ${
-        sticky ? 'sticky top-[var(--app-header-height,3.5rem)] z-30 shadow-sm' : ''
-      }`}
+      className={
+        rail
+          ? // Never sticky: the rail this sits in scrolls on its own, and a
+            // control that stuck inside a scrolling column would detach from
+            // the controls above it.
+            'card p-3 text-xs'
+          : `card mb-4 p-3 ${
+              sticky ? 'sticky top-[var(--app-header-height,3.5rem)] z-30 shadow-sm' : ''
+            }`
+      }
     >
+      {rail && (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="font-medium text-slate-500">{t('common.filters')}</span>
+          {activeCount > 0 && (
+            <button
+              type="button"
+              className="btn-ghost px-1.5 py-0.5 text-[11px]"
+              onClick={() => clearLevels(managed)}
+            >
+              {t('common.clearAll')}
+            </button>
+          )}
+        </div>
+      )}
+
+      {!rail && (
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/*
           Period, then Company, then the buttons — and this row is outside the
@@ -387,8 +440,13 @@ export function GlobalFilterBar({
           </button>
         </div>
       </div>
+      )}
 
-      {activeChips.length > 0 && !expanded && (
+      {/* In the bar, chips are what the collapsed panel says. In the rail every
+          control is already on screen, so the chips are kept for the one thing
+          the selects cannot show: which levels the app resolved for you, marked
+          with a dashed edge, and a single click to take one off. */}
+      {activeChips.length > 0 && (rail || !expanded) && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {activeChips.map((level) => (
             <button

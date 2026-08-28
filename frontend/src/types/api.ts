@@ -30,6 +30,7 @@ export type SectionKey =
   | 'sales'
   | 'stock'
   | 'target'
+  | 'target_management'
   | 'performance'
   | 'materials'
   | 'customers'
@@ -46,8 +47,22 @@ export type SectionKey =
 
 export type SectionAccess = 'ALLOW' | 'DENY';
 
-/** What a user may do *inside* a section they hold. */
-export type SectionAction = 'VIEW' | 'CREATE' | 'EDIT' | 'DELETE' | 'EXPORT' | 'UPLOAD';
+/**
+ * What a user may do *inside* a section they hold.
+ *
+ * `APPROVE` and `REVISE` belong to Target Management and are two actions on
+ * purpose: signing off on a figure and asking for it to change are different
+ * privileges, held by different people at different levels of the hierarchy.
+ */
+export type SectionAction =
+  | 'VIEW'
+  | 'CREATE'
+  | 'EDIT'
+  | 'DELETE'
+  | 'EXPORT'
+  | 'UPLOAD'
+  | 'APPROVE'
+  | 'REVISE';
 
 export interface User {
   user_id: number;
@@ -427,6 +442,7 @@ export type UploadPhase =
   | 'UPLOADING'
   | 'PREPARING'
   | 'READING'
+  | 'STAGING'
   | 'VALIDATING'
   | 'MAPPING'
   | 'IMPORTING'
@@ -1332,6 +1348,865 @@ export interface TargetPage extends PageResponse {
   gap: ToolResult;
 }
 
+// ---------------------------------------------------------------------------
+// Target Management
+//
+// Separate from `TargetPage` above, which reports achievement against targets
+// that already exist. These describe the plan a target is *built* under.
+// ---------------------------------------------------------------------------
+
+/** The nine states a plan version moves through. Mirrors `TargetStatus`. */
+export type TargetPlanStatus =
+  | 'DRAFT'
+  | 'ALLOCATION_IN_PROGRESS'
+  | 'ALLOCATED'
+  | 'UNDER_REVIEW'
+  | 'PARTIALLY_APPROVED'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'LOCKED'
+  | 'REVISED';
+
+/** `FY` is the whole financial year; the quarters are quarters *of* it. */
+export type TargetPeriod = 'FY' | 'Q1' | 'Q2' | 'Q3' | 'Q4';
+
+export interface TargetPlan {
+  plan_id: number;
+  plan_code: string;
+  financial_year: string;
+  target_period: TargetPeriod;
+  /** `Q1 (Jul – Sep)`, derived from the configured financial-year start month. */
+  period_label: string;
+  company_code: string;
+  bu_code: string;
+  sales_line_code: string;
+  basis_financial_years: string | null;
+  status: TargetPlanStatus;
+  created_by: string | null;
+  created_at: string | null;
+  current_version_id: number | null;
+  current_version_no: number | null;
+  current_version_status: TargetPlanStatus | null;
+}
+
+export interface TargetVersion {
+  version_id: number;
+  plan_id: number;
+  version_no: number;
+  /** `V3` — what every screen calls it. */
+  label: string;
+  status: TargetPlanStatus;
+  is_current: boolean;
+  reason: string | null;
+  created_by: string | null;
+  created_at: string | null;
+  submitted_at: string | null;
+  approved_at: string | null;
+  locked_at: string | null;
+  locked_batch_id: string | null;
+  country_line_count: number | null;
+}
+
+/**
+ * One material's country target.
+ *
+ * `quantity` and `value` are derived by the backend from the material master's
+ * conversion factor and transfer price, and are `null` when it states neither —
+ * which is not zero, and is why `missing` names the inputs that were absent
+ * rather than leaving the browser to infer it from two nulls.
+ */
+export interface TargetCountryLine {
+  material_code: string;
+  material_description: string | null;
+  material_brand: string | null;
+  material_group_name: string | null;
+  company_code: string | null;
+  conversion_factor: number | null;
+  transfer_price: number | null;
+  target_volume: number;
+  quantity: number | null;
+  value: number | null;
+  /** `conversion_factor` and/or `transfer_price` — whichever the master lacks. */
+  missing: ('conversion_factor' | 'transfer_price')[];
+}
+
+/**
+ * The country total.
+ *
+ * `quantity` and `value` are `null` unless *every* line derived. A total over a
+ * mixture of derivable and non-derivable lines is short by an unknown amount,
+ * so it is suppressed rather than shown — `missing_conversion_factor` and
+ * `missing_transfer_price` name what has to be loaded to unsuppress it.
+ */
+export interface TargetCountryTotals {
+  line_count: number;
+  target_volume: number;
+  quantity: number | null;
+  value: number | null;
+  derivable_count: number;
+  missing_conversion_factor: string[];
+  missing_transfer_price: string[];
+}
+
+export interface TargetCountryTargetResponse {
+  plan: TargetPlan;
+  version: TargetVersion;
+  lines: TargetCountryLine[];
+  totals: TargetCountryTotals;
+  /** Why a total is suppressed, in the words the backend chose. */
+  notes: string[];
+  editable: boolean;
+}
+
+/** Which rule the allocation engine should follow for one material. */
+export type TargetBasis =
+  | 'TWO_YEAR_AVERAGE'
+  | 'GROWTH_WEIGHTED'
+  | 'NEW_MATERIAL'
+  | 'NO_HISTORY';
+
+/**
+ * One material's volume in one financial year.
+ *
+ * `volume` is `null` when the material had no sales at all that year — which is
+ * not `0`, and is why growth against it reads `n/a` rather than a number.
+ * `complete` is false when some contributing sales row stated no volume, so the
+ * total shown is the sum of the rows that did.
+ */
+export interface TargetHistoryYear {
+  financial_year: string;
+  volume: number | null;
+  rows: number;
+  rows_without_volume: number;
+  complete: boolean;
+}
+
+export interface TargetHistoryRow {
+  material_code: string;
+  material_description: string | null;
+  material_brand: string | null;
+  material_group_name: string | null;
+  years: TargetHistoryYear[];
+  /** The same volumes flattened, oldest first — one column per basis year. */
+  volumes: (number | null)[];
+  growth_percent: number | null;
+  average_volume: number | null;
+  contribution_percent: number | null;
+  current_target_volume: number | null;
+  target_growth_percent: number | null;
+  basis: TargetBasis;
+  complete: boolean;
+}
+
+export interface TargetHistoryResponse {
+  plan: TargetPlan;
+  version: TargetVersion;
+  /** Oldest first. Length drives how many volume columns the table draws. */
+  basis_years: string[];
+  rows: TargetHistoryRow[];
+  totals: {
+    material_count: number;
+    years: {
+      financial_year: string;
+      volume: number | null;
+      materials_with_volume: number;
+    }[];
+    target_volume: number;
+    with_history: number;
+    incomplete_materials: string[];
+    without_history: string[];
+  };
+  notes: string[];
+  growth_guidance_percent: number;
+}
+
+/** Where one allocation run has got to. Distinct from the *version's* status. */
+export type TargetAllocationJobStatus =
+  | 'QUEUED'
+  | 'PROCESSING'
+  | 'COMPLETED'
+  /**
+   * Allocated and reconciled, with something a planner should read — a seasonal
+   * fallback, a node split evenly for want of history, a level shallower than
+   * customer. Its own status rather than a flag on `COMPLETED`, because a run
+   * nobody needs to look at and a run somebody does are different things to a
+   * person scanning a list of twenty.
+   */
+  | 'COMPLETED_WITH_WARNINGS'
+  | 'FAILED'
+  | 'CANCELLED'
+  /**
+   * The engine ran, found no sales history and correctly refused to invent an
+   * allocation. Not a failure — nothing went wrong, the data it needs has not
+   * been loaded — and drawn as its own state so nobody hunts a bug that is not
+   * there.
+   */
+  | 'NO_HISTORY';
+
+export interface TargetAllocationStage {
+  key: string;
+  label: string;
+}
+
+export interface TargetReconciliation {
+  balanced: boolean;
+  /** Decimal strings, not numbers: exactness is the whole point. */
+  country_target_volume: string;
+  allocated_volume: string;
+  difference: string;
+  /** `null` at a zero target — a percentage of nothing is undefined. */
+  allocation_percent: number | null;
+  mismatches: {
+    kind: string;
+    level: string | null;
+    node_code: string | null;
+    material_code: string | null;
+    target_month: string | null;
+    expected: string;
+    actual: string;
+    difference: string;
+  }[];
+  mismatch_count: number;
+  levels_checked: string[];
+  node_count: number;
+}
+
+export interface TargetFactorAvailability {
+  key: string;
+  label: string;
+  enabled: boolean;
+  weight: number;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface TargetAllocationJob {
+  job_id: string;
+  plan_id: number;
+  version_id: number;
+  status: TargetAllocationJobStatus;
+  current_stage: string | null;
+  current_stage_label: string | null;
+  stages: TargetAllocationStage[];
+  progress_percent: number;
+  rows_processed: number;
+  total_rows: number | null;
+  error_count: number;
+  error_message: string | null;
+  settings: {
+    weights: Record<string, number>;
+    enabled: Record<string, boolean>;
+    management_adjustment: Record<string, number>;
+  } | null;
+  result: {
+    reconciliation: TargetReconciliation | null;
+    months?: string[];
+    materials?: string[];
+    material_count?: number;
+    node_count?: number;
+    customer_count?: number;
+    row_count?: number;
+    factors?: TargetFactorAvailability[];
+    warnings?: string[];
+    equal_split_nodes?: string[];
+    /** The deepest level this run reached — never assumed to be customer. */
+    allocation_level?: string;
+    /** What each management adjustment did: system, adjustment, final. */
+    adjustments?: TargetAppliedAdjustment[];
+    sales_rows_found?: number;
+    /** Present only on a NO_HISTORY result. */
+    basis_years?: string[];
+  } | null;
+  requested_by: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string | null;
+}
+
+export interface TargetAllocationState {
+  plan: TargetPlan;
+  version: TargetVersion;
+  reconciliation: TargetReconciliation;
+  job: TargetAllocationJob | null;
+  has_allocation: boolean;
+  editable: boolean;
+}
+
+export interface TargetFactorCatalogue {
+  factors: {
+    key: string;
+    label: string;
+    kind: 'SHARE' | 'MODE';
+    description: string;
+    default_weight: number;
+    default_enabled: boolean;
+    requires: string;
+    /** False where the platform holds no source for the factor at all. */
+    supported: boolean;
+    unsupported_reason: string | null;
+  }[];
+  defaults: {
+    weights: Record<string, number>;
+    enabled: Record<string, boolean>;
+    management_adjustment: Record<string, number>;
+  };
+  stages: TargetAllocationStage[];
+  new_node_seed_share: number;
+  growth_guidance_percent: number;
+}
+
+/**
+ * The five states a piece of data can be in.
+ *
+ * They are five because they call for five different actions, and a business
+ * user reading a bare `0` or a bare dash cannot tell them apart: sold nothing,
+ * nothing loaded, loaded but missing the column this needs, present and
+ * self-contradictory, or a master that does not exist in the platform at all.
+ */
+export type TargetDataState =
+  | 'AVAILABLE'
+  | 'VALID_ZERO'
+  | 'NO_DATA'
+  | 'INSUFFICIENT_DATA'
+  | 'INVALID_DATA'
+  | 'NOT_AVAILABLE'
+  | 'NOT_APPLICABLE';
+
+export interface TargetReadinessCheck {
+  key: string;
+  label: string;
+  state: TargetDataState;
+  tone: 'ok' | 'blocked' | 'error' | 'muted';
+  ok: boolean;
+  /** Whether this check stops the run — not the same as its data state. */
+  blocking: boolean;
+  /** True where the data is absent but the run may proceed anyway. */
+  advisory: boolean;
+  detail: string;
+  action: string | null;
+  facts: Record<string, unknown>;
+}
+
+export interface TargetCustomerMappingHealth {
+  total_customers: number;
+  mapped_to_sub_territory: number;
+  unmapped: number;
+  mapped_to_unknown_sub_territory: number;
+  usable: number;
+}
+
+export interface TargetProjection {
+  projected_rows: number;
+  maximum_rows: number;
+  exceeds: boolean;
+  financial_year: string;
+  target_period: string;
+  months: number;
+  materials: number;
+  nodes: number;
+  customers: number;
+  allocation_level: string;
+  narrowing_options: string[];
+}
+
+export interface TargetReadiness {
+  plan: TargetPlan;
+  version: TargetVersion;
+  checks: TargetReadinessCheck[];
+  ready: boolean;
+  blocking: string[];
+  /** The deepest level an allocation could reach on this data. */
+  allocation_level: string;
+  allocation_level_is_customer: boolean;
+  customer_mapping: TargetCustomerMappingHealth;
+  hierarchy: { counts: Record<string, number>; broken_parent_links: Record<string, number> };
+  projection: TargetProjection;
+  basis_years: string[];
+  factors: TargetFactorAvailability[];
+}
+
+export interface TargetAllocationRun {
+  job_id: string;
+  plan_id: number;
+  version_id: number;
+  status: TargetAllocationJobStatus;
+  started_by: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string | null;
+  projected_rows: number | null;
+  generated_rows: number;
+  allocation_level: string | null;
+  sales_rows_found: number | null;
+  /** Three-valued: `null` means the run never got far enough to look. */
+  sales_data_available: boolean | null;
+  error_count: number;
+  warning_count: number;
+  error_message: string | null;
+}
+
+/**
+ * A standing management adjustment: a node, an absolute volume and a reason.
+ *
+ * Absolute and signed, never a percentage — a uniform percentage re-normalised
+ * is a mathematical no-op. It is an *input* to the engine, so it takes effect
+ * on the next run rather than editing figures already generated.
+ */
+export interface TargetAdjustment {
+  adjustment_id: number;
+  level: string;
+  node_code: string;
+  material_code: string | null;
+  adjustment_volume: string;
+  reason: string;
+  adjusted_by: string | null;
+  adjusted_at: string | null;
+}
+
+/** What one adjustment did on the last run, for the screen's columns. */
+export interface TargetAppliedAdjustment {
+  level: string;
+  node_code: string;
+  material_code: string | null;
+  system_volume: string;
+  adjustment_volume: string;
+  final_volume: string;
+  /** `null` against a system volume of zero — undefined, not infinite. */
+  adjustment_percent: number | null;
+  reason: string;
+  adjusted_by: string | null;
+  adjusted_at: string | null;
+}
+
+/**
+ * One node of the hierarchical review.
+ *
+ * `depth` and reading order carry the shape — the backend flattens the tree so
+ * the browser can draw it as a table and keep the column arrangement every
+ * other report table has.
+ */
+export interface TargetReviewRow {
+  level: string;
+  node_code: string;
+  name: string | null;
+  parent_level: string | null;
+  parent_code: string | null;
+  depth: number;
+  has_children: boolean;
+  target_volume: number;
+  /** What the engine generated, before any management adjustment moved it. */
+  system_volume: number;
+  adjusted: boolean;
+  /** `null` where a material on this node states no conversion factor. */
+  target_quantity: number | null;
+  target_value: number | null;
+  missing_derivation: string[];
+  previous_year_volume: number | null;
+  /** `null` against a year with no sales — undefined, not −100%. */
+  growth_percent: number | null;
+  actual_volume: number | null;
+  /** `null` before the period has any actuals. Never rendered as 0%. */
+  achievement_percent: number | null;
+  /** Child total minus this node's own figure. Zero at every level. */
+  recon_variance: number;
+  pending_revisions: number;
+  status: string;
+}
+
+export interface TargetReviewResponse {
+  plan: TargetPlan;
+  version: TargetVersion;
+  rows: TargetReviewRow[];
+  reconciliation: {
+    balanced: boolean;
+    mismatched_nodes: number;
+    node_count: number;
+    target_volume: number;
+  };
+  /** How this reader's scope narrowed the tree, in words. */
+  scope: string;
+  notes: string[];
+  materials: string[];
+  material_code: string | null;
+  levels: string[];
+}
+
+/**
+ * One role's place in the approval chain.
+ *
+ * `approval_sequence` is `null` for a role that sits **outside** the chain —
+ * an administrator configures the workflow and signs off on nothing. That is a
+ * different thing from being first in it, so it is never rendered as 0.
+ *
+ * `adjustment_limit_percent` is `null` for unlimited and `0` for "may not
+ * change a figure at all". Both are real settings and look alike as an empty
+ * cell, which is why `limit_label` comes from the backend spelled out.
+ */
+export interface TargetMatrixRow {
+  role: string;
+  hierarchy_level: string;
+  approval_sequence: number | null;
+  can_edit: boolean;
+  can_approve: boolean;
+  can_reject: boolean;
+  can_revise: boolean;
+  adjustment_limit_percent: number | null;
+  is_active: boolean;
+  limit_label: string;
+}
+
+export interface TargetMatrixResponse {
+  rows: TargetMatrixRow[];
+  /** The sequenced, active roles only — the chain as it actually runs. */
+  chain: TargetMatrixRow[];
+  levels: string[];
+  defaults: TargetMatrixRow[];
+  my_role: string;
+}
+
+/**
+ * A request to change one node's figure.
+ *
+ * Three volumes, and `approved_volume` stays `null` until somebody decides —
+ * the screen shows a dash there rather than repeating the requested figure,
+ * because "asked for 90,000" and "granted 90,000" must be tellable apart.
+ */
+export interface TargetRevision {
+  revision_id: number;
+  version_id: number | null;
+  level: string | null;
+  node_code: string | null;
+  node_name: string | null;
+  material_code: string | null;
+  system_volume: number;
+  requested_volume: number;
+  approved_volume: number | null;
+  /** `null` when the system volume was zero — a percentage of nothing. */
+  change_percent: number | null;
+  status: 'PENDING' | 'ESCALATED' | 'APPROVED' | 'REJECTED';
+  /** Set only on an ESCALATED request: the role it went to instead. */
+  escalated_to_role: string | null;
+  reason: string;
+  requested_by: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  requested_at: string | null;
+}
+
+export interface TargetRevisionsResponse {
+  plan: TargetPlan;
+  version: TargetVersion;
+  rows: TargetRevision[];
+  open_count: number;
+  revisable: boolean;
+}
+
+/** One step of the chain, and where this version stands against it. */
+export interface TargetChainStep {
+  role: string;
+  hierarchy_level: string;
+  approval_sequence: number;
+  /** False for a step that questions a target without signing it off. */
+  can_approve: boolean;
+  approved: boolean;
+  actor: string | null;
+  acted_at: string | null;
+  is_current: boolean;
+}
+
+export interface TargetApprovalAct {
+  approval_id: number;
+  level: string | null;
+  node_code: string | null;
+  action: string;
+  actor: string | null;
+  actor_role: string | null;
+  approval_sequence: number | null;
+  comment: string | null;
+  acted_at: string | null;
+}
+
+export interface TargetApprovalState {
+  plan?: TargetPlan;
+  version?: TargetVersion;
+  steps: TargetChainStep[];
+  history: TargetApprovalAct[];
+  /** What final approval is still waiting on. Empty means nothing. */
+  blockers: string[];
+  my_role: string;
+  my_matrix: TargetMatrixRow | null;
+  my_turn: boolean;
+  already_acted: string | null;
+  current_role: string | null;
+}
+
+export interface TargetApprovalOutcome {
+  status: TargetPlanStatus;
+  steps: TargetChainStep[];
+  blockers: string[];
+}
+
+export interface TargetQueueVersion {
+  plan: TargetPlan;
+  version: TargetVersion;
+  is_my_turn: boolean;
+  waiting_on: string[];
+  blockers: string[];
+}
+
+export interface TargetQueueRevision extends TargetRevision {
+  plan_code: string;
+  version_no: number;
+  version_status: TargetPlanStatus;
+}
+
+export interface TargetApprovalQueue {
+  versions: TargetQueueVersion[];
+  revisions: TargetQueueRevision[];
+  notes: string[];
+  role: string;
+  matrix: TargetMatrixRow | null;
+}
+
+/**
+ * Whether a version can be locked, and what is stopping it.
+ *
+ * `blockers` is empty exactly when `lockable` is true. Both are sent because the
+ * screen draws them differently: one decides whether a control exists, the other
+ * is a list a reader acts on.
+ */
+export interface TargetLockState {
+  plan?: TargetPlan;
+  version?: TargetVersion;
+  lockable: boolean;
+  blockers: string[];
+  /** The ETL batch the lock wrote under, or null before it happens. */
+  locked_batch_id: string | null;
+  locked_at: string | null;
+  /** The role that holds the lock — the last step of the approval chain. */
+  locks_role: string | null;
+}
+
+export interface TargetLockResult {
+  batch_uuid: string;
+  rows_written: number;
+  rows_inserted: number;
+  rows_updated: number;
+  /** Grains a previous version wrote that this one does not restate. */
+  rows_voided: number;
+  status: TargetPlanStatus;
+}
+
+/**
+ * One entry of the business trail.
+ *
+ * `old_value` and `new_value` are text because what changed is not always a
+ * number: a status moves from Approved to Locked, a version from V2 to V3.
+ */
+export interface TargetAuditEntry {
+  audit_id: number;
+  plan_id: number | null;
+  version_id: number | null;
+  action: string;
+  actor: string | null;
+  actor_role: string | null;
+  node_label: string | null;
+  old_value: string | null;
+  new_value: string | null;
+  reason: string | null;
+  occurred_at: string | null;
+}
+
+export interface TargetAuditResponse {
+  rows: TargetAuditEntry[];
+  /** Matching entries in total, not the page — a filter that found forty and
+   *  one that found forty thousand must look different. */
+  total: number;
+  actions: string[];
+}
+
+/**
+ * One node's movement between two versions.
+ *
+ * `base_volume` is null for a node the newer version added, `volume` is null
+ * for one it dropped, and both `change` and `change_percent` are null in either
+ * case — no target and a target of nothing are different statements, and only
+ * one of them is a number you can subtract.
+ */
+export interface TargetComparisonRow {
+  level: string;
+  node_code: string;
+  name: string | null;
+  parent_level: string | null;
+  parent_code: string | null;
+  depth: number;
+  base_volume: number | null;
+  volume: number | null;
+  change: number | null;
+  /** Null against a zero or absent base — a ratio against nothing. */
+  change_percent: number | null;
+  status: 'UNCHANGED' | 'INCREASED' | 'DECREASED' | 'ADDED' | 'REMOVED';
+}
+
+export interface TargetComparisonLine {
+  material_code: string;
+  base_volume: number | null;
+  volume: number | null;
+  change: number | null;
+  change_percent: number | null;
+  status: string;
+}
+
+export interface TargetComparisonResponse {
+  plan: TargetPlan;
+  base_version: TargetVersion;
+  version: TargetVersion;
+  rows: TargetComparisonRow[];
+  /** Computed from the tree's roots, never by summing the rows. */
+  totals: {
+    base_volume: number | null;
+    volume: number | null;
+    change: number | null;
+    change_percent: number | null;
+    nodes_changed: number;
+    nodes: number;
+  };
+  /** The typed country volumes on both sides — the figure a person entered. */
+  country: TargetComparisonLine[];
+  materials: string[];
+  material_code: string | null;
+  scope: string;
+  notes: string[];
+  statuses: string[];
+}
+
+export interface TargetComparisonOption extends TargetVersion {
+  /** Listed and marked rather than hidden, so a missing version is explained. */
+  has_allocation: boolean;
+}
+
+export interface TargetDashboardPlan {
+  plan: TargetPlan;
+  version: TargetVersion;
+  /** Null when nobody has typed a country target — never 0. */
+  country_volume: number | null;
+  allocated_volume: number | null;
+  /** Null when there is no country target to measure against. */
+  allocated_percent: number | null;
+  open_revisions: number;
+  /** Keys into `attention_reasons`; empty when nothing is waiting. */
+  attention: string[];
+  locked_at: string | null;
+}
+
+export interface TargetDashboardResponse {
+  stages: {
+    drafting: number;
+    allocated: number;
+    in_approval: number;
+    locked: number;
+  };
+  plan_count: number;
+  financial_year: string | null;
+  financial_years: string[];
+  plans: TargetDashboardPlan[];
+  attention: TargetDashboardPlan[];
+  attention_reasons: Record<string, string>;
+  my_queue: {
+    versions: number;
+    revisions: number;
+    notes: string[];
+    role: string;
+  };
+  recent: TargetAuditEntry[];
+  levels: string[];
+}
+
+/**
+ * One line of an uploaded country-target file, and what became of it.
+ *
+ * `raw_volume` is what the file actually said, kept so a rejected cell can be
+ * shown back verbatim: telling somebody `12,5OO` was refused is useful where
+ * telling them "row 4 was refused" is not.
+ */
+export interface TargetUploadRow {
+  row_number: number;
+  material_code: string | null;
+  raw_volume: string | null;
+  volume: number | null;
+  /** The version's current figure, or null if this material is new to it. */
+  current_volume: number | null;
+  /**
+   * `SKIPPED` is a material the file lists with no Target Volume. The
+   * template pre-fills every material of the company, so most rows arrive
+   * blank — a blank is “nothing stated here”, never a target of zero.
+   */
+  status: 'NEW' | 'CHANGED' | 'UNCHANGED' | 'SKIPPED' | 'REJECTED';
+  error: string | null;
+}
+
+export interface TargetUploadPreview {
+  plan: TargetPlan;
+  version: TargetVersion;
+  /** Passed back to apply. A name, never a path. */
+  upload_token: string;
+  file_name: string;
+  editable: boolean;
+  rows: TargetUploadRow[];
+  counts: {
+    read: number;
+    rejected: number;
+    new: number;
+    changed: number;
+    unchanged: number;
+    /** Listed with no figure — left alone, never written as zero. */
+    skipped: number;
+    /** Lines already on the version that this file does not name. */
+    untouched: number;
+  };
+  /** False whenever anything is rejected — the upload is all-or-nothing. */
+  applicable: boolean;
+  headers: { material: string | null; volume: string | null };
+  notes: string[];
+}
+
+export interface TargetUploadResult {
+  created: number;
+  updated: number;
+  rows_read: number;
+  skipped: number;
+  untouched: number;
+  file_name: string;
+}
+
+export interface TargetAvailableMaterial {
+  material_code: string;
+  material_description: string | null;
+  material_brand: string | null;
+  material_group_name: string | null;
+  conversion_factor: number | null;
+  transfer_price: number | null;
+}
+
+export interface TargetScopeOption {
+  code: string;
+  name: string;
+}
+
+export interface TargetManagementOptions {
+  companies: TargetScopeOption[];
+  business_units: (TargetScopeOption & { company_code: string })[];
+  sales_lines: (TargetScopeOption & { bu_code: string })[];
+  periods: { code: TargetPeriod; label: string }[];
+  statuses: TargetPlanStatus[];
+  /**
+   * What this caller may do here. Presentation only — every endpoint
+   * re-resolves the same permission, and a hand-typed request is refused
+   * whatever the browser was told.
+   */
+  actions: Partial<Record<SectionAction, boolean>>;
+}
+
 export interface PerformancePage extends PageResponse {
   level: string;
   next_level: string | null;
@@ -1657,6 +2532,26 @@ export interface MapAggregatePoint {
   measures: Record<string, number | string | null>;
   location_source: string;
   location_precision: string;
+}
+
+/**
+ * One entity's monthly net sales, for the detail panel's history bars.
+ *
+ * `rows` is whatever `get_sales_trend` returned at month granularity — a label
+ * and the sales measures, already aggregated server-side. There is no target
+ * column and there is not meant to be one: a target is a month of a financial
+ * year rather than a date, and no tool on this path groups it by month.
+ */
+export interface MapEntityTrendResponse {
+  level: string;
+  code: string;
+  months: number;
+  period: { date_from: string; date_to: string };
+  scope_description: string;
+  rows: { label?: string; date?: string; net_sales?: number | null }[];
+  notes: string[];
+  /** Set when the tool refused or failed; the panel says so rather than drawing zero. */
+  error?: string | null;
 }
 
 export interface MapPointsResponse {

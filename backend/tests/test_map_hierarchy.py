@@ -669,3 +669,61 @@ def test_an_unfiltered_request_is_pinned_to_every_code_in_scope(branched, users)
 
     assert merged == {"region": ["REG001", "REG002"]}
     assert scope.of("region") == {"REG001", "REG002"}
+
+
+# ==========================================================================
+# Business entities carry a metric too
+# ==========================================================================
+
+
+def test_customers_are_scored_like_every_other_level(client):
+    """A customer arrives with its own net sales, not with nothing.
+
+    Metrics used to be computed only for the organisational chain, so every
+    customer and every sales-force point came back with ``value: null`` — and
+    the browser drew that null as a measured zero over each one. The map opens
+    on the customer layer, so that was the first figure anybody saw.
+    """
+    token = login(client)
+    payload = entities(client, token, "layers=customer")
+
+    customers = [e for e in payload["entities"] if e["type"] == "customer"]
+    assert customers, "the fixture should resolve at least one customer"
+
+    scored = [c for c in customers if c["value"] is not None]
+    assert scored, "every customer came back unscored"
+    assert any(c["value"] > 0 for c in scored), "no customer carried a real figure"
+
+
+def test_a_customer_with_no_sales_is_unscored_rather_than_zero(client):
+    """The fix must not swap one invented figure for another.
+
+    A customer the window holds no sales for has no net sales to state, and the
+    aggregate simply has no row for it. That must stay ``None`` all the way out,
+    because a customer who did not trade this month and a customer who traded
+    nothing are the same thing only if you already know which — and the map
+    does not.
+    """
+    token = login(client)
+    payload = entities(client, token,
+                       "layers=customer&date_from=2030-01-01&date_to=2030-01-31")
+    customers = [e for e in payload["entities"] if e["type"] == "customer"]
+    assert customers, "the customers should still be listed outside the window"
+    assert all(c["value"] is None for c in customers)
+
+
+def test_a_scoped_user_only_ever_sees_their_own_customers_scored(client):
+    """Scoring adds a figure; it must not add an entity.
+
+    The aggregation is bounded by the codes the scope already resolved, so a
+    regional manager's payload gains net sales for their own customers and
+    gains no customer they could not see before.
+    """
+    root = entities(client, login(client), "layers=customer")
+    scoped = entities(client, login(client, "khulna_rm"), "layers=customer")
+
+    everyone = {e["id"] for e in root["entities"] if e["type"] == "customer"}
+    theirs = {e["id"] for e in scoped["entities"] if e["type"] == "customer"}
+    assert theirs <= everyone
+    assert all(e["value"] is None or isinstance(e["value"], (int, float))
+               for e in scoped["entities"] if e["type"] == "customer")

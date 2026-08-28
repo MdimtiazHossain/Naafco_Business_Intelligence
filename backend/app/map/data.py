@@ -59,6 +59,43 @@ DRILL_PATH: tuple[str, ...] = (
 )
 
 
+#: Map level -> the ``ScopeFilters`` field that narrows a query to one of them.
+#:
+#: **Derived, never written down.** The chain is already stated twice in this
+#: codebase and both statements are load-bearing: :data:`GROUP_BY_LEVEL` says
+#: which dimension a level aggregates by, ``queries.GROUP_COLUMNS`` says which
+#: column that dimension is keyed on, and ``queries.FILTER_COLUMNS`` says which
+#: filter field carries that column. Inverting the last of those and walking the
+#: three is what makes ``bu -> business_unit_codes`` correct without anybody
+#: remembering that this one level is not simply ``f"{level}_codes"`` — the trap
+#: a hand-written copy of this map would fall into the first time it was edited.
+FILTER_FIELD_BY_LEVEL: dict[str, str] = {}
+for _level, _group_by in GROUP_BY_LEVEL.items():
+    _columns = q.GROUP_COLUMNS.get(_group_by)
+    if not _columns:
+        continue
+    for _field, _column in q.FILTER_COLUMNS.items():
+        if _column == _columns[0]:
+            FILTER_FIELD_BY_LEVEL[_level] = _field
+            break
+del _level, _group_by, _columns, _field, _column
+
+
+def filter_field_for(level: str) -> str:
+    """The ``ScopeFilters`` field that narrows to one entity of ``level``.
+
+    Raises :class:`ValueError` for anything the map cannot aggregate, so a
+    hand-typed level is a 422 rather than a filter silently doing nothing.
+    """
+    try:
+        return FILTER_FIELD_BY_LEVEL[level]
+    except KeyError:
+        raise ValueError(
+            f"Unknown level {level!r}. Supported: "
+            + ", ".join(sorted(FILTER_FIELD_BY_LEVEL))
+        ) from None
+
+
 #: The one metric that is derived rather than selected.
 #:
 #: Kept as a constant because three places have to agree on it — the spec, the
@@ -414,6 +451,8 @@ __all__ = [
     "METRICS",
     "METRIC_BY_KEY",
     "GROUP_BY_LEVEL",
+    "FILTER_FIELD_BY_LEVEL",
+    "filter_field_for",
     "DRILL_PATH",
     "CLUSTER_THRESHOLD",
     "CLUSTER_PIXELS",

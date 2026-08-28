@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import datetime as dt
 import logging
 import os
 import re
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import (
@@ -67,7 +69,7 @@ from ..map.render import render
 from ..map.schemas import LABEL_VARIABLES, MarkerDefinition, parse_definition
 from ..security.sections import SectionKey
 from .deps import get_session, internal_error
-from .routes_dashboard import date_range_params, scope_filters
+from .routes_dashboard import date_range_params, run, scope_filters, tool_context
 
 logger = logging.getLogger("app.api.map")
 
@@ -1023,6 +1025,94 @@ def map_points(
         "filters": {k: v for k, v in filters.model_dump(mode="json").items() if v},
         "scope_description": user.describe_scope(),
         **map_data_service.result_payload(session, result),
+    }
+
+
+@router.get("/entity-trend")
+def entity_trend(
+    request: Request,
+    level: str = Query(..., max_length=32,
+                       description="Map level of the entity — region, territory, "
+                                   "customer, and so on."),
+    code: str = Query(..., max_length=64),
+    months: int = Query(6, ge=1, le=24),
+    date_range=Depends(date_range_params),
+    filters: ScopeFilters = Depends(scope_filters),
+    session: Session = Depends(get_session),
+    user: UserContext = MapDep,
+) -> dict[str, Any]:
+    """Monthly net sales for one entity the map has drawn.
+
+    What the detail panel's history bars are made of. It exists because the map
+    is the one surface where a reader picks a single region or dealer out of a
+    picture and immediately wants to know whether it has been like that all
+    year — a question the ranking beside it cannot answer, because a ranking is
+    one period deep.
+
+    It runs ``get_sales_trend`` through the same ``execute_tool`` path the
+    dashboard and every page use, so the caller's role, section and data scope
+    are applied to the query exactly as they are everywhere else, and the
+    figures are the ones the reports show. Nothing here aggregates anything.
+
+    **There is no target series beside the actuals**, and that is a limit of the
+    data rather than of this endpoint. ``fact_target`` records a target month and
+    a financial year rather than a date, and no tool on this path groups it by
+    month, so a monthly target would have to be invented here — which is the one
+    thing this application refuses to do. The bars are actuals; the panel says
+    so.
+    """
+    try:
+        field = map_data_service.filter_field_for(level)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    entity_code = code.strip()
+    if not entity_code:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "A code is required.")
+
+    # The reader's own filters still apply — a trend for one customer inside a
+    # company-filtered page is that customer's sales *in that company*. Only the
+    # clicked level is overwritten, because that is what was clicked.
+    scoped = filters.model_copy(update={field: [entity_code]})
+
+    # A window of whole months ending with the period on screen, rather than the
+    # period itself: the panel asks "has it been like this?", which one month
+    # cannot answer. Walked by hand rather than with a relativedelta, because
+    # this repository carries no dateutil and month arithmetic is four lines.
+    last = date_range.date_to.replace(day=1)
+    year, month = last.year, last.month - (months - 1)
+    while month <= 0:
+        month += 12
+        year -= 1
+    window = SimpleNamespace(date_from=dt.date(year, month, 1),
+                             date_to=date_range.date_to)
+
+    ctx = tool_context(session, user)
+    try:
+        payload = run(ctx, "get_sales_trend", window, scoped,
+                      granularity="month", limit=months)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise internal_error(exc, "map entity trend") from exc
+
+    audit.record(session, action=AuditAction.VIEW_REPORT, user_id=user.user_id,
+                 username=user.username, resource=f"map:trend:{level}",
+                 ip_address=audit.client_ip(request),
+                 detail={"level": level, "code": entity_code, "months": months})
+    session.commit()
+
+    return {
+        "level": level,
+        "code": entity_code,
+        "months": months,
+        "period": {"date_from": window.date_from.isoformat(),
+                   "date_to": window.date_to.isoformat()},
+        "scope_description": user.describe_scope(),
+        "rows": payload.get("rows", []),
+        "notes": payload.get("notes", []),
+        "error": payload.get("error"),
     }
 
 

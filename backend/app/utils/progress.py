@@ -58,6 +58,12 @@ class Phase:
     QUEUED = "QUEUED"
     PREPARING = "PREPARING"
     READING = "READING"
+    #: Every source row written to its staging table, before a word of it has
+    #: been validated. Its own phase because it is its own wait: reading the
+    #: file and writing what was read are different work, and while they shared
+    #: READING's band the second had nowhere to move once the first had used it
+    #: up — an 8.8-second insert on a 100,000-row file reported as a frozen bar.
+    STAGING = "STAGING"
     VALIDATING = "VALIDATING"
     MAPPING = "MAPPING"
     IMPORTING = "IMPORTING"
@@ -78,37 +84,136 @@ class Phase:
     #: or "cancelled".
     CANCELLING = "CANCELLING"
 
-    ALL = (QUEUED, PREPARING, READING, VALIDATING, MAPPING, IMPORTING, WRITING,
-           CANCELLING, COMPLETED, FAILED, CANCELLED)
+    ALL = (QUEUED, PREPARING, READING, STAGING, VALIDATING, MAPPING, IMPORTING,
+           WRITING, CANCELLING, COMPLETED, FAILED, CANCELLED)
     TERMINAL = (COMPLETED, FAILED, CANCELLED)
 
 
 #: What share of the server-side work each phase represents, and therefore how
-#: the percentage advances. These are estimates of *duration*, not of row counts:
-#: reading a workbook and mapping master codes genuinely dominate a large file,
-#: while the bulk upsert at the end is one statement. The point is that the bar
-#: only ever moves when a real step completes — within a phase it interpolates on
-#: rows actually processed, and it never moves on a timer.
-PHASE_WEIGHTS: dict[str, int] = {
+#: the percentage advances. These are shares of *duration*, not of row counts,
+#: and they are measured rather than estimated — the numbers below come from
+#: timing every phase of a validation over 5,000, 20,000 and 100,000-row files
+#: of each format, and they hold to within a few points across all three sizes.
+#: The bar still only moves when real work completes: within a phase it
+#: interpolates on rows actually processed, and it never moves on a timer.
+#:
+#: **One table cannot describe both formats.** Reading the file is 57% of an
+#: Excel import and 5% of a delimited one — openpyxl builds the entire sheet in
+#: one call before a single row can be had, while a CSV is read a line at a
+#: time — so a single set of weights leaves the bar frozen through most of one
+#: format or racing through most of the other. They are two tables for the same
+#: reason a report states its unit: the quantity genuinely differs.
+#:
+#: The keys of :data:`PHASE_WEIGHTS_BY_SOURCE` are ``etl.readers.SOURCE_TYPE_*``
+#: values, spelled here rather than imported because ``etl.readers`` imports this
+#: module and the cycle would be real. ``test_upload_progress`` pins them against
+#: the readers' own constants, so a source type renamed there fails a test rather
+#: than silently falling back to the default table.
+
+#: Delimited text, and the default for any source this table does not name.
+#: Default because it is the *pessimistic* choice: it allots reading 5%, so a
+#: source that actually spends longer there under-reports its progress rather
+#: than claiming work it has not done — which is the direction this project errs
+#: in everywhere else.
+DELIMITED_PHASE_WEIGHTS: dict[str, int] = {
     #: A queued job has done none of the work, so it contributes nothing to the
     #: bar. It is a phase because the operator needs to be told *why* nothing is
     #: happening, not because any progress has been made.
     Phase.QUEUED: 0,
     Phase.PREPARING: 2,
-    Phase.READING: 13,
-    Phase.VALIDATING: 25,
-    Phase.MAPPING: 25,
-    Phase.IMPORTING: 15,
-    Phase.WRITING: 20,
+    Phase.READING: 5,
+    Phase.STAGING: 12,
+    Phase.VALIDATING: 27,
+    Phase.MAPPING: 10,
+    Phase.IMPORTING: 12,
+    Phase.WRITING: 32,
 }
 
-#: Cumulative percentage at the *start* of each phase, derived from the weights
-#: so the two can never disagree.
-_PHASE_START: dict[str, int] = {}
-_running = 0
-for _phase, _weight in PHASE_WEIGHTS.items():
-    _PHASE_START[_phase] = _running
-    _running += _weight
+#: Excel. Reading dominates, and most of that is inside a single opaque
+#: ``load_workbook`` call that cannot report a position — which is why this
+#: phase is the one place the bar legitimately sits still for a long time.
+EXCEL_PHASE_WEIGHTS: dict[str, int] = {
+    Phase.QUEUED: 0,
+    Phase.PREPARING: 2,
+    Phase.READING: 56,
+    Phase.STAGING: 5,
+    Phase.VALIDATING: 12,
+    Phase.MAPPING: 4,
+    Phase.IMPORTING: 7,
+    Phase.WRITING: 14,
+}
+
+
+class PhaseScale:
+    """One weight table, with each phase's starting point derived from it.
+
+    Derived rather than declared, so the starts and the weights can never
+    disagree — the defect that would show up as a bar that jumps or goes
+    backwards between two adjacent phases.
+    """
+
+    __slots__ = ("name", "weights", "starts")
+
+    def __init__(self, name: str, weights: dict[str, int]) -> None:
+        self.name = name
+        self.weights = dict(weights)
+        starts: dict[str, int] = {}
+        running = 0
+        for phase, weight in self.weights.items():
+            starts[phase] = running
+            running += weight
+        self.starts = starts
+
+    def percent(self, phase: str, processed: int, total: int) -> int:
+        """Where the bar sits: the phase's start plus its share of the way through."""
+        if phase in Phase.TERMINAL:
+            return 100
+        start = self.starts.get(phase, 0)
+        weight = self.weights.get(phase, 0)
+        if total > 0 and processed > 0:
+            fraction = min(1.0, processed / total)
+        else:
+            fraction = 0.0
+        return min(99, int(start + weight * fraction))
+
+
+#: Master data. A different set of phases in a different order: a master upload
+#: reads its file, loads the codes it will be checked against (MAPPING), checks
+#: every row (VALIDATING) and writes them (IMPORTING). It never stages and never
+#: writes a fact, and it reaches MAPPING *before* VALIDATING — the reverse of the
+#: ETL. Read against the transactional table that put the whole validation pass
+#: inside a band the bar had already passed, so it sat motionless on the longest
+#: step of the run. The order of this dict is the order of the bar.
+MASTER_PHASE_WEIGHTS: dict[str, int] = {
+    Phase.QUEUED: 0,
+    Phase.PREPARING: 2,
+    Phase.READING: 18,
+    Phase.MAPPING: 20,
+    Phase.VALIDATING: 40,
+    Phase.IMPORTING: 20,
+}
+
+DELIMITED_SCALE = PhaseScale("delimited", DELIMITED_PHASE_WEIGHTS)
+EXCEL_SCALE = PhaseScale("excel", EXCEL_PHASE_WEIGHTS)
+MASTER_SCALE = PhaseScale("master", MASTER_PHASE_WEIGHTS)
+
+#: Source type -> the weights that describe it. See the note above on the keys.
+PHASE_WEIGHTS_BY_SOURCE: dict[str, PhaseScale] = {
+    "EXCEL": EXCEL_SCALE,
+    "CSV": DELIMITED_SCALE,
+}
+
+#: Used until a source announces itself, and for any source not named above —
+#: the in-memory reader behind ``/api/import/*``, whose rows are already in hand
+#: and which therefore has no read to report at all.
+DEFAULT_SCALE = DELIMITED_SCALE
+
+
+def scale_for(source_type: str | None) -> PhaseScale:
+    """The weights for a source type, falling back rather than failing."""
+    if not source_type:
+        return DEFAULT_SCALE
+    return PHASE_WEIGHTS_BY_SOURCE.get(source_type, DEFAULT_SCALE)
 
 #: How long a finished job stays readable. The client polls once more after the
 #: upload request returns, to collect the final counts; a few minutes is far more
@@ -243,6 +348,19 @@ class _Registry:
             job = self._jobs.get(job_id)
             if job is None:
                 return
+            # The percentage is stored as reported, never clamped upwards to the
+            # highest figure yet seen. A clamp was tried here and was a mistake:
+            # it did not stop the bar misbehaving, it hid three cases where it
+            # already did, and it corrupted the one number that outlives the run.
+            # ``jobs._mark_cancelled`` copies this figure onto the batch and the
+            # audit records it, so a run stopped a fifth of the way through
+            # validation was filed at the highest position ever *announced* —
+            # 46% where it had reached 24% — making it indistinguishable from one
+            # stopped at the end. ``finish`` deliberately does not take a
+            # cancelled job to 100 for exactly that reason, and a clamp here
+            # undid it. The cure for a bar that walks backwards is to stop the
+            # phases overlapping, which is what the weight tables and the calls
+            # below now do, not to paper over the symptom.
             for name, value in fields.items():
                 setattr(job, name, value)
             job.updated_at = datetime.now(timezone.utc)
@@ -304,12 +422,51 @@ class ProgressReporter:
     thirteen steps.
     """
 
-    __slots__ = ("job_id", "_phase", "_total")
+    __slots__ = ("job_id", "_phase", "_total", "_scale", "_scale_fixed", "_entered")
 
     def __init__(self, job_id: str | None = None) -> None:
         self.job_id = job_id
         self._phase = Phase.PREPARING
         self._total = 0
+        self._scale = DEFAULT_SCALE
+        self._scale_fixed = False
+        self._entered: set[str] = set()
+
+    def entered(self, phase: str) -> bool:
+        """Whether this run has already been in ``phase``.
+
+        Asked by a step that is willing to announce a phase but must not
+        re-announce one somebody else has already finished: re-entering
+        recomputes the bar from that phase's start and walks it back over ground
+        already covered. The reader announces READING when it has a reporter,
+        and the pipeline fills that band itself when handed a reader that does
+        not — an in-memory source has its rows in hand and never reads at all.
+        """
+        return phase in self._entered
+
+    def source(self, source_type: str | None) -> None:
+        """Adopt the weight table for the source actually being read.
+
+        Called by a reader as it starts, which is both the earliest point the
+        format is known for certain and a point at which nothing has been
+        reported yet — so the table changes while the bar is still at zero and
+        no percentage is ever restated under a different scale.
+
+        Defers to :meth:`use_scale`. A master upload knows what shape its run
+        has before it opens the file, and that shape matters more than the
+        format: the file is small and the phases are ordered differently.
+        """
+        if not self._scale_fixed:
+            self._scale = scale_for(source_type)
+
+    def use_scale(self, scale: "PhaseScale") -> None:
+        """Fix the weight table for a run whose shape the caller already knows.
+
+        Set before the file is opened, so the reader's own choice never displaces
+        it and no percentage is ever restated under a different table.
+        """
+        self._scale = scale
+        self._scale_fixed = True
 
     @property
     def enabled(self) -> bool:
@@ -340,11 +497,12 @@ class ProgressReporter:
         self.checkpoint()
         try:
             self._phase = phase
+            self._entered.add(phase)
             if total is not None:
                 self._total = total
             fields: dict[str, Any] = {
                 "phase": phase,
-                "percent": _percent_for(phase, 0, 0),
+                "percent": self._scale.percent(phase, 0, 0),
             }
             if total is not None:
                 fields["total_records"] = total
@@ -364,7 +522,7 @@ class ProgressReporter:
         try:
             fields: dict[str, Any] = {
                 "processed_records": processed,
-                "percent": _percent_for(self._phase, processed, self._total),
+                "percent": self._scale.percent(self._phase, processed, self._total),
             }
             if valid is not None:
                 fields["valid_records"] = valid
@@ -425,19 +583,6 @@ class ProgressReporter:
         return index % step == 0 or index == total
 
 
-def _percent_for(phase: str, processed: int, total: int) -> int:
-    """Where the bar sits: the phase's start plus its share of the way through."""
-    if phase in Phase.TERMINAL:
-        return 100
-    start = _PHASE_START.get(phase, 0)
-    weight = PHASE_WEIGHTS.get(phase, 0)
-    if total > 0 and processed > 0:
-        fraction = min(1.0, processed / total)
-    else:
-        fraction = 0.0
-    return min(99, int(start + weight * fraction))
-
-
 # ---------------------------------------------------------------------------
 # Module-level API
 # ---------------------------------------------------------------------------
@@ -494,7 +639,14 @@ def clear() -> None:
 
 __all__ = [
     "Phase",
-    "PHASE_WEIGHTS",
+    "PhaseScale",
+    "PHASE_WEIGHTS_BY_SOURCE",
+    "DELIMITED_PHASE_WEIGHTS",
+    "EXCEL_PHASE_WEIGHTS",
+    "MASTER_PHASE_WEIGHTS",
+    "MASTER_SCALE",
+    "DEFAULT_SCALE",
+    "scale_for",
     "JOB_TTL",
     "MAX_JOBS",
     "ImportCancelled",

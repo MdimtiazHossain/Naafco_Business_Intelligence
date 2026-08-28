@@ -20,6 +20,7 @@ const PHASE_LABEL: Record<UploadPhase, string> = {
   UPLOADING: 'upload.phase.uploading',
   PREPARING: 'upload.phase.preparing',
   READING: 'upload.phase.reading',
+  STAGING: 'upload.phase.staging',
   VALIDATING: 'upload.phase.validating',
   MAPPING: 'upload.phase.mapping',
   IMPORTING: 'upload.phase.importing',

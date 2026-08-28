@@ -5,6 +5,13 @@
  * is the Marker Designer's server-rendered SVG, and a boundary swatch is painted
  * with the style row `map_area_styles` holds. Neither is re-specified here, so a
  * legend cannot describe a map that no longer looks like that.
+ *
+ * Two placements, one component. `panel` is the rail card it has always been;
+ * `overlay` is the same rows compacted into a card floating over the map's
+ * bottom-left corner, the way `MapControls` floats over its top-left. *Which*
+ * rows are drawn and what they say is decided once, above the split — only
+ * density and chrome differ, so the two placements cannot end up describing the
+ * same map differently.
  */
 
 import { MarkerPreview } from '../MarkerPreview';
@@ -20,6 +27,9 @@ import {
   type MapModeKey,
 } from './mapConfig';
 
+/** Rail card, or floating over the map. Presentation only. */
+export type MapLegendVariant = 'panel' | 'overlay';
+
 export interface MapLegendProps {
   entries: readonly MarkerLegendEntry[] | undefined;
   activeLevels: readonly BoundaryLevelKey[];
@@ -30,6 +40,8 @@ export interface MapLegendProps {
   mode: MapModeKey;
   /** False when the mode is listed but has no data, so no scale is drawn. */
   modeAvailable: boolean;
+  /** Where this legend is being drawn. Density and chrome only. */
+  variant?: MapLegendVariant;
 }
 
 export function MapLegend({
@@ -39,6 +51,7 @@ export function MapLegend({
   drawnTypes,
   mode,
   modeAvailable,
+  variant = 'panel',
 }: MapLegendProps) {
   const t = useT();
 
@@ -69,27 +82,40 @@ export function MapLegend({
           ]
         : [];
 
+  const overlay = variant === 'overlay';
+
   if (!markers.length && !levels.length && !scale.length) {
-    return <p className="text-xs text-slate-400">{t('map.legendEmpty')}</p>;
+    // The rail says why it is empty, because the reader is looking at a card
+    // that would otherwise be blank. Over the map there is no card to explain —
+    // an empty floating box would be the only thing it said.
+    return overlay ? null : <p className="text-xs text-slate-400">{t('map.legendEmpty')}</p>;
   }
 
-  return (
-    <ul className="space-y-2">
+  const rowGap = overlay ? 'gap-1.5' : 'gap-2';
+  const swatchSize = overlay ? 'h-3.5 w-3.5' : 'h-6 w-6';
+  const labelSize = overlay ? 'text-[11px] leading-tight' : 'text-sm';
+  const dividerPad = overlay ? 'pt-1' : 'pt-2';
+
+  const rows = (
+    <ul className={overlay ? 'space-y-1' : 'space-y-2'}>
       {scale.map((step) => (
-        <li key={step.label} className="flex items-center gap-2">
+        <li key={step.label} className={`flex items-center ${rowGap}`}>
           <span
             aria-hidden="true"
-            className="inline-block h-6 w-6 shrink-0 rounded"
+            // Round over the map, square in the rail: the floating key reads as
+            // a set of dots matching the circles drawn beside it, and the rail
+            // card has the room for a swatch that shows the colour properly.
+            className={`inline-block shrink-0 ${swatchSize} ${overlay ? 'rounded-full' : 'rounded'}`}
             style={{ backgroundColor: step.colour }}
           />
-          <span className="truncate text-sm">{step.label}</span>
+          <span className={`truncate ${labelSize}`}>{step.label}</span>
         </li>
       ))}
 
       {markers.map((entry) => (
-        <li key={entry.entity_type} className="flex items-center gap-2">
-          <MarkerPreview svg={entry.preview_svg} size={24} />
-          <span className="truncate text-sm">{entry.label}</span>
+        <li key={entry.entity_type} className={`flex items-center ${rowGap}`}>
+          <MarkerPreview svg={entry.preview_svg} size={overlay ? 16 : 24} />
+          <span className={`truncate ${labelSize}`}>{entry.label}</span>
         </li>
       ))}
 
@@ -98,15 +124,15 @@ export function MapLegend({
         return (
           <li
             key={level.key}
-            className={`flex items-center gap-2 ${
+            className={`flex items-center ${rowGap} ${
               index === 0 && markers.length
-                ? 'border-t border-slate-200 pt-2 dark:border-slate-700'
+                ? `border-t border-slate-200 ${dividerPad} dark:border-slate-700`
                 : ''
             }`}
           >
             <span
               aria-hidden="true"
-              className="inline-block h-6 w-6 shrink-0 rounded"
+              className={`inline-block shrink-0 rounded ${swatchSize}`}
               style={{
                 backgroundColor: style.fill_color,
                 // The swatch has to be visible even where the level is unfilled
@@ -116,10 +142,21 @@ export function MapLegend({
                 border: `${Math.max(style.stroke_width, 1)}px solid ${style.stroke_color}`,
               }}
             />
-            <span className="truncate text-sm">{t(level.labelKey)}</span>
+            <span className={`truncate ${labelSize}`}>{t(level.labelKey)}</span>
           </li>
         );
       })}
     </ul>
+  );
+
+  if (!overlay) return rows;
+
+  // Positions itself, the same way `MapControls` does — both are chrome the map
+  // owns rather than things the page lays out around it. `pointer-events-none`
+  // so a legend sitting over the country never swallows a drag.
+  return (
+    <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-lg border border-slate-200 bg-white/95 p-2.5 shadow-sm backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+      {rows}
+    </div>
   );
 }

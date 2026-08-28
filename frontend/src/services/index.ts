@@ -47,6 +47,7 @@ import type {
   MapConfig,
   MapCoverageRow,
   MapEntitiesResponse,
+  MapEntityTrendResponse,
   MapPointsResponse,
   MapEntityLocation,
   MarkerAsset,
@@ -72,6 +73,38 @@ import type {
   SectionPermission,
   StockPage,
   TargetPage,
+  TargetAvailableMaterial,
+  TargetCountryLine,
+  TargetCountryTargetResponse,
+  TargetAdjustment,
+  TargetAllocationJob,
+  TargetAllocationRun,
+  TargetAllocationState,
+  TargetCountryTotals,
+  TargetFactorCatalogue,
+  TargetReadiness,
+  TargetApprovalOutcome,
+  TargetAuditResponse,
+  TargetComparisonOption,
+  TargetComparisonResponse,
+  TargetDashboardResponse,
+  TargetUploadPreview,
+  TargetUploadResult,
+  TargetApprovalQueue,
+  TargetApprovalState,
+  TargetMatrixResponse,
+  TargetLockResult,
+  TargetLockState,
+  TargetMatrixRow,
+  TargetRevision,
+  TargetRevisionsResponse,
+  TargetReviewResponse,
+  TargetHistoryResponse,
+  TargetManagementOptions,
+  TargetPeriod,
+  TargetPlan,
+  TargetPlanStatus,
+  TargetVersion,
   TransactionsResponse,
   UploadBatch,
   UploadCatalogue,
@@ -140,6 +173,397 @@ export const stockService = {
 export const targetService = {
   page: (query: ReportQuery & { below_percent?: number }) =>
     request<TargetPage>('/api/pages/target', { params: query }),
+};
+
+/**
+ * Target Management: plans and the versions under them.
+ *
+ * Its own service rather than more methods on `targetService`, because the two
+ * answer different questions from different tables — that one reads achievement
+ * out of `fact_target`, this one builds the plan a target is set under.
+ */
+export const targetManagementService = {
+  options: () => request<TargetManagementOptions>('/api/target-management/options'),
+
+  plans: (
+    params: {
+      financial_year?: string;
+      plan_status?: string;
+      company_code?: string;
+      sales_line_code?: string;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ) =>
+    request<{ plans: TargetPlan[]; total: number }>('/api/target-management/plans', {
+      params,
+    }),
+
+  plan: (planId: number) =>
+    request<{ plan: TargetPlan; versions: TargetVersion[] }>(
+      `/api/target-management/plans/${planId}`,
+    ),
+
+  createPlan: (body: {
+    financial_year: string;
+    target_period: TargetPeriod;
+    company_code: string;
+    bu_code: string;
+    sales_line_code: string;
+    basis_financial_years?: string | null;
+  }) =>
+    request<{ plan: TargetPlan }>('/api/target-management/plans', {
+      method: 'POST',
+      body,
+    }),
+
+  versions: (planId: number) =>
+    request<{ versions: TargetVersion[] }>(
+      `/api/target-management/plans/${planId}/versions`,
+    ),
+
+  /** A reason is required: it is kept with the version and shown beside it. */
+  createVersion: (planId: number, reason: string) =>
+    request<{ version: TargetVersion }>(
+      `/api/target-management/plans/${planId}/versions`,
+      { method: 'POST', body: { reason } },
+    ),
+
+  setVersionStatus: (versionId: number, status: TargetPlanStatus, reason?: string) =>
+    request<{ version: TargetVersion }>(
+      `/api/target-management/versions/${versionId}/status`,
+      { method: 'PATCH', body: { status, reason: reason ?? null } },
+    ),
+
+  countryTarget: (versionId: number) =>
+    request<TargetCountryTargetResponse>(
+      `/api/target-management/versions/${versionId}/country-target`,
+    ),
+
+  /** The factor catalogue, derived from the engine's own declaration. */
+  allocationFactors: () =>
+    request<TargetFactorCatalogue>('/api/target-management/allocation-factors'),
+
+  /**
+   * The version's allocation, its reconciliation and its last run.
+   *
+   * Reconciliation is recomputed by the backend on every read rather than
+   * served from the job's saved verdict — the two differ the moment somebody
+   * edits a country volume without re-allocating, which is exactly the state a
+   * planner needs to see.
+   */
+  allocation: (versionId: number) =>
+    request<TargetAllocationState>(
+      `/api/target-management/versions/${versionId}/allocation`,
+    ),
+
+  /** Queue a run. Answers 202 with a job to poll — never a finished result. */
+  startAllocation: (
+    versionId: number,
+    body: {
+      weights?: Record<string, number>;
+      enabled?: Record<string, boolean>;
+      management_adjustment?: Record<string, number>;
+    } = {},
+  ) =>
+    request<{ job: TargetAllocationJob }>(
+      `/api/target-management/versions/${versionId}/allocation`,
+      { method: 'POST', body },
+    ),
+
+  /**
+   * The pre-flight gate.
+   *
+   * Read-only and cheap, so it is fetched before the button is pressed rather
+   * than after — discovering that no customer carries a sub-territory halfway
+   * through a background job is the worst time to discover it.
+   */
+  readiness: (versionId: number) =>
+    request<TargetReadiness>(
+      `/api/target-management/versions/${versionId}/readiness`,
+    ),
+
+  /** Every run against this version, failures included. */
+  allocationRuns: (versionId: number, params: { limit?: number } = {}) =>
+    request<{ runs: TargetAllocationRun[]; total: number }>(
+      `/api/target-management/versions/${versionId}/allocation-runs`,
+      { params },
+    ),
+
+  /** The hierarchical review tree, scoped to what this reader may see. */
+  review: (versionId: number, materialCode?: string | null) =>
+    request<TargetReviewResponse>(
+      `/api/target-management/versions/${versionId}/review`,
+      { params: materialCode ? { material_code: materialCode } : {} },
+    ),
+
+  adjustments: (versionId: number) =>
+    request<{ adjustments: TargetAdjustment[] }>(
+      `/api/target-management/versions/${versionId}/adjustments`,
+    ),
+
+  /**
+   * Record a management adjustment for the next run to apply.
+   *
+   * `adjustment_volume` is absolute and signed — `+500`, `-1200` — never a
+   * percentage. It is an input to the engine, so the response says it applies
+   * on the next run rather than implying the numbers have already moved.
+   */
+  setAdjustment: (
+    versionId: number,
+    body: {
+      level: string;
+      node_code: string;
+      material_code?: string | null;
+      adjustment_volume: number;
+      reason: string;
+    },
+  ) =>
+    request<{ adjustment: TargetAdjustment; applies_on_next_run: boolean }>(
+      `/api/target-management/versions/${versionId}/adjustments`,
+      { method: 'PUT', body },
+    ),
+
+  removeAdjustment: (versionId: number, adjustmentId: number) =>
+    request<{ removed: boolean }>(
+      `/api/target-management/versions/${versionId}/adjustments/${adjustmentId}`,
+      { method: 'DELETE' },
+    ),
+
+  allocationJob: (jobId: string) =>
+    request<TargetAllocationJob>(
+      `/api/target-management/allocation-jobs/${jobId}`,
+    ),
+
+  /** Two financial years of actual sales, and the basis they imply. */
+  history: (versionId: number) =>
+    request<TargetHistoryResponse>(
+      `/api/target-management/versions/${versionId}/history`,
+    ),
+
+  /** The configured approval chain, plus the shipped default a reset restores. */
+  approvalMatrix: () =>
+    request<TargetMatrixResponse>('/api/target-management/approval-matrix'),
+
+  /**
+   * Reconfigure the chain.
+   *
+   * `fields_present` names which optional fields the caller actually set. It is
+   * what distinguishes "leave the sequence alone" from "put this role outside
+   * the chain" — both travel as `null` over JSON, they mean opposite things,
+   * and without the list one silently becomes the other.
+   */
+  updateApprovalMatrix: (
+    entries: Array<Partial<TargetMatrixRow> & { role: string; reason?: string;
+      fields_present: string[] }>,
+  ) =>
+    request<{ chain: TargetMatrixRow[] }>(
+      '/api/target-management/approval-matrix',
+      { method: 'PUT', body: { entries } },
+    ),
+
+  revisions: (versionId: number, openOnly = false) =>
+    request<TargetRevisionsResponse>(
+      `/api/target-management/versions/${versionId}/revisions`,
+      { params: openOnly ? { open_only: true } : {} },
+    ),
+
+  /**
+   * Ask for one node's figure to be changed.
+   *
+   * `requested_volume` is sent as the **raw string the user typed**. The
+   * backend decides what it means, so a value with a letter O in place of a
+   * zero is refused by name rather than silently coerced into a smaller number
+   * by JSON parsing.
+   */
+  createRevision: (
+    versionId: number,
+    body: {
+      level: string;
+      node_code: string;
+      material_code?: string | null;
+      requested_volume: string;
+      reason: string;
+    },
+  ) =>
+    request<{ revision: TargetRevision }>(
+      `/api/target-management/versions/${versionId}/revisions`,
+      { method: 'POST', body },
+    ),
+
+  decideRevision: (
+    versionId: number,
+    revisionId: number,
+    body: { approve: boolean; approved_volume?: string | null; comment?: string },
+  ) =>
+    request<{ revision: TargetRevision; open_count: number }>(
+      `/api/target-management/versions/${versionId}/revisions/${revisionId}/decision`,
+      { method: 'POST', body },
+    ),
+
+  approvalState: (versionId: number) =>
+    request<TargetApprovalState>(
+      `/api/target-management/versions/${versionId}/approval`,
+    ),
+
+  submitForApproval: (versionId: number, comment?: string) =>
+    request<TargetApprovalState>(
+      `/api/target-management/versions/${versionId}/submit`,
+      { method: 'POST', body: { comment: comment ?? null } },
+    ),
+
+  approveVersion: (versionId: number, comment?: string) =>
+    request<TargetApprovalOutcome>(
+      `/api/target-management/versions/${versionId}/approve`,
+      { method: 'POST', body: { comment: comment ?? null } },
+    ),
+
+  /** Rejecting requires a reason; approving does not. */
+  rejectVersion: (versionId: number, comment: string) =>
+    request<TargetApprovalOutcome>(
+      `/api/target-management/versions/${versionId}/reject`,
+      { method: 'POST', body: { comment } },
+    ),
+
+  /**
+   * Return an approved version to review before it is locked.
+   *
+   * Distinct from rejecting: the version goes back to the chain rather than
+   * back to its author.
+   */
+  sendVersionBack: (versionId: number, comment: string) =>
+    request<TargetApprovalOutcome>(
+      `/api/target-management/versions/${versionId}/send-back`,
+      { method: 'POST', body: { comment } },
+    ),
+
+  myApprovals: () =>
+    request<TargetApprovalQueue>('/api/target-management/my-approvals'),
+
+  lockState: (versionId: number) =>
+    request<TargetLockState>(
+      `/api/target-management/versions/${versionId}/lock`,
+    ),
+
+  /**
+   * Write the agreed allocation into `fact_target`.
+   *
+   * The response says what was written — inserted, updated and voided — rather
+   * than a bare success, because "the target is locked" and "1,872 rows now
+   * stand" are different amounts of reassurance.
+   */
+  lockVersion: (versionId: number, comment?: string) =>
+    request<TargetLockResult>(
+      `/api/target-management/versions/${versionId}/lock`,
+      { method: 'POST', body: { comment: comment ?? null } },
+    ),
+
+  auditTrail: (params: {
+    plan_id?: number;
+    version_id?: number;
+    action?: string;
+    actor?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) =>
+    request<TargetAuditResponse>('/api/target-management/audit', { params }),
+
+  compareOptions: (planId: number) =>
+    request<{ plan: TargetPlan; versions: TargetComparisonOption[] }>(
+      `/api/target-management/plans/${planId}/compare-options`,
+    ),
+
+  /**
+   * What moved between two versions of one plan.
+   *
+   * Same plan only — two plans have different scopes, materials and
+   * hierarchies, so a difference between them would be two unrelated targets
+   * subtracted from each other. The backend refuses it by name.
+   */
+  compareVersions: (
+    versionId: number,
+    baseVersionId: number,
+    materialCode?: string | null,
+  ) =>
+    request<TargetComparisonResponse>(
+      `/api/target-management/versions/${versionId}/compare`,
+      {
+        params: {
+          base_version_id: baseVersionId,
+          ...(materialCode ? { material_code: materialCode } : {}),
+        },
+      },
+    ),
+
+  dashboard: (financialYear?: string | null) =>
+    request<TargetDashboardResponse>('/api/target-management/dashboard', {
+      params: financialYear ? { financial_year: financialYear } : {},
+    }),
+
+  /** A CSV of this plan's materials, pre-filled with the version's figures. */
+  countryTargetTemplate: (versionId: number) =>
+    saveAs(
+      `/api/target-management/versions/${versionId}/country-target/template`,
+    ),
+
+  /**
+   * Read an uploaded file and report what applying it would do. Writes nothing.
+   *
+   * The file is sent as multipart and staged server-side; the token that comes
+   * back is what `applyCountryTarget` takes. The bytes are re-read and
+   * re-validated there rather than trusted from here.
+   */
+  previewCountryTargetUpload: (
+    versionId: number,
+    file: File,
+    sheetName?: string,
+  ) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (sheetName) form.append('sheet_name', sheetName);
+    return requestForm<TargetUploadPreview>(
+      `/api/target-management/versions/${versionId}/country-target/preview`,
+      form,
+    );
+  },
+
+  applyCountryTargetUpload: (
+    versionId: number,
+    uploadToken: string,
+    sheetName?: string,
+  ) =>
+    request<TargetUploadResult>(
+      `/api/target-management/versions/${versionId}/country-target/apply`,
+      { method: 'POST', body: { upload_token: uploadToken, sheet_name: sheetName ?? null } },
+    ),
+
+  availableMaterials: (versionId: number) =>
+    request<{ materials: TargetAvailableMaterial[] }>(
+      `/api/target-management/versions/${versionId}/available-materials`,
+    ),
+
+  /**
+   * Volumes go up as **strings**, deliberately.
+   *
+   * `Number('12,5OO')` is `NaN` and `parseFloat` would read it as `12` — either
+   * way the browser would have decided what an unreadable cell means. Sending
+   * the raw text lets the backend refuse it by name, which is the same answer a
+   * bulk upload of the same value gets.
+   */
+  setCountryTarget: (
+    versionId: number,
+    lines: { material_code: string; target_volume: string }[],
+  ) =>
+    request<{
+      written: { created: number; updated: number };
+      lines: TargetCountryLine[];
+      totals: TargetCountryTotals;
+      notes: string[];
+      editable: boolean;
+    }>(`/api/target-management/versions/${versionId}/country-target`, {
+      method: 'PUT',
+      body: { lines },
+    }),
 };
 
 export const performanceService = {
@@ -635,6 +1059,22 @@ export const mapService = {
       diagnostics?: boolean;
     },
   ) => request<MapEntitiesResponse>('/api/map/entities', { params: query }),
+
+  /**
+   * Monthly net sales for one entity the map has drawn.
+   *
+   * What the detail panel's history bars read. Runs `get_sales_trend` through
+   * the same tool path everything else on this page uses, so the months here
+   * and the figure in the KPI strip come from one query layer under one set of
+   * permissions.
+   *
+   * Actuals only — `fact_target` records a target month and a financial year
+   * rather than a date, and nothing on this path groups it by month, so there
+   * is no monthly target to draw behind them.
+   */
+  entityTrend: (
+    query: ReportQuery & { level: string; code: string; months?: number },
+  ) => request<MapEntityTrendResponse>('/api/map/entity-trend', { params: query }),
 
   /**
    * Aggregated business points for one level, from the warehouse.

@@ -23,7 +23,16 @@ export interface EntityFeatureProperties {
   entityType: MapLayer;
   parentType: MapLayer | null;
   parentCode: string | null;
-  value: number;
+  /**
+   * The metric the server attached, or `null` where it attached none.
+   *
+   * Nullable on purpose. `build_entity_view` computes metrics only for the
+   * organisational chain, so a customer and a sales-force point arrive with no
+   * figure at all — and this used to be coerced to `0`, which drew a real
+   * measurement of zero sales over every dealer on the map. A figure nobody
+   * computed is not zero; the formatters render it as an em dash.
+   */
+  value: number | null;
   locationSource: string | null;
   latitude: number;
   longitude: number;
@@ -56,6 +65,28 @@ export interface BuildOptions {
    */
   focusCodes?: ReadonlySet<string> | null;
   focusLayer?: MapLayer | null;
+  /**
+   * Free text the reader typed, matched against a feature's name and code.
+   *
+   * A filter over what is *drawn*, never over what was measured — the same rule
+   * the achievement band chips follow. The KPI strip, the ranking and the
+   * coverage counts all keep describing the whole scope, because narrowing the
+   * map to find one dealer is a way of looking rather than a change of report.
+   * Matching is case-insensitive and accent-free only in the sense that it does
+   * nothing to the string beyond lowering it: Bangla is compared verbatim, as
+   * everything in this application compares it.
+   */
+  search?: string;
+}
+
+/** Does this entity answer to what the reader typed? */
+function matchesSearch(name: string, code: string, needle: string): boolean {
+  if (!needle) return true;
+  // Lower-cased for the Latin half and left alone for the Bangla half — case
+  // folding is a no-op on Bangla, so one comparison serves both scripts.
+  return (
+    name.toLowerCase().includes(needle) || code.toLowerCase().includes(needle)
+  );
 }
 
 /**
@@ -72,10 +103,13 @@ export function buildEntityCollection(
 ): EntityCollection {
   if (!entities?.length) return EMPTY;
 
+  const needle = (options.search ?? '').trim().toLowerCase();
+
   const features: EntityFeature[] = [];
   for (const entity of entities) {
     if (!options.visibleLayers.has(entity.type)) continue;
     if (!isDrawable(entity.latitude, entity.longitude)) continue;
+    if (!matchesSearch(entity.name, entity.code, needle)) continue;
 
     const focused =
       !options.focusCodes ||
@@ -89,7 +123,7 @@ export function buildEntityCollection(
         entityType: entity.type,
         parentType: entity.parent_type,
         parentCode: entity.parent_code,
-        value: entity.value ?? 0,
+        value: entity.value ?? null,
         locationSource: entity.location_source,
         latitude: entity.latitude as number,
         longitude: entity.longitude as number,

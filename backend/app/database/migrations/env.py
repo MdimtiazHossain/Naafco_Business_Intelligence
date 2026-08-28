@@ -23,13 +23,17 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.config import get_settings  # noqa: E402
-from app.database.connection import assert_migration_safe  # noqa: E402
+from app.database.connection import (
+    alembic_ini_value,
+    assert_migration_safe,
+)  # noqa: E402
 from app.database.models import Base  # noqa: E402
 from app.database import models_warehouse  # noqa: E402,F401  (registers Phase 2 tables)
 from app.database import models_ai  # noqa: E402,F401  (registers Phase 3 tables)
 from app.database import models_admin  # noqa: E402,F401  (registers Phase 4 tables)
 from app.database import models_map  # noqa: E402,F401  (registers map-config tables)
 from app.database import models_learning  # noqa: E402,F401  (registers agent-learning tables)
+from app.database import models_target  # noqa: E402,F401  (registers target-management tables)
 
 config = context.config
 
@@ -49,7 +53,11 @@ def _migration_url() -> str:
     return url
 
 
-config.set_main_option("sqlalchemy.url", _migration_url())
+# Escaped, because ``set_main_option`` writes through configparser and a
+# ``%`` in the URL — how a password's special characters are encoded — would
+# be read as interpolation syntax and refuse the migration before it starts.
+config.set_main_option("sqlalchemy.url",
+                       alembic_ini_value(_migration_url()))
 
 target_metadata = Base.metadata
 

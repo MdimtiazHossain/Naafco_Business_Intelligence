@@ -24,6 +24,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const SalesPage = lazy(() => import('./pages/SalesPage'));
 const StockPage = lazy(() => import('./pages/StockPage'));
 const TargetPage = lazy(() => import('./pages/TargetPage'));
+const TargetManagementPage = lazy(() => import('./pages/TargetManagementPage'));
 const PerformancePage = lazy(() => import('./pages/PerformancePage'));
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
 const CustomersPage = lazy(() => import('./pages/CustomersPage'));
@@ -39,7 +40,7 @@ const AdminPage = lazy(() => import('./pages/AdminPage'));
 const AdminUsersPage = lazy(() => import('./pages/AdminUsersPage'));
 const AdminRolesPage = lazy(() => import('./pages/AdminRolesPage'));
 const UserPermissionsPage = lazy(() => import('./pages/UserPermissionsPage'));
-const MapPage = lazy(() => import('./pages/MapPage'));
+const BusinessMapPage = lazy(() => import('./pages/BusinessMapPage'));
 const MarkerLibraryPage = lazy(() => import('./pages/MarkerLibraryPage'));
 const AgentLearningPage = lazy(() => import('./pages/AgentLearningPage'));
 const MarkerDesignerPage = lazy(() => import('./pages/MarkerDesignerPage'));
@@ -242,6 +243,14 @@ function AppRoutes() {
           }
         />
         <Route
+          path="/target-management"
+          element={
+            <Guarded section="target_management">
+              <TargetManagementPage />
+            </Guarded>
+          }
+        />
+        <Route
           path="/performance"
           element={
             <Guarded section="performance">
@@ -277,7 +286,7 @@ function AppRoutes() {
           path="/map"
           element={
             <Guarded section="map">
-              <MapPage />
+              <BusinessMapPage />
             </Guarded>
           }
         />

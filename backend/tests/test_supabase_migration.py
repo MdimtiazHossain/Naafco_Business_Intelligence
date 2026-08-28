@@ -26,6 +26,7 @@ from sqlalchemy import create_engine, func, insert, select
 from app.database.connection import (
     TRANSACTION_POOLER_PORT,
     _engine_options,
+    alembic_ini_value,
     assert_migration_safe,
 )
 from app.database.models import Base
@@ -364,3 +365,47 @@ def test_a_bare_path_source_becomes_a_sqlite_url(migrate_script, tmp_path) -> No
     resolved = migrate_script.resolve_source(str(tmp_path / "dev.db"))
     assert resolved.startswith("sqlite:///")
     assert resolved.endswith("dev.db")
+
+
+# ---------------------------------------------------------------------------
+# Writing the URL into Alembic's config
+# ---------------------------------------------------------------------------
+
+
+def test_a_percent_in_the_url_survives_alembics_config() -> None:
+    """A password's encoded characters must not stop a migration starting.
+
+    ``env.py`` writes the connection URL into Alembic's config, which goes
+    through configparser — and configparser reads ``%`` as the start of an
+    interpolation. A percent is not exotic in a URL: it is how a password
+    containing ``@``, ``/`` or ``:`` is encoded, so an ordinary Supabase
+    credential was enough to make ``alembic upgrade`` refuse before running a
+    single revision.
+    """
+    from alembic.config import Config
+
+    url = "postgresql+psycopg://user:p%40ssw%2Frd@host:5432/db"
+    config = Config()
+    config.set_main_option("sqlalchemy.url", alembic_ini_value(url))
+    # Escaped on the way in and unescaped on the way out, so both the offline
+    # and the online path in ``env.py`` see the URL that was passed.
+    assert config.get_main_option("sqlalchemy.url") == url
+
+
+def test_a_url_with_no_percent_is_unchanged() -> None:
+    plain = "postgresql+psycopg://user:secret@host:5432/db"
+    assert alembic_ini_value(plain) == plain
+
+
+def test_connection_options_survive_too() -> None:
+    """``options=-csearch_path%3Dx`` is how a schema is selected on psycopg.
+
+    The same escape covers it, which is what let the whole revision chain be
+    verified against an empty schema rather than only against the live database.
+    """
+    from alembic.config import Config
+
+    url = "postgresql+psycopg://u:p@h:5432/db?options=-csearch_path%3Dscratch"
+    config = Config()
+    config.set_main_option("sqlalchemy.url", alembic_ini_value(url))
+    assert config.get_main_option("sqlalchemy.url") == url

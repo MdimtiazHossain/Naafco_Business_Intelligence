@@ -384,10 +384,14 @@ class DimMaterial(Base, TimestampMixin, SoftDeleteMixin):
     the name does not already say. If a group ever acquires an attribute of its
     own — a shelf-life policy, an owner — that is when it earns a table.
 
-    Seven columns, and no eighth. The Material Master states a company, a group,
-    a brand, a code and a description; it states no pack size, no price, no unit
-    of measure and no second identifier, so none is stored here. A column that
-    the source does not fill can only be filled by a guess.
+    **A column exists here only where the source states it.** Seven columns
+    identify a material: a company, a group, a brand, a code and a description.
+    Revision 0027 added two more — ``conversion_factor`` and ``transfer_price``
+    — because the Material Master extract grew columns for them, and both are
+    nullable so a file that does not carry them leaves them unset rather than
+    guessed. There is still no pack size, no unit of measure and no second
+    identifier, because the source states none. A column the source does not
+    fill can only be filled by a guess.
 
     **``material_code`` stays unique, and ``company_code`` is an attribute of the
     material rather than half of its key** (`0023_material_company`). The
@@ -427,6 +431,31 @@ class DimMaterial(Base, TimestampMixin, SoftDeleteMixin):
     material_group_name: Mapped[str] = mapped_column(Text, nullable=False)
     material_brand_code: Mapped[str] = mapped_column(CODE, nullable=False)
     material_brand: Mapped[str] = mapped_column(Text, nullable=False)
+
+    #: How many volume units make one saleable unit, and what one of those units
+    #: transfers at. The two inputs of the Target Management module's central
+    #: calculation: ``quantity = target_volume / conversion_factor`` and
+    #: ``value = quantity * transfer_price``.
+    #:
+    #: Both are **nullable, and stay NULL until a Material Master file states
+    #: them.** This is the one honest option. A conversion factor is a property
+    #: of the pack the goods ship in, and a transfer price is a commercial
+    #: decision; neither can be derived from anything else this schema holds, and
+    #: a default of 1.0 would not read as "unknown" — it would read as "one
+    #: volume unit per saleable unit", which is a claim about the goods.
+    #:
+    #: A material missing either yields no quantity and no value, and the
+    #: reporting surface renders ``n/a``. That is the suppress-rather-than-guess
+    #: invariant applied to a derived figure: a ratio with a missing divisor is
+    #: not zero.
+    #:
+    #: ``conversion_factor`` carries six decimal places rather than the four the
+    #: money columns use, because it is a *divisor* — a 100 ml pack of a
+    #: litre-based material is 0.1, but a 5 g sachet of a kilogram-based one is
+    #: 0.005, and rounding a divisor is how a rounding error becomes a
+    #: multiplication error.
+    conversion_factor: Mapped[float | None] = mapped_column(Numeric(18, 6))
+    transfer_price: Mapped[float | None] = mapped_column(MONEY)
 
     __table_args__ = (
         Index("ix_dim_material_code", "material_code"),

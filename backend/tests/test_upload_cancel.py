@@ -218,15 +218,64 @@ def test_cancelling_requires_the_data_upload_section(upload_client):
     assert response.status_code == 403
 
 
-def test_a_running_import_can_be_stopped_end_to_end(upload_client, agent_engine):
-    """Upload a file big enough to catch mid-flight, then stop it through the API.
+#: Phases during which a run is genuinely in flight and can still be stopped.
+CANCELLABLE_PHASES = (Phase.READING, Phase.VALIDATING, Phase.MAPPING)
+
+
+def test_a_running_import_can_be_stopped_end_to_end(upload_client, agent_engine,
+                                                    monkeypatch):
+    """Upload a file, hold it mid-flight, then stop it through the API.
 
     The whole feature in one test: the request answers before the work is done,
     the job is cancellable while it runs, the worker resolves the outcome, and
     the warehouse is left exactly as it was.
+
+    **The run is parked rather than raced.** This used to poll until the job
+    reported a cancellable phase and then send the cancel, which left a window:
+    on a loaded machine the preview could finish between the poll that saw
+    ``VALIDATING`` and the cancel arriving, and the endpoint would answer 409
+    ``NOT_ACTIVE`` — "this import is validated and is not running". That is the
+    correct answer to a late cancel, so the failure was the test's, not the
+    feature's; it showed up roughly once every nine full-suite runs and never in
+    isolation, which is the worst kind of flake to read.
+
+    Widening the existing skip would have hidden it at the cost of the test: on
+    a fast machine it would have skipped and asserted nothing. So the race is
+    removed instead — the worker is held at the first cancellable phase until
+    the cancel flag is raised.
+
+    **Held until the flag, not until the response**, and the difference is a
+    deadlock. The run is one transaction and holds SQLite's write lock for its
+    whole duration, while ``jobs.request_cancel`` raises the in-memory flag
+    *before* it writes ``cancelled_by``. So the worker has to be free to see
+    that flag and unwind: parking it until the HTTP call returned meant the
+    endpoint's own write waited on a lock only the parked worker could release,
+    and the cancel failed with "database is locked". Releasing on the flag
+    reproduces the production sequence exactly — flag, unwind, lock freed,
+    ``cancelled_by`` committed.
     """
     token = login(upload_client)
     before = _count_sales(agent_engine)
+
+    parked = threading.Event()  # the worker has reached a cancellable phase
+    original_phase = ProgressReporter.phase
+
+    def parking_phase(self, phase, **kwargs):
+        original_phase(self, phase, **kwargs)
+        if phase not in CANCELLABLE_PHASES or parked.is_set():
+            return
+        parked.set()
+        # Wait for the cancel flag, then return so the next checkpoint() raises
+        # ImportCancelled and the transaction unwinds. Bounded, so a failure
+        # below can never strand this thread and block the pool for the session.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if self.job_id is None or progress_registry.is_cancelled(self.job_id):
+                return
+            time.sleep(0.01)
+
+    monkeypatch.setattr(ProgressReporter, "phase", parking_phase)
+
     rows = [["2026-08-20", f"CANE-{n:05d}", "SKU001", "TR001", 1, 120, 20, 100]
             for n in range(6000)]
     response = upload_client.post(
@@ -238,22 +287,18 @@ def test_a_running_import_can_be_stopped_end_to_end(upload_client, agent_engine)
     job_id = response.json()["upload"]["job_id"]
     upload_id = response.json()["upload"]["upload_id"]
 
-    # Wait until the worker has actually picked it up, so the cancel lands on a
-    # run in progress rather than one still queued.
-    deadline = time.monotonic() + 30
-    cancelled = None
-    while time.monotonic() < deadline:
-        job = upload_client.get(f"/api/data-upload/jobs/{job_id}",
-                                headers=auth(token)).json()
-        if job["stage"] in (Phase.VALIDATING, Phase.MAPPING, Phase.READING):
-            cancelled = upload_client.post(
-                f"/api/data-upload/jobs/{job_id}/cancel", headers=auth(token))
-            break
-        if not job["is_active"]:
-            pytest.skip("the import finished before it could be cancelled")
-        time.sleep(0.01)
+    # The worker is now held inside a cancellable phase, so the cancel below
+    # lands on a run that is provably still going.
+    assert parked.wait(timeout=30), "the job never reached a cancellable phase"
 
-    assert cancelled is not None, "the job never reached a cancellable stage"
+    job = upload_client.get(f"/api/data-upload/jobs/{job_id}",
+                            headers=auth(token)).json()
+    assert job["is_active"]
+    assert job["stage"] in CANCELLABLE_PHASES
+
+    cancelled = upload_client.post(
+        f"/api/data-upload/jobs/{job_id}/cancel", headers=auth(token))
+
     assert cancelled.status_code == 200, cancelled.text
     assert cancelled.json()["outcome"] == jobs.CancelOutcome.REQUESTED
 

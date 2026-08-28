@@ -91,6 +91,28 @@ class Settings:
     #: Default date format for sources that do not declare one. "auto" accepts
     #: only unambiguous values; ambiguous ones are rejected rather than guessed.
     default_date_format: str = os.getenv("DEFAULT_DATE_FORMAT", "auto")
+    #: Reject a transaction line whose business key already appeared earlier in
+    #: the same file.
+    #:
+    #: On by default, and switched off in this deployment's own ``.env`` at the
+    #: business's request — so a fresh environment keeps the guard and only the
+    #: machines that asked to lose it do.
+    #:
+    #: With it off the repeat is loaded instead of refused, and it cannot carry
+    #: the key its twin already holds: ``business_key`` is UNIQUE, and the upsert
+    #: applies a repeated key as two parameter sets that resolve to whichever was
+    #: written last, so one line's figures would silently replace the other's.
+    #: The pipeline therefore numbers the repeat (``…#2``) and both lines
+    #: survive.
+    #:
+    #: The cost of leaving it off: a file that repeats a line *by accident*
+    #: double-counts money, and no report can tell that apart from a source that
+    #: genuinely invoiced the same thing twice. Deleting the variable from
+    #: ``.env`` is the whole of turning it back on.
+    etl_reject_duplicate_in_file: bool = (
+        os.getenv("ETL_REJECT_DUPLICATE_IN_FILE", "true").lower()
+        in ("1", "true", "yes")
+    )
 
     # --- Import jobs --------------------------------------------------------
     #: How many uploads may be processed at once.
@@ -105,6 +127,27 @@ class Settings:
     #: imports are history rather than notifications.
     import_job_retention_seconds: int = int(
         os.getenv("IMPORT_JOB_RETENTION_SECONDS", "300")
+    )
+
+    # --- Target allocation ---------------------------------------------------
+    #: The most allocation rows one run may write.
+    #:
+    #: An allocation is the cross product of materials, months and nodes, and it
+    #: grows faster than a planner expects: fifty materials over a full year
+    #: across two thousand customers is 1.2 million rows before the
+    #: organisational levels above them are counted. The cap is a **refusal**,
+    #: never a truncation — the job fails with the projected count and what to
+    #: narrow, because half an allocation would reconcile against nothing and
+    #: look like a complete one.
+    target_allocation_max_rows: int = int(
+        os.getenv("TARGET_ALLOCATION_MAX_ROWS", "250000")
+    )
+    #: Allocation workers. One, for the reason ``import_worker_count`` is one:
+    #: the run ends in a single write transaction, and on SQLite a second
+    #: concurrent writer would block inside the database rather than queue
+    #: visibly here.
+    target_allocation_worker_count: int = int(
+        os.getenv("TARGET_ALLOCATION_WORKER_COUNT", "1")
     )
 
     # --- Administrative area layer ------------------------------------------

@@ -23,6 +23,7 @@ from app.database.models_warehouse import (
     StgSales,
 )
 from app.database.models import DimStorageLocation
+from app.config import get_settings
 from app.etl.pipeline import LOAD_MODE_INITIAL, run_import
 from app.etl.readers import RecordsSourceReader
 from conftest_phase2 import (
@@ -464,6 +465,35 @@ def test_duplicate_within_one_file_is_rejected(seeded_engine) -> None:
     assert result.rejected_rows == 1
     assert rejections(seeded_engine, result.batch_id)[0].error_code == "DUPLICATE_IN_FILE"
     assert count(seeded_engine, FactSales) == 1
+
+
+def test_a_repeated_line_loads_beside_its_twin_when_the_check_is_off(
+    seeded_engine,
+) -> None:
+    """With `ETL_REJECT_DUPLICATE_IN_FILE` off, the repeat is a second line.
+
+    It cannot be written under the key its twin already holds: `business_key`
+    is UNIQUE, and the upsert applies a repeated key as two parameter sets that
+    resolve to whichever was written last — one line's figures would silently
+    replace the other's, which is neither loading the repeat nor rejecting it.
+    Numbering the repeat is what makes "both lines count" true.
+    """
+    settings = get_settings()
+    object.__setattr__(settings, "etl_reject_duplicate_in_file", False)
+    try:
+        result = do_import(seeded_engine, "sales", [sales_row(), sales_row()])
+    finally:
+        object.__setattr__(settings, "etl_reject_duplicate_in_file", True)
+
+    assert result.valid_rows == 2
+    assert result.rejected_rows == 0
+    assert not rejections(seeded_engine, result.batch_id)
+    assert count(seeded_engine, FactSales) == 2
+
+    with Session(seeded_engine) as session:
+        keys = session.execute(select(FactSales.business_key)).scalars().all()
+    assert len(set(keys)) == 2, keys
+    assert sum(key.endswith("#2") for key in keys) == 1, keys
 
 
 def test_reimporting_the_same_file_does_not_duplicate(seeded_engine) -> None:

@@ -283,9 +283,19 @@ class ManagedEntity:
 #: description — both were inside the ``index < 3`` window below — but revision
 #: 0023 put Company Code first and pushed the description to seventh, which
 #: would have hidden the only human-readable column in the table.
+#: Suffixes and exact column names that start a column *visible* rather than
+#: behind the column picker.
+#:
+#: ``conversion_factor`` and ``transfer_price`` are named outright, and are
+#: worth the exception. They arrived nullable with no back-fill in revision
+#: 0027, so on most deployments they are the two columns a reader most needs to
+#: see are **empty** — Target Management derives Quantity and Value from them
+#: and reports n/a without them. A column hidden by default gives no hint that
+#: it exists, let alone that it is unfilled.
 _PROMOTED_SUFFIXES = ("_code", "_name", "_description", "status",
                       "customer_type", "brand", "category", "mobile",
-                      "designation", "territory_code")
+                      "designation", "territory_code",
+                      "conversion_factor", "transfer_price")
 
 
 def _master_field(column: UploadColumn, upload_type: UploadType,

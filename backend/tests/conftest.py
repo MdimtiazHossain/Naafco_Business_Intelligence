@@ -24,6 +24,32 @@ from app.database.models import Base  # noqa: E402
 PROJECT_ROOT = BACKEND_DIR.parent
 
 
+@pytest.fixture(autouse=True)
+def etl_guards_on() -> Iterator[None]:
+    """Run every test with the ETL's optional guards on.
+
+    ``ETL_REJECT_DUPLICATE_IN_FILE`` is switched off in this machine's untracked
+    ``.env``, and ``config._load_dotenv`` puts that into the environment for
+    anything that imports the settings — tests included. Without this the suite
+    would describe whatever a developer happened to have in a file git does not
+    track, and the tests that pin the rule would fail on one machine and pass on
+    another. A test about the *off* path turns it off for itself.
+    """
+    from app.config import get_settings
+
+    # The cached instance, not the environment and not the class: every setting
+    # is a dataclass field whose default was evaluated once, when the module was
+    # imported, so setting the variable now changes nothing — and each module
+    # that imported `get_settings` by name holds its own reference, so replacing
+    # the function reaches only some of them. `get_settings` is `lru_cache`d, so
+    # there is exactly one Settings object and every caller already shares it.
+    settings = get_settings()
+    was = settings.etl_reject_duplicate_in_file
+    object.__setattr__(settings, "etl_reject_duplicate_in_file", True)
+    yield
+    object.__setattr__(settings, "etl_reject_duplicate_in_file", was)
+
+
 @pytest.fixture(scope="session")
 def real_workbook_path() -> Path:
     path = PROJECT_ROOT / "data" / "Master Data.xlsx"

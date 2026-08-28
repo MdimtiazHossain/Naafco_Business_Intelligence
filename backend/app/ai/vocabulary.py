@@ -35,6 +35,7 @@ from typing import Any, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..database.models_ai import ChatMessage
 from ..database.models_learning import (
     AgentExample,
     AgentLearningSignal,
@@ -272,6 +273,16 @@ def propose_alias(session: Session, user: UserContext, *, phrase: str,
         entity_code=entity_code, target_keyword=target_keyword,
     )
 
+    # The signal is client-supplied, so it is checked like everything else here:
+    # this module's rule is that an alias may not point at something that does
+    # not exist, and its provenance is no exception. It also cannot be stored —
+    # the column is a foreign key, and every dialect refuses a dangling one.
+    signal = None
+    if signal_id is not None:
+        signal = session.get(AgentLearningSignal, signal_id)
+        if signal is None:
+            raise _refuse(f"No mined signal {signal_id} exists to propose from.")
+
     alias = AgentTermAlias(
         **cleaned,
         language=normalize_text(language),
@@ -286,10 +297,8 @@ def propose_alias(session: Session, user: UserContext, *, phrase: str,
     )
     session.add(alias)
 
-    if signal_id is not None:
-        signal = session.get(AgentLearningSignal, signal_id)
-        if signal is not None:
-            signal.status = SignalStatus.PROPOSED
+    if signal is not None:
+        signal.status = SignalStatus.PROPOSED
 
     session.flush()
     logger.info("alias %s proposed by user=%s", alias.alias_id, user.user_id)
@@ -464,6 +473,15 @@ def propose_example(session: Session, user: UserContext, *, question: str,
     # been removed must not stay reachable through an approved example.
     if tool_name not in REGISTRY:
         raise _refuse(f"'{tool_name}' is not a tool the assistant has.")
+    # Client-supplied provenance, checked for the same reason the signal is on
+    # the alias path: a foreign key that names nothing cannot be stored, and
+    # refusing with the id is more use to a caller than a constraint error.
+    if source_message_id is not None:
+        if session.get(ChatMessage, source_message_id) is None:
+            raise _refuse(
+                f"No chat message {source_message_id} exists to take this "
+                "example from."
+            )
 
     example = AgentExample(
         question=text,

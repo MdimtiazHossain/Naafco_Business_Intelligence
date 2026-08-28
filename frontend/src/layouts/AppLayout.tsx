@@ -15,6 +15,7 @@ import {
   Boxes,
   ChevronDown,
   ClipboardCheck,
+  Crosshair,
   GraduationCap,
   KeyRound,
   LayoutDashboard,
@@ -60,6 +61,14 @@ const MAIN_NAV: NavItem[] = [
   { to: '/sales', labelKey: 'nav.sales', icon: <BarChart3 size={18} />, section: 'sales' },
   { to: '/stock', labelKey: 'nav.stock', icon: <Boxes size={18} />, section: 'stock' },
   { to: '/target', labelKey: 'nav.target', icon: <Target size={18} />, section: 'target' },
+  // Its own section, so it appears only for someone granted it. Target reads
+  // achievement against a target; Target Management is where the target is set.
+  {
+    to: '/target-management',
+    labelKey: 'nav.targetManagement',
+    icon: <Crosshair size={18} />,
+    section: 'target_management',
+  },
   { to: '/performance', labelKey: 'nav.performance', icon: <TrendingUp size={18} />, section: 'performance' },
   { to: '/materials', labelKey: 'nav.materials', icon: <Package size={18} />, section: 'materials' },
   { to: '/customers', labelKey: 'nav.customers', icon: <Users size={18} />, section: 'customers' },

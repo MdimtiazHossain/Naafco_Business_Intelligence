@@ -56,6 +56,26 @@ def _configure_sqlite(engine: Engine) -> None:
             # together. 30s is comfortably above those and still well inside any
             # sane client timeout.
             cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            # SQLite ships with foreign keys *off* and enforces nothing unless
+            # told to, per connection. Every other dialect this application
+            # runs on enforces them always, so leaving it off did not make
+            # SQLite more permissive in a harmless way — it made SQLite behave
+            # differently from the database the schema was designed against.
+            #
+            # What that cost was silent: an ``ondelete="CASCADE"`` declared on a
+            # child table is a no-op without this, so deleting a parent left the
+            # children behind as unreachable rows instead of removing them.
+            # ``map/service.delete_design`` relies on exactly that cascade, and
+            # on SQLite it was orphaning marker versions and assignments rather
+            # than cleaning them up.
+            #
+            # Enabling it is not a new constraint on the code, it is the
+            # constraint the code already runs under in production: the
+            # PostgreSQL deployment has enforced these keys all along, so any
+            # path that would fail here was already failing there. The test
+            # fixtures have set this pragma from the beginning for the same
+            # reason — without it an FK test passes vacuously.
+            cursor.execute("PRAGMA foreign_keys=ON")
         finally:
             cursor.close()
 
@@ -108,6 +128,27 @@ def assert_migration_safe(database_url: str) -> None:
         "pooler host) or to the direct connection, and leave DATABASE_URL pointing "
         "at the transaction pooler for the application."
     )
+
+
+def alembic_ini_value(value: str) -> str:
+    """Escape a value being written into Alembic's config with ``%``.
+
+    ``Config.set_main_option`` writes through :mod:`configparser`, whose
+    ``BasicInterpolation`` treats ``%`` as the start of a substitution — so a
+    URL containing one is rejected with "invalid interpolation syntax" before
+    any migration runs. A percent is not exotic in a connection URL: it is how
+    a password containing ``@``, ``/`` or ``:`` is encoded, and how a
+    ``search_path`` is passed through psycopg's ``options``.
+
+    Doubling it is the escape configparser itself defines, and
+    ``get_main_option`` undoes it on the way back out, so both the offline and
+    online paths in ``env.py`` see the original URL.
+
+    Lives here beside :func:`assert_migration_safe` for the same reason that one
+    does: ``env.py`` is the caller rather than the owner, and a rule reachable
+    from a test is one that can be shown to hold without running a migration.
+    """
+    return value.replace("%", "%%")
 
 
 def _engine_options(database_url: str) -> dict[str, Any]:
@@ -208,6 +249,7 @@ __all__ = [
     "get_session_factory",
     "session_scope",
     "check_connection",
+    "alembic_ini_value",
     "assert_migration_safe",
     "TRANSACTION_POOLER_PORT",
 ]

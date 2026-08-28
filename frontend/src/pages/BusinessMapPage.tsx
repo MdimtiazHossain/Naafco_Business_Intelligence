@@ -18,6 +18,12 @@
  * imports a new release. What the API still answers for those areas is the
  * *metric* — geometry local, numbers from the server, joined on the P-code both
  * sides already use.
+ *
+ * The layout is a three-column workspace: the map's own controls on the left,
+ * the map filling the middle, and what the reader is comparing on the right.
+ * That is a change of *arrangement* only — every query, every drill and every
+ * figure below is what this page has always read, because the rule that keeps
+ * this page and the Dashboard agreeing is that neither computes anything.
  */
 
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
@@ -31,12 +37,14 @@ import {
 import { useCallback, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { PageHeader, Section } from '../components/PageHeader';
-import { CardSkeleton, EmptyState, QueryState } from '../components/States';
+import { CardSkeleton, QueryState } from '../components/States';
 import { BusinessMap, type AreaMetric } from '../components/map/BusinessMap';
 import { MapBandChips } from '../components/map/MapBandChips';
 import { MapLayerPanel } from '../components/map/MapLayerPanel';
 import { MapLegend } from '../components/map/MapLegend';
 import { MapRanking, bandColor, type RankRow } from '../components/map/MapRanking';
+import { MapEntityDetail } from '../components/map/MapEntityDetail';
+import { MapScopeNote } from '../components/map/MapScopeNote';
 import {
   ACHIEVEMENT_BANDS,
   BASEMAP_STYLES,
@@ -51,6 +59,7 @@ import {
   type EntityFeatureProperties,
 } from '../components/map/businessGeoJson';
 import { GlobalFilterBar } from '../filters/GlobalFilterBar';
+import { DateFilter } from '../filters/DateFilter';
 import { useAuth } from '../contexts/AuthContext';
 import { FILTER_LABELS, useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
@@ -161,6 +170,15 @@ const DEFAULT_BOUNDARY_LEVELS = BOUNDARY_LEVELS.filter((level) => level.defaultO
  */
 const MUTED_MARKERS = 0.22;
 
+/**
+ * Months of history the detail panel asks for.
+ *
+ * Six, which is what fits legibly across a 21rem rail and is long enough to
+ * show a direction without becoming a chart in its own right — the Sales page
+ * is where a real trend is read.
+ */
+const HISTORY_MONTHS = 6;
+
 /** Bubble radius range, in pixels, at the scale the map is read at. */
 const BUBBLE_MIN = 5;
 const BUBBLE_MAX = 34;
@@ -192,7 +210,7 @@ function parseMode(raw: string | null): MapModeKey {
   return raw && raw in MODE_BY_KEY ? (raw as MapModeKey) : 'administrative';
 }
 
-export default function MapPage() {
+export default function BusinessMapPage() {
   const t = useT();
   const { hasSection } = useAuth();
   const { resolved: theme } = useTheme();
@@ -274,6 +292,18 @@ export default function MapPage() {
   const [selectedArea, setSelectedArea] = useState<
     { level: BoundaryLevelKey; code: string; name: string } | null
   >(null);
+  /**
+   * Free text narrowing what is drawn.
+   *
+   * Deliberately *not* in the URL, unlike the mode, the sales level, the rank
+   * level and the band chips. Those configure the view and a reader should be
+   * able to share the map as they are reading it. A search is the other kind of
+   * thing — a transient "where is this one dealer" that nobody means to hand to
+   * a colleague, and that changes on every keystroke. Local state also means
+   * typing costs no history entry and no query: this filters a collection the
+   * browser already has, so nothing is refetched.
+   */
+  const [search, setSearch] = useState('');
   const [mapError, setMapError] = useState<string | null>(null);
   const [fitToken, setFitToken] = useState(0);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -492,15 +522,30 @@ export default function MapPage() {
    * bring it back, so nothing may hide it.
    */
   const visibleBubbles = useMemo(() => {
-    if (!bubbles || modeSpec.metric !== 'achievement') return bubbles;
-    if (activeBands.size === ALL_BANDS.length) return bubbles;
-    return bubbles.filter((point) => {
-      const achieved = point.achievement;
-      if (achieved === null) return true;
-      const band = ACHIEVEMENT_BANDS.find((b) => b.max === null || achieved < b.max);
-      return band ? activeBands.has(band.labelKey) : true;
-    });
-  }, [bubbles, modeSpec.metric, activeBands]);
+    if (!bubbles) return bubbles;
+
+    // Bands narrow only an achievement map — they are that palette's key, and
+    // there is nothing for them to mean under any other encoding.
+    const banded =
+      modeSpec.metric === 'achievement' && activeBands.size !== ALL_BANDS.length
+        ? bubbles.filter((point) => {
+            const achieved = point.achievement;
+            if (achieved === null) return true;
+            const band = ACHIEVEMENT_BANDS.find((b) => b.max === null || achieved < b.max);
+            return band ? activeBands.has(band.labelKey) : true;
+          })
+        : bubbles;
+
+    // Search narrows every mode, and matches the same two fields the entity
+    // adapter matches, so one box governs both things the map can draw.
+    const needle = search.trim().toLowerCase();
+    if (!needle) return banded;
+    return banded.filter(
+      (point) =>
+        point.label.toLowerCase().includes(needle) ||
+        point.code.toLowerCase().includes(needle),
+    );
+  }, [bubbles, modeSpec.metric, activeBands, search]);
 
   /* ----------------------------------------------------------------- kpis */
 
@@ -617,6 +662,28 @@ export default function MapPage() {
     [rankFilterLevel, rankChain, rankLevel, setFilterResolved, setRankLevel],
   );
 
+  /**
+   * The clicked entity's own monthly history.
+   *
+   * Asked only once something is selected, and keyed on what was clicked plus
+   * the page's filters — so a customer's months are that customer's sales
+   * *inside the current scope*, which is what the rest of the page is showing.
+   * `staleTime` is generous because a month of history does not change while
+   * somebody clicks around a map.
+   */
+  const trendQuery = {
+    ...filterQuery,
+    level: selected?.entityType ?? '',
+    code: selected?.code ?? '',
+    months: HISTORY_MONTHS,
+  };
+  const trend = useQuery({
+    queryKey: ['map-entity-trend', trendQuery],
+    queryFn: () => mapService.entityTrend(trendQuery),
+    enabled: Boolean(selected?.entityType && selected?.code),
+    staleTime: 5 * 60 * 1000,
+  });
+
   /** Sales Level options, each carrying how many records are in scope. */
   const salesLevelOptions = useMemo(
     () =>
@@ -652,9 +719,22 @@ export default function MapPage() {
         visibleLayers,
         focusCodes,
         focusLayer: focus?.layer ?? null,
+        search,
       }),
-    [data.data, visibleLayers, focusCodes, focus],
+    [data.data, visibleLayers, focusCodes, focus, search],
   );
+
+  /**
+   * How many points the map is actually drawing.
+   *
+   * The bubbles when a mode measures something, the entity features when it
+   * does not — the two things `BusinessMap` is handed, so this counts what is
+   * on screen rather than what was fetched. Both have already been through the
+   * band chips and the search box.
+   */
+  const drawnCount = wantsPoints
+    ? visibleBubbles?.length ?? 0
+    : entityCollection.features.length;
 
   const drawnTypes = useMemo(
     () => new Set(entityCollection.features.map((f) => f.properties.entityType)),
@@ -675,7 +755,9 @@ export default function MapPage() {
 
   const metricSpec = config.data?.metrics.find((m) => m.key === metric);
   const formatValue = useCallback(
-    (value: number) =>
+    // Nullable, because an entity the server did not score has no figure and
+    // must not be shown one. Both formatters render null as an em dash.
+    (value: number | null) =>
       metricSpec?.unit === 'currency' ? formatAmount(value) : formatCount(value),
     [metricSpec],
   );
@@ -712,8 +794,15 @@ export default function MapPage() {
   }
 
   const coverage = config.data?.coverage ?? [];
-  const deepest = crumbs[crumbs.length - 1]?.level ?? 'region';
-  const levelCoverage = coverage.find((row) => row.entity_type === deepest);
+  /**
+   * Coverage for the level the map is *drawing*, which is the Sales Level.
+   *
+   * It used to read the deepest breadcrumb, which defaults to `region` — so a
+   * map drawing 2,091 unplaced customers reported "no region has a coordinate
+   * yet", naming a level the reader had not chosen and whose placement was not
+   * what was stopping anything being drawn.
+   */
+  const levelCoverage = coverage.find((row) => row.entity_type === salesLevel);
   const selectedAreaMetric = selectedArea ? areaMetrics[selectedArea.code] : undefined;
 
   return (
@@ -723,7 +812,12 @@ export default function MapPage() {
         period={data.data?.period}
         description={data.data?.scope_description}
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* The period sits in the page header rather than the filter
+                rail: it is the one control that changes every figure on
+                the page. Same DateFilter, same URL parameter, same
+                FilterContext - moved, not reimplemented. */}
+            <DateFilter />
             <button
               type="button"
               className="btn-secondary"
@@ -742,19 +836,7 @@ export default function MapPage() {
         }
       />
 
-      {/* The map reads the same global filters as every other page — and it
-          always sent them: `filterQuery` goes into all three of its queries, so
-          the bar is the control for a scope the endpoints have honoured all
-          along rather than a new one. The period comes with it, the same URL
-          parameter the dashboard uses, so a period chosen here is the period
-          chosen there. The map's own drill is a different thing and stays: the
-          filters say which part of the business is in scope, the breadcrumb
-          says how far into it the reader has walked. */}
-      <GlobalFilterBar />
-
       <div className="card mb-3 flex flex-wrap items-center gap-3 p-3">
-        <span className="h-6 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
-
         {/* Why, not just that. A mode greyed out with no reason reads as a bug;
             named as "no promotion data exists", it reads as a fact about the
             platform, which is what it is. */}
@@ -764,7 +846,7 @@ export default function MapPage() {
           </p>
         )}
 
-        <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label="Drill path">
+        <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label={t('map.drillPath')}>
           <button
             type="button"
             className="rounded px-2 py-0.5 text-brand-600 hover:bg-brand-50 dark:hover:bg-slate-800"
@@ -796,11 +878,15 @@ export default function MapPage() {
 
       {/* ---- workspace counts ----
           Every figure here is one the server states outright. The money and the
-          percentage come from `get_target_achievement`'s own totals, summed
-          across the scope by the backend; the browser adds nothing up, which is
-          the rule that keeps this strip and the Dashboard from ever disagreeing.
-          Growth stays absent, because no endpoint on this path publishes it. */}
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+          percentage come from the achievement tool's own totals, summed across
+          the scope by the backend; the browser adds nothing up, which is the
+          rule that keeps this strip and the Dashboard from ever disagreeing.
+          Growth stays absent, because no endpoint on this path publishes it.
+
+          Laid out as capped columns rather than stretched across the page: a
+          KPI is read as a figure, and a figure spread over a third of a wide
+          monitor stops looking like one. */}
+      <div className="mb-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(11.875rem,16.75rem))]">
         {[
           {
             key: 'achievement',
@@ -855,10 +941,10 @@ export default function MapPage() {
           geocodes another two hundred customers the line moves on its own. */}
       {(() => {
         const level = coverage.find((row) => row.entity_type === salesLevel);
-        const customers = coverage.find((row) => row.entity_type === 'customer');
-        if (!level && !customers) return null;
+        const customerCoverage = coverage.find((row) => row.entity_type === 'customer');
+        if (!level && !customerCoverage) return null;
         return (
-          <div className="card mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 p-3 text-xs">
+          <div className="card mb-3 flex flex-wrap items-center gap-x-6 gap-y-2 p-3 text-xs">
             {level && (
               <span className="flex items-center gap-1.5">
                 <MapPin size={13} className="text-slate-400" />
@@ -879,13 +965,13 @@ export default function MapPage() {
                 )}
               </span>
             )}
-            {customers && (
+            {customerCoverage && (
               <span className="flex items-center gap-1.5 text-slate-500">
                 <span className="font-medium text-slate-600 dark:text-slate-300">
-                  {customers.label}
+                  {customerCoverage.label}
                 </span>
                 <span className="tabular-nums">
-                  {formatCount(customers.placed)} / {formatCount(customers.total)}
+                  {formatCount(customerCoverage.placed)} / {formatCount(customerCoverage.total)}
                 </span>
                 {t('map.coveragePlaced')}
               </span>
@@ -894,9 +980,8 @@ export default function MapPage() {
         );
       })()}
 
-      {/* ---- coverage warning ---- */}
       {config.data && !config.data.has_locations && (
-        <div className="card mb-4 flex items-start gap-3 border-l-4 border-l-amber-500 p-4">
+        <div className="card mb-3 flex items-start gap-3 border-l-4 border-l-amber-500 p-4">
           <MapPin size={18} className="mt-0.5 shrink-0 text-amber-500" />
           <div>
             <p className="text-sm font-medium">{t('map.noLocationsTitle')}</p>
@@ -911,7 +996,7 @@ export default function MapPage() {
       )}
 
       {focus && (
-        <div className="card mb-4 flex flex-wrap items-center gap-2 border-l-4 border-l-brand-500 p-3 text-sm">
+        <div className="card mb-3 flex flex-wrap items-center gap-2 border-l-4 border-l-brand-500 p-3 text-sm">
           <MapPin size={16} className="text-brand-500" />
           <span>
             {t('map.focused', {
@@ -936,64 +1021,42 @@ export default function MapPage() {
       )}
 
       {mapError && (
-        <p className="card mb-4 border-l-4 border-l-amber-500 p-3 text-sm text-amber-700 dark:text-amber-300">
+        <p className="card mb-3 border-l-4 border-l-amber-500 p-3 text-sm text-amber-700 dark:text-amber-300">
           {mapError}
         </p>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[14rem_minmax(0,1fr)_20rem]">
+      {/* ---- the workspace ----
+          Three columns: what the map is set to on the left, the map itself in
+          the middle, what the reader is comparing on the right. The height is
+          the viewport's, so the map is the size of the screen rather than a
+          band inside a scrolling page — below `xl` the columns stack and every
+          height goes back to being content's own. */}
+      <div className="grid gap-3 xl:h-[calc(100vh-19rem)] xl:min-h-[36rem] xl:grid-cols-[15.5rem_minmax(0,1fr)_21rem]">
         {/* ---- left rail: the map's own controls ----
             Not filters. Choosing a view or a level changes what is *drawn* and
             selects nothing away, which is why they are here and not in the
-            filter bar above. They used to sit inside the map, over the country
-            they were changing. */}
-        <div className="space-y-4">
-          <div className="card flex flex-col gap-3 p-3">
-          <label
-            className="flex items-center gap-2 text-xs font-medium text-slate-500"
-            htmlFor="map-view-control"
-          >
-            {t('map.mode')}
-            <select
-              id="map-view-control"
-              className="input w-auto min-w-[11rem] py-1.5 text-sm font-normal text-slate-900 dark:text-slate-100"
-              value={mode}
-              onChange={(event) => setMode(event.target.value as MapModeKey)}
-            >
-              {MAP_MODES.map((option) => {
-                const enabled = availableModes.get(option.key);
-                return (
-                  <option key={option.key} value={option.key} disabled={!enabled}>
-                    {t(option.labelKey)}
-                    {enabled ? '' : ` — ${t('map.modeUnavailable')}`}
-                  </option>
-                );
-              })}
-            </select>
-          </label>
+            filter bar above. */}
+        <div className="flex min-h-0 flex-col gap-3 xl:overflow-y-auto">
+          {/* The business scope. The same bar every other page draws across the
+              top, laid out as a column — `layout="rail"` changes where the
+              controls sit and nothing else, so the cascade, the ancestor
+              resolution and "clear all" stay the one implementation this
+              application has. The period is not repeated here; it is in the
+              page header above. */}
+          {/* `showIndependent={false}` narrows the rail to the sales hierarchy
+              the design shows — Company down to Sub-Territory. It drops the
+              independent filters (the three material levels, customer, sales
+              force, batch), which the map could honour but which made a column
+              this narrow fifteen controls tall. They are not removed from the
+              filter system: a URL that already carries one still applies it,
+              because the endpoints read `filterQuery` and not this bar. */}
+          <GlobalFilterBar layout="rail" showDate={false} showIndependent={false} />
 
-          <label
-            className="flex items-center gap-2 text-xs font-medium text-slate-500"
-            htmlFor="sales-level-control"
-          >
-            {t('map.salesLevel')}
-            <select
-              id="sales-level-control"
-              className="input w-auto min-w-[10rem] py-1.5 text-sm font-normal text-slate-900 dark:text-slate-100"
-              value={salesLevel}
-              onChange={(event) => setSalesLevel(event.target.value as MapLayer)}
-            >
-              {salesLevelOptions.map((level) => (
-                <option key={level.key} value={level.key}>
-                  {t(level.labelKey)} ({level.count})
-                </option>
-              ))}
-            </select>
-          </label>
-          </div>
-          {modeSpec.metric === 'achievement' && (
-            <MapBandChips active={activeBands} onChange={setActiveBands} />
-          )}
+          {/* Everything that changes what is *drawn*, in one card: the search,
+              the administrative geography, and the marker encoding. None of it
+              selects anything away — which is exactly why it is not in the
+              filter card above. */}
           <MapLayerPanel
             activeLevels={boundaryLevels}
             onLevelsChange={setBoundaryLevels}
@@ -1001,55 +1064,279 @@ export default function MapPage() {
             showCapitals={reference.capitals}
             showAdminLines={reference.lines}
             onReferenceChange={setReference}
-          />
+            footer={
+              <div className="flex flex-col gap-3">
+                <label
+                  className="flex flex-col gap-1 font-medium text-slate-500"
+                  htmlFor="map-view-control"
+                >
+                  {t('map.mode')}
+                  <select
+                    id="map-view-control"
+                    className="input w-full py-1.5 text-sm font-normal text-slate-900 dark:text-slate-100"
+                    value={mode}
+                    onChange={(event) => setMode(event.target.value as MapModeKey)}
+                  >
+                    {MAP_MODES.map((option) => {
+                      const enabled = availableModes.get(option.key);
+                      return (
+                        <option key={option.key} value={option.key} disabled={!enabled}>
+                          {t(option.labelKey)}
+                          {enabled ? '' : ` — ${t('map.modeUnavailable')}`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+
+                <label
+                  className="flex flex-col gap-1 font-medium text-slate-500"
+                  htmlFor="sales-level-control"
+                >
+                  {t('map.salesLevel')}
+                  <select
+                    id="sales-level-control"
+                    className="input w-full py-1.5 text-sm font-normal text-slate-900 dark:text-slate-100"
+                    value={salesLevel}
+                    onChange={(event) => setSalesLevel(event.target.value as MapLayer)}
+                  >
+                    {salesLevelOptions.map((level) => (
+                      <option key={level.key} value={level.key}>
+                        {t(level.labelKey)} ({level.count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                {modeSpec.metric === 'achievement' && (
+                  <MapBandChips active={activeBands} onChange={setActiveBands} />
+                )}
+
+                {/* What the two visual channels mean, said once, where they are
+                    chosen. The design says size is the *target*; here it is net
+                    sales, because that is what `bubbles` actually scales by —
+                    the label follows the code rather than the mock. Shown only
+                    while a mode is drawing bubbles, since neither channel
+                    encodes anything on an administrative map. */}
+                {modeSpec.metric !== null && (
+                  <p className="text-[10px] leading-relaxed text-slate-400">
+                    {t('map.bubbleSize')}
+                    {modeSpec.metric === 'achievement' && (
+                      <>
+                        {' · '}
+                        {t('map.bubbleColour')}
+                      </>
+                    )}
+                  </p>
+                )}
+              </div>
+            }
+          >
+            <label
+              className="flex flex-col gap-1 font-medium text-slate-500"
+              htmlFor="map-search"
+            >
+              {t('common.search')}
+              <input
+                id="map-search"
+                type="search"
+                className="input w-full py-1.5 text-sm font-normal text-slate-900 dark:text-slate-100"
+                value={search}
+                placeholder={t('map.searchPlaceholder')}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </label>
+            {/* Says what it does, because a box that narrows the picture but not
+                the totals beside it is otherwise a trap. */}
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+              {t('map.searchHint')}
+            </p>
+          </MapLayerPanel>
         </div>
 
+        {/* ---- the map ---- */}
+        <section className="card flex min-h-0 flex-col overflow-hidden">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+            <h2 className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+              {data.data?.metric_label ?? t('map.title')}
+            </h2>
+          </div>
 
-        <Section title={data.data?.metric_label ?? t('map.title')}>
-          <QueryState
-            isLoading={config.isLoading || data.isLoading}
-            error={config.error ?? data.error}
-            onRetry={() => void data.refetch()}
-            skeleton={<CardSkeleton rows={8} />}
-          >
-            <BusinessMap
-              styleUrl={basemapStyle}
-              theme={theme}
-              activeLevels={boundaryLevels}
-              areaStyles={areaStyles}
-              entities={entityCollection}
-              markers={data.data?.markers}
-              areaMetrics={areaMetrics}
-              choropleth={choropleth}
-              bubbles={visibleBubbles}
-              markerEmphasis={choropleth ? MUTED_MARKERS : 1}
-              showMask={reference.mask}
-              showCapitals={reference.capitals}
-              showAdminLines={reference.lines}
-              onEntitySelect={drillInto}
-              onAreaSelect={selectArea}
-              onError={setMapError}
-              formatValue={formatValue}
-              fitToken={fitToken}
-            />
-
-            {data.data && entityCollection.features.length === 0 && (
-              <EmptyState
-                message={
-                  levelCoverage && levelCoverage.placed === 0
-                    ? t('map.levelNotPlaced', { level: deepest.replace(/_/g, ' ') })
-                    : t('common.noData')
+          <div className="min-h-0 flex-1">
+            <QueryState
+              isLoading={config.isLoading || data.isLoading}
+              error={config.error ?? data.error}
+              onRetry={() => void data.refetch()}
+              skeleton={<CardSkeleton rows={8} />}
+            >
+              <BusinessMap
+                className="relative h-full min-h-[26rem] w-full overflow-hidden"
+                styleUrl={basemapStyle}
+                theme={theme}
+                activeLevels={boundaryLevels}
+                areaStyles={areaStyles}
+                entities={entityCollection}
+                markers={data.data?.markers}
+                areaMetrics={areaMetrics}
+                choropleth={choropleth}
+                bubbles={visibleBubbles}
+                markerEmphasis={choropleth ? MUTED_MARKERS : 1}
+                showMask={reference.mask}
+                showCapitals={reference.capitals}
+                showAdminLines={reference.lines}
+                onEntitySelect={drillInto}
+                onAreaSelect={selectArea}
+                onError={setMapError}
+                formatValue={formatValue}
+                fitToken={fitToken}
+                overlay={
+                  <>
+                    {/* The key belongs over the thing it explains. No QueryState
+                        around it: until the legend has loaded it has no entries,
+                        and the overlay variant draws nothing rather than putting
+                        a spinner over the country. */}
+                    <MapLegend
+                      variant="overlay"
+                      entries={legend.data?.entries}
+                      activeLevels={boundaryLevels}
+                      areaStyles={areaStyles}
+                      drawnTypes={drawnTypes}
+                      mode={mode}
+                      modeAvailable={availableModes.get(mode) ?? false}
+                    />
+                    <MapScopeNote
+                      count={drawnCount}
+                      scope={data.data?.scope_description}
+                    />
+                  </>
                 }
-                icon={<MapPin size={32} />}
               />
-            )}
-          </QueryState>
-        </Section>
+            </QueryState>
+          </div>
 
-        {/* ---- side panel ---- */}
-        <div className="space-y-4">
-          {/* First, because "which is ahead" is the question a reader arrives
-              with; the map answers "where" and the two are read together. */}
+          {/* A note along the bottom edge rather than an empty state in place of
+              the map: the boundaries are still worth seeing, and "nothing is
+              plotted here" is a sentence, not a screen. */}
+          {data.data && drawnCount === 0 && (
+            <p className="border-t border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-slate-800">
+              {/* Most specific true reason first. "No data" when the reader has
+                  just typed something that matches nothing is a worse answer
+                  than "nothing matches that", because it reads as a fact about
+                  the business rather than about the box they are typing in. */}
+              {search.trim()
+                ? t('map.searchNoMatch')
+                : levelCoverage && levelCoverage.placed === 0
+                  ? t('map.levelNotPlaced', { level: salesLevel.replace(/_/g, ' ') })
+                  : t('common.noData')}
+            </p>
+          )}
+        </section>
+
+        {/* ---- right rail ----
+            Detail above, ranking below. The map is a thing you click, so what
+            you clicked belongs beside your hand; the ranking is what you read
+            while deciding where to click next, and it takes the rest. */}
+        <div className="flex min-h-0 flex-col gap-3">
+          <section className="card flex min-h-0 flex-col overflow-hidden xl:max-h-[47%]">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
+              <h2 className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                {t('map.pointDetail')}
+              </h2>
+              {selected && (
+                <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                  {selected.code}
+                </span>
+              )}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {!selected && !selectedArea && (
+                <p className="py-6 text-center text-xs leading-relaxed text-slate-400">
+                  {t('map.pointDetailEmpty')}
+                </p>
+              )}
+
+              {selected && (
+                <MapEntityDetail
+                  entity={selected}
+                  formatValue={formatValue}
+                  metricLabel={data.data?.metric_label ?? t('map.metric')}
+                  trend={trend.data}
+                  trendLoading={trend.isFetching}
+                  action={
+                    /* Map → table. Clicking a marker should be able to end at
+                       the record, not just at a tooltip about it. */
+                    detailRoute(selected.code, selected.entityType) &&
+                    hasSection('master_data') ? (
+                      <Link
+                        to={detailRoute(selected.code, selected.entityType) as string}
+                        className="btn-secondary mt-3 w-full justify-center text-xs"
+                      >
+                        {t('map.viewDetails')}
+                      </Link>
+                    ) : null
+                  }
+                />
+              )}
+
+              {/* The clicked area. Everything shown comes from the API — a metric
+                  the data cannot support is absent rather than zero. */}
+              {selectedArea && (
+                <div
+                  className={
+                    selected ? 'mt-3 border-t border-slate-200 pt-3 dark:border-slate-800' : ''
+                  }
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-base font-semibold">{selectedArea.name}</p>
+                      <p className="text-xs text-slate-500">
+                        {t(
+                          `map.level${selectedArea.level.charAt(0).toUpperCase()}${selectedArea.level.slice(1)}`,
+                        )}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-ghost px-2 py-1 text-xs"
+                      onClick={() => setSelectedArea(null)}
+                    >
+                      {t('common.close')}
+                    </button>
+                  </div>
+
+                  <dl className="mt-3 space-y-1 text-sm">
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-500">{t('map.areaCode')}</dt>
+                      <dd className="font-mono text-xs">{selectedArea.code}</dd>
+                    </div>
+                    {selectedAreaMetric ? (
+                      <>
+                        <div className="flex justify-between gap-2 border-t border-slate-200 pt-1 dark:border-slate-700">
+                          <dt className="text-slate-500">{t('map.stock')}</dt>
+                          <dd className="tabular-nums font-semibold">
+                            {formatCount(selectedAreaMetric.stock)}
+                          </dd>
+                        </div>
+                        {selectedAreaMetric.stock_source === 'default' && (
+                          <p className="text-[11px] italic text-slate-400">
+                            {t('map.stockDefault')}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="border-t border-slate-200 pt-1 text-[11px] text-slate-400 dark:border-slate-700">
+                        {t('map.noAreaMetric')}
+                      </p>
+                    )}
+                  </dl>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Which is ahead — the question a reader arrives with. The map
+              answers "where", and the two are read together. */}
           <MapRanking
             level={rankLevel}
             levels={rankChain}
@@ -1062,178 +1349,87 @@ export default function MapPage() {
             onSelect={selectRank}
             loading={ranking.isFetching}
           />
+        </div>
+      </div>
 
-          <Section title={t('map.inScope')}>
-            <p className="mb-2 text-[11px] text-slate-500">{t('map.countsHint')}</p>
-            <dl className="space-y-1 text-sm">
-              {LAYERS.filter((layer) => (data.data?.counts[layer.key] ?? 0) > 0).map(
-                (layer) => (
-                  <div key={layer.key} className="flex justify-between gap-2">
-                    <dt
-                      className={
-                        layers.includes(layer.key)
-                          ? 'text-slate-600 dark:text-slate-300'
-                          : 'text-slate-400'
-                      }
-                    >
-                      {t(layer.labelKey)}
-                      {!layers.includes(layer.key) && (
-                        <span className="ml-1 text-[10px]">({t('map.hidden')})</span>
-                      )}
-                    </dt>
-                    <dd className="tabular-nums">
-                      {formatCount(data.data?.counts[layer.key] ?? 0)}
-                    </dd>
-                  </div>
-                ),
-              )}
-              <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 dark:border-slate-700">
-                <dt className="text-slate-500">{t('map.plotted')}</dt>
-                <dd className="tabular-nums">{data.data?.totals.placed ?? 0}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-slate-500">{t('map.unplaced')}</dt>
-                <dd className="tabular-nums">{data.data?.totals.unplaced ?? 0}</dd>
-              </div>
-            </dl>
-
-            {selected && (
-              <div className="mt-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
-                <p className="text-[10px] uppercase tracking-wide text-slate-400">
-                  {selected.entityType?.replace(/_/g, ' ')}
-                </p>
-                <p className="text-sm font-semibold">{selected.name}</p>
-                <p className="text-[11px] text-slate-500">{selected.code}</p>
-                {selected.parentCode && (
-                  <p className="text-[11px] text-slate-400">
-                    {selected.parentType?.replace(/_/g, ' ')}: {selected.parentCode}
-                  </p>
-                )}
-                <p className="mt-1 text-lg font-semibold tabular-nums">
-                  {formatValue(selected.value)}
-                </p>
-                <p className="mt-1 text-[11px] text-slate-400">
-                  {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}
-                </p>
-                {/* Map → table. Clicking a marker should be able to end at the
-                    record, not just at a tooltip about it. */}
-                {detailRoute(selected.code, selected.entityType) && hasSection('master_data') && (
-                  <Link
-                    to={detailRoute(selected.code, selected.entityType) as string}
-                    className="btn-secondary mt-2 w-full justify-center text-xs"
+      {/* ---- below the workspace ----
+          What is in scope, what could not be drawn, and the development aid.
+          None of it is read *while* looking at the map, so none of it takes
+          room away from the map. */}
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <Section title={t('map.inScope')}>
+          <p className="mb-2 text-[11px] text-slate-500">{t('map.countsHint')}</p>
+          <dl className="space-y-1 text-sm">
+            {LAYERS.filter((layer) => (data.data?.counts[layer.key] ?? 0) > 0).map(
+              (layer) => (
+                <div key={layer.key} className="flex justify-between gap-2">
+                  <dt
+                    className={
+                      layers.includes(layer.key)
+                        ? 'text-slate-600 dark:text-slate-300'
+                        : 'text-slate-400'
+                    }
                   >
-                    {t('map.viewDetails')}
-                  </Link>
-                )}
-              </div>
+                    {t(layer.labelKey)}
+                    {!layers.includes(layer.key) && (
+                      <span className="ml-1 text-[10px]">({t('map.hidden')})</span>
+                    )}
+                  </dt>
+                  <dd className="tabular-nums">
+                    {formatCount(data.data?.counts[layer.key] ?? 0)}
+                  </dd>
+                </div>
+              ),
+            )}
+            <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 dark:border-slate-700">
+              <dt className="text-slate-500">{t('map.plotted')}</dt>
+              <dd className="tabular-nums">{data.data?.totals.placed ?? 0}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-slate-500">{t('map.unplaced')}</dt>
+              <dd className="tabular-nums">{data.data?.totals.unplaced ?? 0}</dd>
+            </div>
+          </dl>
+        </Section>
+
+        {(data.data?.unplaced.length ?? 0) > 0 && (
+          <Section title={t('map.unplacedTitle')}>
+            <p className="mb-2 flex items-start gap-2 text-xs text-slate-500">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-500" />
+              {t('map.unplacedHint')}
+            </p>
+            <ul className="max-h-48 space-y-1 overflow-y-auto text-sm">
+              {(data.data?.unplaced ?? []).map((row) => (
+                <li key={`${row.type}-${row.code}`} className="flex justify-between gap-2">
+                  <span className="truncate">{row.name}</span>
+                  <span className="shrink-0 text-[11px] text-slate-400">
+                    {row.type.replace(/_/g, ' ')}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
+
+        {import.meta.env.DEV && (
+          <Section title={t('map.diagnostics')}>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-brand-600"
+                checked={showDiagnostics}
+                onChange={(event) => setShowDiagnostics(event.target.checked)}
+              />
+              {t('map.showDiagnostics')}
+            </label>
+            <p className="mt-1 text-[11px] text-slate-400">{t('map.diagnosticsHint')}</p>
+            {data.data?.diagnostics && (
+              <pre className="mt-2 max-h-64 overflow-auto rounded bg-slate-900 p-2 text-[10px] leading-relaxed text-slate-100">
+                {JSON.stringify(data.data.diagnostics, null, 1)}
+              </pre>
             )}
           </Section>
-
-          {/* The clicked area. Everything shown comes from the API — a metric
-              the data cannot support is absent rather than zero. */}
-          {selectedArea && (
-            <Section
-              title={t('map.areaDetails')}
-              actions={
-                <button
-                  type="button"
-                  className="btn-ghost px-2 py-1 text-xs"
-                  onClick={() => setSelectedArea(null)}
-                >
-                  {t('common.close')}
-                </button>
-              }
-            >
-              <p className="text-base font-semibold">{selectedArea.name}</p>
-              <p className="text-xs text-slate-500">
-                {t(`map.level${selectedArea.level.charAt(0).toUpperCase()}${selectedArea.level.slice(1)}`)}
-              </p>
-
-              <dl className="mt-3 space-y-1 text-sm">
-                <div className="flex justify-between gap-2">
-                  <dt className="text-slate-500">{t('map.areaCode')}</dt>
-                  <dd className="font-mono text-xs">{selectedArea.code}</dd>
-                </div>
-                {selectedAreaMetric ? (
-                  <>
-                    <div className="flex justify-between gap-2 border-t border-slate-200 pt-1 dark:border-slate-700">
-                      <dt className="text-slate-500">{t('map.stock')}</dt>
-                      <dd className="tabular-nums font-semibold">
-                        {formatCount(selectedAreaMetric.stock)}
-                      </dd>
-                    </div>
-                    {selectedAreaMetric.stock_source === 'default' && (
-                      <p className="text-[11px] italic text-slate-400">
-                        {t('map.stockDefault')}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="border-t border-slate-200 pt-1 text-[11px] text-slate-400 dark:border-slate-700">
-                    {t('map.noAreaMetric')}
-                  </p>
-                )}
-              </dl>
-            </Section>
-          )}
-
-          {import.meta.env.DEV && (
-            <Section title={t('map.diagnostics')}>
-              <label className="flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 accent-brand-600"
-                  checked={showDiagnostics}
-                  onChange={(event) => setShowDiagnostics(event.target.checked)}
-                />
-                {t('map.showDiagnostics')}
-              </label>
-              <p className="mt-1 text-[11px] text-slate-400">{t('map.diagnosticsHint')}</p>
-              {data.data?.diagnostics && (
-                <pre className="mt-2 max-h-64 overflow-auto rounded bg-slate-900 p-2 text-[10px] leading-relaxed text-slate-100">
-                  {JSON.stringify(data.data.diagnostics, null, 1)}
-                </pre>
-              )}
-            </Section>
-          )}
-
-          {(data.data?.unplaced.length ?? 0) > 0 && (
-            <Section title={t('map.unplacedTitle')}>
-              <p className="mb-2 flex items-start gap-2 text-xs text-slate-500">
-                <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-500" />
-                {t('map.unplacedHint')}
-              </p>
-              <ul className="max-h-48 space-y-1 overflow-y-auto text-sm">
-                {(data.data?.unplaced ?? []).map((row) => (
-                  <li key={`${row.type}-${row.code}`} className="flex justify-between gap-2">
-                    <span className="truncate">{row.name}</span>
-                    <span className="shrink-0 text-[11px] text-slate-400">
-                      {row.type.replace(/_/g, ' ')}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
-          )}
-
-          <Section title={t('map.legend')}>
-            <QueryState
-              isLoading={legend.isLoading}
-              error={legend.error}
-              onRetry={() => void legend.refetch()}
-              skeleton={<CardSkeleton rows={3} />}
-            >
-              <MapLegend
-                entries={legend.data?.entries}
-                activeLevels={boundaryLevels}
-                areaStyles={areaStyles}
-                drawnTypes={drawnTypes}
-                mode={mode}
-                modeAvailable={availableModes.get(mode) ?? false}
-              />
-            </QueryState>
-          </Section>
-        </div>
+        )}
       </div>
     </>
   );

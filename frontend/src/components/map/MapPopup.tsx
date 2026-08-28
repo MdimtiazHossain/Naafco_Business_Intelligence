@@ -31,7 +31,7 @@ export type PopupSubject =
 
 export interface MapPopupProps {
   subject: PopupSubject;
-  formatValue: (value: number) => string;
+  formatValue: (value: number | null) => string;
 }
 
 export function MapPopup({ subject, formatValue }: MapPopupProps) {

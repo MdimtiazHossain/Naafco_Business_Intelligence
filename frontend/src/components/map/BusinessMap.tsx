@@ -31,7 +31,7 @@ import {
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { AreaStyle } from '../../types/api';
 import {
@@ -126,10 +126,21 @@ export interface BusinessMapProps {
   onAreaSelect: (level: BoundaryLevelKey, code: string, name: string) => void;
   /** Non-fatal problems, surfaced by the page rather than swallowed. */
   onError: (message: string | null) => void;
-  formatValue: (value: number) => string;
+  formatValue: (value: number | null) => string;
   /** Bumping this refits the view to Bangladesh — used after a drill reset. */
   fitToken?: number;
   className?: string;
+  /**
+   * Chrome drawn over the map — the legend, the scope note.
+   *
+   * It goes here rather than beside the map in the page because this element is
+   * the one that is `relative`, and because MapLibre stamps its own class onto
+   * the container it is handed. A caller positioning its own overlay would have
+   * to reproduce both facts and would fall out of step the moment either
+   * changed. What is drawn is still entirely the page's decision; only *where*
+   * belongs to the map.
+   */
+  overlay?: ReactNode;
 }
 
 /**
@@ -197,6 +208,7 @@ export function BusinessMap({
   onError,
   formatValue,
   fitToken,
+  overlay,
   className,
 }: BusinessMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -986,6 +998,8 @@ export function BusinessMap({
         onFitCountry={fitBangladesh}
         onFitData={hasEntities ? fitData : undefined}
       />
+
+      {overlay}
 
       {popupHostRef.current && popup
         ? createPortal(

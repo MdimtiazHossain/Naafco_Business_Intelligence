@@ -524,9 +524,10 @@ async function mountedMap(): Promise<FakeMap> {
   return map;
 }
 
-describe('MapPage', () => {
+describe('BusinessMapPage', () => {
   let entitiesSpy: ReturnType<typeof vi.spyOn>;
   let areasSpy: ReturnType<typeof vi.spyOn>;
+  let trendSpy: ReturnType<typeof vi.spyOn>;
   let geoFetch: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -556,6 +557,21 @@ describe('MapPage', () => {
     geoFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => EMPTY_GEOJSON });
     vi.stubGlobal('fetch', geoFetch);
 
+    // The filter rail draws the hierarchy selects, and each one asks the
+    // server for its options. Stubbed for the same reason every other call
+    // here is: these tests are about the map, not about the filter bar, which
+    // has its own suite. Before the filters moved into the rail the bar was
+    // collapsed and none of these were ever issued.
+    vi.spyOn(services.masterDataService, 'options').mockImplementation(
+      (level: string) =>
+        Promise.resolve({
+          level,
+          parent_code: null,
+          total: 0,
+          truncated: false,
+          options: [],
+        }) as never,
+    );
     vi.spyOn(services.mapService, 'config').mockResolvedValue(CONFIG as never);
     entitiesSpy = vi
       .spyOn(services.mapService, 'entities')
@@ -563,6 +579,26 @@ describe('MapPage', () => {
     areasSpy = vi
       .spyOn(services.mapService, 'areas')
       .mockResolvedValue(AREA_METRICS as never);
+    // The detail panel asks for the clicked entity's months. Stubbed for every
+    // test, not just the ones that assert on it: an unmocked query here would
+    // fire on any test that clicks an entity.
+    trendSpy = vi.spyOn(services.mapService, 'entityTrend').mockResolvedValue({
+      level: 'region',
+      code: 'REG001',
+      months: 6,
+      period: { date_from: '2026-03-01', date_to: '2026-08-31' },
+      scope_description: 'all regions',
+      rows: [
+        { label: 'Mar 2026', net_sales: 4_100_000 },
+        { label: 'Apr 2026', net_sales: 5_250_000 },
+        { label: 'May 2026', net_sales: 3_900_000 },
+        { label: 'Jun 2026', net_sales: 6_010_000 },
+        { label: 'Jul 2026', net_sales: 7_400_000 },
+        { label: 'Aug 2026', net_sales: 7_893_636 },
+      ],
+      notes: [],
+      error: null,
+    } as never);
     // The ranking panel reads the Performance page's endpoint. Stubbed here for
     // the same reason the map's own calls are: these tests are about the map.
     vi.spyOn(services.performanceService, 'page').mockResolvedValue({
@@ -598,7 +634,7 @@ describe('MapPage', () => {
   // --- the engine and the basemap ------------------------------------------
 
   it('draws with MapLibre over the basemap the server named', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
 
     const map = await mountedMap();
@@ -606,7 +642,7 @@ describe('MapPage', () => {
   });
 
   it('loads administrative geometry from local files, never from an API', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     await mountedMap();
 
@@ -625,7 +661,7 @@ describe('MapPage', () => {
   });
 
   it('asks the server for area figures without asking for the polygons again', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     await mountedMap();
 
@@ -635,7 +671,7 @@ describe('MapPage', () => {
   });
 
   it('sends no renderer or API-key parameter anywhere', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     await mountedMap();
 
@@ -649,7 +685,7 @@ describe('MapPage', () => {
   // --- the Bangladesh focus effect -----------------------------------------
 
   it('dims the world outside Bangladesh with a mask over the basemap', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
 
@@ -663,7 +699,7 @@ describe('MapPage', () => {
   });
 
   it('frames Bangladesh on load instead of guessing a zoom', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
 
@@ -675,7 +711,7 @@ describe('MapPage', () => {
   // --- administrative boundaries -------------------------------------------
 
   it('draws each level from its own local source, keyed on the P-code', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
 
@@ -689,7 +725,7 @@ describe('MapPage', () => {
   });
 
   it('paints boundaries with the configured colour, not a hardcoded one', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
 
@@ -708,7 +744,7 @@ describe('MapPage', () => {
     // markers — permanently, and with nothing logged.
     FakeMap.nextStyleLoaded = false;
     try {
-      const { default: MapPage } = await import('../pages/MapPage');
+      const { default: MapPage } = await import('../pages/BusinessMapPage');
       wrap(<MapPage />);
       await waitFor(() => expect(FakeMap.last).not.toBeNull());
       const map = FakeMap.last as FakeMap;
@@ -738,7 +774,7 @@ describe('MapPage', () => {
     // failed, and waiting must cost the basemap nothing.
     FakeMap.nextStyleLoaded = false;
     try {
-      const { default: MapPage } = await import('../pages/MapPage');
+      const { default: MapPage } = await import('../pages/BusinessMapPage');
       wrap(<MapPage />);
       await waitFor(() => expect(FakeMap.last).not.toBeNull());
       const map = FakeMap.last as FakeMap;
@@ -765,7 +801,7 @@ describe('MapPage', () => {
     // metric behind it, and one that carries a reason is always disabled. The
     // map must never label itself "Sales Achievement" over a fill it computed
     // from something else, and must never invent the number it lacks.
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
 
     const select = (await screen.findByLabelText('Map view')) as HTMLSelectElement;
@@ -800,7 +836,7 @@ describe('MapPage', () => {
     // drawn, at what grain, and which administrative levels are on. What is
     // left over the map is only the two framings, which act on the camera and
     // on nothing else.
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
 
     expect(await screen.findByTestId('filter-bar')).toBeInTheDocument();
@@ -825,7 +861,7 @@ describe('MapPage', () => {
     // totals. The stub's totals are deliberately not the sum of the rows beside
     // them, so a browser-side sum would show a different number and fail here —
     // which is the whole point: no business figure is computed in the browser.
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
 
     expect(await screen.findByText('87.5%')).toBeInTheDocument();
@@ -836,7 +872,7 @@ describe('MapPage', () => {
   it('offers achievement bands only where the map measures achievement', async () => {
     // A mode that measures nothing has no band to filter on, and a control that
     // silently did nothing would be worse than no control at all.
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
 
     wrap(<MapPage />, '/map');
     await mountedMap();
@@ -866,7 +902,7 @@ describe('MapPage', () => {
     // someone is reading should survive a refresh and be shareable as what it
     // shows. A stale or hand-typed value must fall back rather than break the
     // page, which is the case a shared link degrades into once a mode is renamed.
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
 
     wrap(<MapPage />, '/map?mapMode=density');
     let select = (await screen.findByLabelText('Map view')) as HTMLSelectElement;
@@ -884,7 +920,7 @@ describe('MapPage', () => {
   });
 
   it('adds no duplicate source or layer when applied repeatedly', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
     const sources = map.sources.size;
@@ -942,7 +978,7 @@ describe('MapPage', () => {
     // filter change swap the contents with `setData` instead of rebuilding
     // layers. The Sales Level control decides *which* level fills it; the
     // guarantee is that it is always exactly one source.
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />, '/map?salesLevel=region');
     const map = await mountedMap();
 
@@ -968,7 +1004,7 @@ describe('MapPage', () => {
   });
 
   it('registers the designed marker artwork as map images', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
 
@@ -981,7 +1017,7 @@ describe('MapPage', () => {
     // same as choosing what is *in scope*. It used to be a layer toggle and is
     // now the Sales Level control, but the guarantee is unchanged — changing it
     // must not smuggle a filter into the query.
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     await mountedMap();
 
@@ -996,8 +1032,58 @@ describe('MapPage', () => {
     expect(last.region_code).toBeUndefined();
   });
 
+  it('narrows what is drawn to the search text, and narrows nothing else', async () => {
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
+    wrap(<MapPage />);
+    const map = await mountedMap();
+
+    const level = (await screen.findByLabelText('Sales level')) as HTMLSelectElement;
+    fireEvent.change(level, { target: { value: 'region' } });
+
+    await waitFor(() => {
+      const source = map.sources.get(IDS.entitySource)?.data as { features: unknown[] };
+      expect(source.features).toHaveLength(2);
+    });
+
+    fireEvent.change(await screen.findByLabelText('Search'), {
+      target: { value: 'khul' },
+    });
+
+    await waitFor(() => {
+      const source = map.sources.get(IDS.entitySource)?.data as {
+        features: { properties: { code: string } }[];
+      };
+      expect(source.features.map((feature) => feature.properties.code)).toEqual(['REG004']);
+    });
+
+    // The point of the whole thing: a search is a way of looking, not a
+    // narrowing of the report. Nothing was re-queried, and the scope's own
+    // achievement total is still the server's 87.5% rather than Khulna's share
+    // of it.
+    const last = entitiesSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(last.search).toBeUndefined();
+    expect(screen.getByText('87.5%')).toBeInTheDocument();
+  });
+
+  it('says how many points are drawn and whose they are', async () => {
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
+    wrap(<MapPage />);
+    await mountedMap();
+
+    // One customer is drawn by default, and the scope sentence is the server's
+    // own `scope_description` rather than anything assembled in the browser.
+    expect(await screen.findByText('Points shown: 1')).toBeInTheDocument();
+    expect(screen.getAllByText('all regions').length).toBeGreaterThan(0);
+
+    fireEvent.change(await screen.findByLabelText('Search'), {
+      target: { value: 'nothing matches this' },
+    });
+
+    expect(await screen.findByText('Points shown: 0')).toBeInTheDocument();
+  });
+
   it('drills into the entity that was clicked', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
 
@@ -1017,8 +1103,93 @@ describe('MapPage', () => {
     expect(screen.getByRole('navigation', { name: 'Drill path' })).toHaveTextContent('Dhaka');
   });
 
+  it('shows the clicked entity with its monthly history', async () => {
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
+    wrap(<MapPage />);
+    const map = await mountedMap();
+
+    map.click(IDS.entityIcons, {
+      properties: {
+        code: 'REG001', name: 'Dhaka', entityType: 'region',
+        parentType: 'zone', parentCode: 'Z001', value: 7893636,
+        latitude: 23.8041, longitude: 90.3868, inFocus: true, locationSource: 'DERIVED',
+      },
+      layer: { id: IDS.entityIcons },
+    });
+
+    // The history is asked for by what was clicked, at the level it was drawn.
+    await waitFor(() =>
+      expect(trendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ level: 'region', code: 'REG001' }),
+      ),
+    );
+
+    expect(await screen.findByText('Monthly net sales')).toBeInTheDocument();
+    // One bar per month the server returned, each captioned with its month.
+    expect(screen.getByTitle(/^Jun 2026:/)).toBeInTheDocument();
+    expect(screen.getByTitle(/^Aug 2026:/)).toBeInTheDocument();
+
+    // The bars are actuals and the panel says so, because every other chart on
+    // this page invites the assumption that the track behind a bar is a target.
+    expect(screen.getByText(/Actual sales only/)).toBeInTheDocument();
+  });
+
+  it('never shows a figure for an entity the server did not score', async () => {
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
+    wrap(<MapPage />);
+    const map = await mountedMap();
+
+    // The customer layer is what the map opens on, and `build_entity_view`
+    // computes metrics only for the organisational chain — so a customer
+    // arrives with `value: null`, exactly as the ENTITIES fixture has it.
+    map.click(IDS.entityIcons, {
+      properties: {
+        code: 'C001', name: 'Ali Traders', entityType: 'customer',
+        parentType: 'sub_territory', parentCode: 'STR001', value: null,
+        latitude: 23.75, longitude: 90.38, inFocus: true, locationSource: 'UPLOAD',
+      },
+      layer: { id: IDS.entityIcons },
+    });
+
+    expect(await screen.findByText('Ali Traders')).toBeInTheDocument();
+
+    // An em dash, never a zero. A metric nobody computed is not a measurement
+    // of no sales, and drawing one over every dealer on the map is the invented
+    // figure this application refuses to show.
+    const panel = screen.getByText('Ali Traders').closest('div') as HTMLElement;
+    expect(panel).not.toHaveTextContent('৳0');
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Not measured at this level/)).toBeInTheDocument();
+  });
+
+  it('says so when an entity has no sales in the window', async () => {
+    trendSpy.mockResolvedValue({
+      level: 'region', code: 'REG004', months: 6,
+      period: { date_from: '2026-03-01', date_to: '2026-08-31' },
+      scope_description: 'all regions', rows: [], notes: [], error: null,
+    } as never);
+
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
+    wrap(<MapPage />);
+    const map = await mountedMap();
+
+    map.click(IDS.entityIcons, {
+      properties: {
+        code: 'REG004', name: 'Khulna', entityType: 'region',
+        parentType: 'zone', parentCode: 'Z001', value: 0,
+        latitude: 22.87, longitude: 89.54, inFocus: true, locationSource: 'DERIVED',
+      },
+      layer: { id: IDS.entityIcons },
+    });
+
+    // An empty history is a sentence, not a row of zero-height bars that would
+    // read as measured months with no sales.
+    expect(await screen.findByText('No sales in this window.')).toBeInTheDocument();
+    expect(screen.queryByText(/Actual sales only/)).not.toBeInTheDocument();
+  });
+
   it('shows the area figure when a boundary is clicked', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
     await waitFor(() => expect(areasSpy).toHaveBeenCalled());
@@ -1039,7 +1210,7 @@ describe('MapPage', () => {
   // --- honesty and failure --------------------------------------------------
 
   it('reports entities that have data but no coordinate', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
 
     await waitFor(() => expect(screen.getByText('Barishal')).toBeInTheDocument());
@@ -1049,7 +1220,7 @@ describe('MapPage', () => {
   it('prompts for coordinates when nothing has been placed', async () => {
     vi.spyOn(services.mapService, 'config')
       .mockResolvedValue({ ...CONFIG, has_locations: false } as never);
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
 
     await waitFor(() =>
@@ -1063,7 +1234,7 @@ describe('MapPage', () => {
       entities: [], unplaced: [], counts: {}, placed_counts: {}, bounds: null,
       totals: { entities: 0, placed: 0, unplaced: 0 },
     } as never);
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
 
     await waitFor(() => expect(screen.getByLabelText('Map view')).toBeInTheDocument());
@@ -1081,7 +1252,7 @@ describe('MapPage', () => {
         : Promise.resolve({ ok: true, json: async () => EMPTY_GEOJSON }),
     );
 
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     wrap(<MapPage />);
     const map = await mountedMap();
 
@@ -1090,7 +1261,7 @@ describe('MapPage', () => {
   });
 
   it('tears the map down when the page unmounts', async () => {
-    const { default: MapPage } = await import('../pages/MapPage');
+    const { default: MapPage } = await import('../pages/BusinessMapPage');
     const { unmount } = wrap(<MapPage />);
     const map = await mountedMap();
 

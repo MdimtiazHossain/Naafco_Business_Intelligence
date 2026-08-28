@@ -19,6 +19,7 @@ from .routes_map import router as map_router
 from .routes_masterdata import router as master_data_router
 from .routes_pages import router as pages_router
 from .routes_reports import router as reports_router
+from .routes_target_mgmt import router as target_management_router
 from .routes_whatsapp import router as whatsapp_router
 
 #: Registration order. Auth first so its paths are unambiguous, then the page
@@ -41,6 +42,7 @@ ALL_ROUTERS = (
     map_router,
     admin_router,
     learning_router,
+    target_management_router,
     whatsapp_router,
 )
 
@@ -59,5 +61,6 @@ __all__ = [
     "master_data_router",
     "map_router",
     "admin_router",
+    "target_management_router",
     "whatsapp_router",
 ]

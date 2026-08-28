@@ -314,9 +314,10 @@ _PENDING_DIMENSIONS: tuple[tuple[str, str, str, type, tuple[tuple[str, str, bool
         # disagrees with what this master records, which is only possible if
         # this master records them.
         #
-        # Seven columns and no eighth, in the order the business states them:
+        # Seven identifying columns, in the order the business states them:
         # Company, then the classification from the top down, then the material
-        # and its description. **This tuple is the column order** — the upload
+        # and its description — followed since revision 0027 by the two optional
+        # derivation inputs. **This tuple is the column order** — the upload
         # template, the preview, the management table, the edit form and the CSV
         # export are all derived from it, so a column moved here moves
         # everywhere and is never re-declared in a per-page list.
@@ -339,6 +340,25 @@ _PENDING_DIMENSIONS: tuple[tuple[str, str, str, type, tuple[tuple[str, str, bool
              "a material belongs to one company, and the upload reports a file "
              "that places the same code under two."),
             ("material_description", "text", True, "Material description."),
+            # Added by revision 0027, and the two entries here are the whole
+            # change: the template, the validation, the preview, the edit form
+            # and the CSV export are all derived from this tuple.
+            #
+            # Optional, unlike every column above them. They are what the Target
+            # Management module derives Quantity and Value from, and a Material
+            # Master extract produced before they were asked for does not carry
+            # them — requiring them would reject every such file. A material
+            # missing either yields no derived figure and reports n/a; it is
+            # never defaulted, because 1.0 would read as a real conversion
+            # rather than as "unknown".
+            ("conversion_factor", "decimal", False,
+             "How many volume units make one saleable unit. Target Quantity = "
+             "Target Volume / Conversion Factor. Optional: a material without "
+             "one reports no quantity rather than a guessed one."),
+            ("transfer_price", "decimal", False,
+             "Transfer price of one saleable unit. Target Value = Target "
+             "Quantity x Transfer Price. Optional: a material without one "
+             "reports no value rather than a guessed one."),
         ),
     ),
 )
@@ -373,6 +393,7 @@ _PENDING_EXAMPLES = {
     "material_code": "MAT-1001", "material_description": "Urea 50 KG Bag",
     "material_group_code": "MG20", "material_group_name": "Fertiliser",
     "material_brand_code": "MB07", "material_brand": "Shobuj",
+    "conversion_factor": "0.5", "transfer_price": "240",
 }
 
 
