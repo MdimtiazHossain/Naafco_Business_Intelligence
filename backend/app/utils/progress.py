@@ -1,12 +1,11 @@
 """Live progress for an upload that is still being processed.
 
-The upload endpoints are synchronous: ``POST /preview`` and ``POST /{id}/commit``
-do the whole job and return the finished outcome. That contract is kept, because
-the scripts, the ``/api/import/*`` seam and every existing test depend on it. What
-this module adds is a *second* way to observe the same run while it is still
-happening: the client mints a job token, sends it with the upload, and polls
-:func:`snapshot` on a different connection. FastAPI runs sync endpoints in a
-threadpool, so the poll is answered while the upload request is still in flight.
+An upload is a background job. ``POST /preview`` and ``POST /{id}/commit`` stage
+the file, record the batch and answer **202** with a job to watch; a worker in
+``upload/jobs.py`` does the work and reports here, and the browser polls
+:func:`snapshot` from another thread while it runs. The job id is the batch's own
+``upload_uuid``, generated when the row is created rather than accepted from the
+caller — the identifier of a stored record is never something a client chose.
 
 Progress is held in process memory rather than in a table, for two reasons that
 both come from the pipeline's own design:
