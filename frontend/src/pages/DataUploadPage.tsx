@@ -21,6 +21,7 @@ import { UploadActivity } from '../components/UploadActivity';
 import { UploadCompletionSummary, UploadProgress } from '../components/UploadProgress';
 import { useAuth } from '../contexts/AuthContext';
 import { useT } from '../contexts/I18nContext';
+import { formatBytes } from '../utils/format';
 import { useUploadProgress } from '../hooks/useUploadProgress';
 import { ApiError } from '../services/apiClient';
 import { dataQualityService, dataUploadService } from '../services';
@@ -105,14 +106,32 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: str
 function UploadWizard({
   uploadType,
   onBack,
+  maxBytes,
 }: {
   uploadType: UploadType;
   onBack: () => void;
+  /**
+   * The server's own ceiling, served by ``GET /types`` rather than repeated
+   * here. Undefined only while that request is in flight, and a file picked in
+   * that window is simply not checked in the browser — the server still
+   * refuses it, which is what makes this a courtesy rather than the rule.
+   */
+  maxBytes?: number;
 }) {
   const t = useT();
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
+  /**
+   * Set when the chosen file is bigger than the server will take.
+   *
+   * Checked here rather than left to the upload because the refusal comes from
+   * the proxy, which answers 413 with no message of ours and only after the
+   * bytes have gone up the wire. Naming both numbers at the moment of choosing
+   * is the difference between "too large" and "55.3 MB, and the limit is 25 MB".
+   */
+  const oversize =
+    file !== null && maxBytes !== undefined && file.size > maxBytes;
   const [mode, setMode] = useState<ImportMode>(uploadType.default_mode);
   const [outcome, setOutcome] = useState<UploadOutcome | null>(null);
   const [imported, setImported] = useState<UploadOutcome | null>(null);
@@ -290,7 +309,19 @@ function UploadWizard({
                 progress.reset();
               }}
             />
-            <p className="mt-1 text-[11px] text-slate-400">{t('upload.fileHint')}</p>
+            <p className="mt-1 text-[11px] text-slate-400">
+              {maxBytes === undefined
+                ? t('upload.fileHintNoLimit')
+                : t('upload.fileHint', { size: formatBytes(maxBytes) })}
+            </p>
+            {oversize && file && maxBytes !== undefined && (
+              <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                {t('upload.tooLarge', {
+                  size: formatBytes(file.size),
+                  limit: formatBytes(maxBytes),
+                })}
+              </p>
+            )}
           </div>
           <div>
             <label className="label" htmlFor="upload-mode">
@@ -317,7 +348,7 @@ function UploadWizard({
           <button
             type="button"
             className="btn-primary"
-            disabled={!file || busy}
+            disabled={!file || busy || oversize}
             onClick={() => validate.mutate()}
           >
             <Upload size={14} />
@@ -804,7 +835,11 @@ export default function DataUploadPage({ initialTab }: { initialTab?: Tab } = {}
 
       {(tab === 'master' || tab === 'transactional') &&
         (selected ? (
-          <UploadWizard uploadType={selected} onBack={() => setSelected(null)} />
+          <UploadWizard
+            uploadType={selected}
+            onBack={() => setSelected(null)}
+            maxBytes={typesQuery.data?.limits.max_bytes}
+          />
         ) : (
           <Section
             title={tab === 'master' ? t('upload.masterData') : t('upload.transactionalData')}

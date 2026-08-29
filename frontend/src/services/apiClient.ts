@@ -45,6 +45,11 @@ const STATUS_MESSAGES: Record<number, string> = {
   403: "You don't have permission to access this information.",
   404: 'Report not found.',
   408: 'The request took too long. Please try again.',
+  // Sent by the proxy, before the request ever reaches the API, so there is no
+  // body of ours to read a message out of. It said "Something went wrong.
+  // Please try again." until now, which is the one thing that cannot work: the
+  // same file is the same size on the next attempt.
+  413: 'That file is too large to upload. Split it into smaller files and upload them one at a time.',
   429: 'Too many requests. Please wait a moment and try again.',
   500: 'Something went wrong. Please try again.',
   502: 'The service is unavailable. Please try again shortly.',

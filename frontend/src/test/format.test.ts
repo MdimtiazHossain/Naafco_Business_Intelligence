@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatAmount,
   formatByKind,
+  formatBytes,
   formatCell,
   formatDays,
   formatPercent,
@@ -169,5 +170,28 @@ describe('helpers', () => {
     expect(formatDays(3)).toBe('3.0 d');
     expect(formatDays(null)).toBe('n/a');
     expect(formatQuantity(1234)).toBe('1,234');
+  });
+});
+
+
+describe('file sizes', () => {
+  it('keeps the decimal that distinguishes a file from its limit', () => {
+    // The number this sits beside is a ceiling: rounding 55.3 to 55 loses the
+    // very thing the reader is comparing.
+    expect(formatBytes(58_023_712)).toBe('55.3 MB');
+  });
+
+  it('renders a round limit as a round number', () => {
+    expect(formatBytes(25 * 1024 * 1024)).toBe('25 MB');
+  });
+
+  it('drops to smaller units rather than reporting 0 MB', () => {
+    expect(formatBytes(4096)).toBe('4 KB');
+    expect(formatBytes(200)).toBe('200 bytes');
+  });
+
+  it('says n/a for a size it cannot state', () => {
+    expect(formatBytes(Number.NaN)).toBe('n/a');
+    expect(formatBytes(-1)).toBe('n/a');
   });
 });

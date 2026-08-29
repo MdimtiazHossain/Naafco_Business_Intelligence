@@ -97,6 +97,27 @@ describe('request', () => {
     }
   });
 
+  it('tells the truth about a file the proxy refused for being too large', async () => {
+    // nginx answers 413 itself, before the request reaches the API, so there is
+    // no body of ours to read. It used to fall through to "Something went
+    // wrong. Please try again." -- the one instruction that cannot help, since
+    // the same file is the same size next time.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(mockResponse(413, '<html>413 Request Entity Too Large</html>')),
+    );
+
+    try {
+      await request('/api/data-upload/preview');
+      throw new Error('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(413);
+      expect((error as ApiError).message).toMatch(/too large/i);
+      expect((error as ApiError).message).not.toMatch(/try again/i);
+    }
+  });
+
   it('falls back to a mapped message when the body is not JSON', async () => {
     vi.stubGlobal(
       'fetch',

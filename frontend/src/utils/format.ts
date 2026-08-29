@@ -14,6 +14,24 @@ const CRORE = 10_000_000;
 const LAKH = 100_000;
 const THOUSAND = 1_000;
 
+/**
+ * A file size, for comparing against the upload limit.
+ *
+ * One decimal place, because the number it is usually shown beside is a limit
+ * and "55 MB" against a 25 MB ceiling loses the fact that it is 55.3 — the
+ * trailing `.0` is dropped so the limit itself still reads as the round number
+ * it is.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'n/a';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1) return `${mb.toFixed(1).replace(/\.0$/, '')} MB`;
+  const kb = bytes / 1024;
+  if (kb >= 1) return `${kb.toFixed(1).replace(/\.0$/, '')} KB`;
+  return `${Math.round(bytes)} bytes`;
+}
+
+
 /** `18700000` -> `1,87,00,000` (Indian grouping). */
 export function groupIndian(value: number): string {
   const negative = value < 0;
