@@ -25,7 +25,7 @@ from ..config import get_settings
 from ..etl.transforms import achievement_percent, growth_percent
 from ..etl.validation import safe_divide
 from . import queries as q
-from .exceptions import NoDataError, ToolExecutionError
+from .exceptions import NoDataError, PermissionDeniedError, ToolExecutionError
 from .permission_filter import PermissionFilter, UserContext
 from .schemas import (
     AchievementToolInput,
@@ -33,6 +33,7 @@ from .schemas import (
     BaseToolInput,
     BusinessSummaryToolInput,
     ChartSpec,
+    CreditToolInput,
     GroupBy,
     GroupedToolInput,
     GrowthToolInput,
@@ -984,6 +985,182 @@ def get_business_summary(ctx: ToolContext, arguments: BusinessSummaryToolInput) 
     return result
 
 
+# ---------------------------------------------------------------------------
+# Credit Control
+# ---------------------------------------------------------------------------
+
+
+class CreditScopeRefused(PermissionDeniedError):
+    """The caller's data scope cannot be enforced on the credit view.
+
+    An ``AgentError``, so the orchestrator phrases it for the reader instead of
+    turning it into the generic "something went wrong" every unexpected
+    exception becomes. A refusal the user cannot understand is one they will
+    report as a bug — and this one has a real answer: their scope cannot be
+    applied to receivables, and an administrator is who changes that.
+
+    ``PermissionDeniedError`` specifically, because that is what this is. The
+    figures exist and the caller may not have them, which is the same statement
+    the endpoint's 403 makes.
+    """
+
+    code = "CREDIT_SCOPE_NOT_ENFORCEABLE"
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            detail,
+            user_message=(
+                "I can't answer receivables questions for your data scope. Credit "
+                "invoices are recorded by company, plant and customer, so a scope "
+                "set at region or territory level can't be applied to them — and "
+                "I won't answer with figures that ignore it. Ask an administrator "
+                "about Credit Control access."
+            ),
+        )
+
+
+def _credit_scope_or_refuse(ctx: ToolContext) -> None:
+    """Refuse a receivables question this view cannot scope, before querying it.
+
+    **This is what stops the assistant becoming a way around the endpoint.**
+    ``queries.filter_conditions`` skips a filter naming a column the view lacks,
+    and ``vw_credit_invoice_detail`` reaches the customer's sub-territory and no
+    further — so a region-scoped caller's scope would be dropped and they would
+    be answered with the whole company's receivables.
+
+    The stock tools meet the same gap and merely *disclose* it, through
+    ``_note_unsupported``. That is right there and wrong here: stock is
+    deliberately not held below company, and a national stock figure with a note
+    is a reasonable answer. Credit exposure is the basis for stopping a
+    customer's supply, and ``/api/reports/credit-control`` refuses rather than
+    discloses — so this path refuses too, or the two surfaces would disagree
+    about who may see what, which is precisely the thing a single tool layer
+    exists to prevent.
+    """
+    from ..reporting.credit import ScopeNotHonourable, assert_scope_is_honourable
+    from ..reporting.service import ReportFilters
+
+    try:
+        assert_scope_is_honourable(ctx.user, ReportFilters())
+    except ScopeNotHonourable as exc:
+        raise CreditScopeRefused(str(exc)) from exc
+
+
+def _credit_dates(ctx: ToolContext, arguments: CreditToolInput) -> tuple[dt.date, int]:
+    """The reporting date and the Due Soon horizon for one question.
+
+    ``as_on`` defaults to today rather than to ``date_to``: asking about last
+    quarter's invoices does not mean asking how late they were at the end of it.
+    """
+    as_on = arguments.as_on_date or ctx.today
+    due_soon = arguments.due_soon_days
+    if due_soon is None:
+        due_soon = get_settings().credit_due_soon_days
+    return as_on, max(1, min(int(due_soon), 365))
+
+
+def _credit_base(tool: str, ctx: ToolContext, arguments: CreditToolInput,
+                 filters: ScopeFilters, metric: str, as_on: dt.date) -> ToolResult:
+    result = _base(tool, arguments, filters, metric)
+    result.sources = [q.CREDIT_INVOICE_VIEW]
+    # The reporting date is stated on every credit answer. "Overdue" without the
+    # day it was measured on is not a figure a reader can act on or repeat.
+    result.notes.append(f"Overdue is measured as at {as_on.isoformat()}.")
+    return result
+
+
+@register("get_credit_summary",
+          "Receivables: total invoiced, paid, outstanding, overdue and due soon, "
+          "as at a reporting date. Outstanding counts open invoices only.",
+          CreditToolInput, [Intent.CREDIT_SUMMARY])
+def get_credit_summary(ctx: ToolContext, arguments: CreditToolInput) -> ToolResult:
+    _credit_scope_or_refuse(ctx)
+    filters = ctx.scoped(arguments.filters)
+    as_on, due_soon = _credit_dates(ctx, arguments)
+    totals = q.credit_totals(ctx.session, filters, arguments.date_from,
+                             arguments.date_to, as_on=as_on, due_soon_days=due_soon)
+
+    result = _credit_base("get_credit_summary", ctx, arguments, filters,
+                          "outstanding_amount", as_on)
+    if not totals.get("invoice_count"):
+        return _empty(result)
+
+    result.value = totals.get("outstanding_amount")
+    result.values = totals
+    result.facts.append(
+        f"{int(totals['invoice_count'] or 0):,} invoice(s) worth "
+        f"{float(totals['invoice_value'] or 0):,.0f} BDT; "
+        f"{float(totals['payment_amount'] or 0):,.0f} BDT paid, "
+        f"{float(totals['outstanding_amount'] or 0):,.0f} BDT outstanding across "
+        f"{int(totals['open_invoice_count'] or 0):,} open invoice(s), of which "
+        f"{float(totals['overdue_amount'] or 0):,.0f} BDT is overdue."
+    )
+    return result
+
+
+@register("get_credit_aging",
+          "Outstanding receivables split into aging buckets by how far past due "
+          "they are, as at a reporting date. Open invoices only.",
+          CreditToolInput, [Intent.CREDIT_AGING])
+def get_credit_aging(ctx: ToolContext, arguments: CreditToolInput) -> ToolResult:
+    _credit_scope_or_refuse(ctx)
+    filters = ctx.scoped(arguments.filters)
+    as_on, _due_soon = _credit_dates(ctx, arguments)
+    rows = q.credit_aging_rows(ctx.session, filters, arguments.date_from,
+                               arguments.date_to, as_on=as_on)
+
+    result = _credit_base("get_credit_aging", ctx, arguments, filters,
+                          "outstanding_amount", as_on)
+    # Every bucket comes back, so "no invoices in 91-120" is answerable. The
+    # emptiness test is therefore whether anything is outstanding at all, not
+    # whether there are rows.
+    outstanding = sum(float(row["outstanding_amount"] or 0) for row in rows)
+    if not outstanding:
+        return _empty(result)
+
+    result.rows = rows
+    result.row_count = len(rows)
+    result.value = outstanding
+    worst = max(rows, key=lambda row: float(row["outstanding_amount"] or 0))
+    result.facts.append(
+        f"{outstanding:,.0f} BDT outstanding across {len(rows)} aging bucket(s); "
+        f"the largest is {worst['aging_bucket']} at "
+        f"{float(worst['outstanding_amount'] or 0):,.0f} BDT."
+    )
+    return result
+
+
+@register("get_overdue_customers",
+          "Customers ranked by overdue receivables as at a reporting date, with "
+          "the oldest due date for each.",
+          CreditToolInput, [Intent.CREDIT_OVERDUE])
+def get_overdue_customers(ctx: ToolContext, arguments: CreditToolInput) -> ToolResult:
+    _credit_scope_or_refuse(ctx)
+    filters = ctx.scoped(arguments.filters)
+    as_on, _due_soon = _credit_dates(ctx, arguments)
+    rows, truncated = q.overdue_customers(ctx.session, filters, arguments.date_from,
+                                          arguments.date_to, as_on=as_on)
+
+    result = _credit_base("get_overdue_customers", ctx, arguments, filters,
+                          "overdue_amount", as_on)
+    if not rows:
+        result.notes.append("No invoice is overdue for the selected filters.")
+        return result
+
+    result.rows = rows
+    result.row_count = len(rows)
+    result.truncated = truncated
+    result.value = float(rows[0]["overdue_amount"] or 0)
+    top = rows[0]
+    result.facts.append(
+        f"{top.get('customer_name') or top['customer_code']} owes the most past "
+        f"due: {float(top['overdue_amount'] or 0):,.0f} BDT across "
+        f"{int(top['invoice_count'] or 0):,} invoice(s), oldest due "
+        f"{top['oldest_due_date']}."
+    )
+    return result
+
+
 @register("get_business_alerts",
           "Threshold-based alerts: low achievement, expired and near-expiry "
           "stock, and sales decline. Returns severity per alert.",
@@ -1009,9 +1186,52 @@ def get_business_alerts(ctx: ToolContext, arguments: AlertToolInput) -> ToolResu
                 attention="Review coverage, stock availability and pending orders.",
             ))
 
-    # No HIGH_OVERDUE alert. It measured the overdue share of a receivables
-    # portfolio, and receivables left this platform with the Outstanding module
-    # in revision 0020 — there is nothing to be overdue.
+    # HIGH_OVERDUE is back, against a source that exists (revision 0031). It
+    # measures the overdue *share* of the portfolio rather than the amount: a
+    # crore overdue is alarming for a small book and routine for a large one, and
+    # a threshold in taka would have to be re-set for every company that ever
+    # grows.
+    #
+    # Skipped rather than refused when the caller's scope cannot be enforced on
+    # the credit view. This tool answers four questions at once and the other
+    # three are properly scoped, so refusing the lot would deny a regional
+    # manager their stock and achievement alerts to protect a receivables figure
+    # they simply do not get. The note says the alert was not evaluated, which is
+    # the honest reading — not that nothing was overdue.
+    try:
+        _credit_scope_or_refuse(ctx)
+    except CreditScopeRefused:
+        result.notes.append(
+            "Overdue receivables were not checked: this report cannot apply your "
+            "data scope to credit invoices, so no receivables figure is included."
+        )
+    else:
+        credit = q.credit_totals(
+            ctx.session, filters, arguments.date_from, arguments.date_to,
+            as_on=ctx.today,
+            due_soon_days=get_settings().credit_due_soon_days,
+        )
+        result.sources.append(q.CREDIT_INVOICE_VIEW)
+        outstanding = float(credit.get("outstanding_amount") or 0)
+        overdue = float(credit.get("overdue_amount") or 0)
+        # Suppressed rather than rendered as 0%: a book with nothing outstanding
+        # has no overdue proportion, and dividing by it would be the one
+        # arithmetic this platform refuses everywhere else.
+        if outstanding > 0:
+            share = overdue / outstanding * 100
+            if share > arguments.overdue_share_percent:
+                alerts.append(_alert(
+                    "HIGH_OVERDUE",
+                    "CRITICAL" if share > arguments.overdue_share_percent * 1.5
+                    else "HIGH",
+                    entity="Receivables", entity_type="credit",
+                    metric="overdue_share_percent", value=share,
+                    threshold=arguments.overdue_share_percent,
+                    attention=(
+                        f"{overdue:,.0f} BDT of {outstanding:,.0f} BDT "
+                        "outstanding is past due. Review the overdue customers."
+                    ),
+                ))
 
     # Stock alerts are about shelf life, not replenishment. LOW_STOCK_COVERAGE
     # and OUT_OF_STOCK both needed days of cover, which needs stock and sales to

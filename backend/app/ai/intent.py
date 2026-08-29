@@ -39,11 +39,19 @@ def detect_language(text: str) -> Language:
 
 # --- keyword families -------------------------------------------------------
 
-# No "collection" and no "outstanding" metric. Both datasets left this platform
-# in revision 0020, and a metric word the agent recognises but cannot answer is
-# worse than one it does not know: the question would route to a tool that no
-# longer exists instead of falling through to "I don't report that".
+# A metric word the agent recognises but cannot answer is worse than one it does
+# not know: the question routes to a tool that returns nothing instead of falling
+# through to "I don't report that".
+#
+# So "credit" is here and "collection" is still not. Revision 0031 gave
+# receivables a source, so outstanding, overdue and aging are answerable. No
+# extract states individual payments, so a collections question is not — and the
+# aggregate payment figure on an invoice is not a collection, however close the
+# words sound.
 METRIC_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "credit": ("credit", "receivable", "receivables", "outstanding", "overdue",
+               "aging", "ageing", "due", "past due", "unpaid", "debtor",
+               "debtors", "bakeya", "বকেয়া", "ক্রেডিট", "পাওনা", "মেয়াদোত্তীর্ণ"),
     "sales": ("sales", "sale", "revenue", "turnover", "বিক্রয়", "বিক্রি", "সেলস"),
     "stock": ("stock", "inventory", "unrestricted", "blocked", "in transit",
               "quality inspection", "material group", "material code", "material",
@@ -416,6 +424,18 @@ def _classify(text: str, metric: str | None, modifiers: set[str],
         return Intent.BUSINESS_SUMMARY
     if "bottom" in modifiers and metric is None:
         return Intent.ROOT_CAUSE_ANALYSIS
+
+    if metric == "credit":
+        # Aging before overdue, and both before the summary. "Aging" names a
+        # specific breakdown; "which customers are overdue" is a ranking; and a
+        # bare receivables question wants the headline.
+        if "aging" in text or "ageing" in text or "bucket" in text:
+            return Intent.CREDIT_AGING
+        if (GroupBy.CUSTOMER in group_by
+                or "customer" in text or "who" in text or "top" in modifiers
+                or "গ্রাহক" in text):
+            return Intent.CREDIT_OVERDUE
+        return Intent.CREDIT_SUMMARY
 
     if metric == "stock":
         # Expiry first: "which locations have stock expiring soon" is an expiry

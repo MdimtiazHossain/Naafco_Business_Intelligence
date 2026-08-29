@@ -30,11 +30,19 @@ class Intent(str, Enum):
     SALES_ACHIEVEMENT = "SALES_ACHIEVEMENT"
     SALES_VOLUME = "SALES_VOLUME"
 
-    # No collection or outstanding intents. Both modules left this platform in
-    # revision 0020: the receivables side was never sourced, and an intent the
-    # agent can recognise but no tool can answer is worse than not recognising
-    # it — the question gets a confident-looking refusal instead of "I don't
-    # report that".
+    # Credit Control. Receivables returned in revision 0031 against a source
+    # that exists, so these three are answerable — which is the whole test an
+    # intent has to pass here. An intent the agent recognises but no tool can
+    # answer is worse than one it does not know, because the question gets a
+    # confident-looking refusal instead of "I don't report that".
+    #
+    # There is still no COLLECTION intent. No extract states individual
+    # payments, so a collections question remains one this platform cannot
+    # answer, and the assistant says so rather than reaching for the aggregate
+    # payment figure on an invoice and calling it a collection.
+    CREDIT_SUMMARY = "CREDIT_SUMMARY"
+    CREDIT_AGING = "CREDIT_AGING"
+    CREDIT_OVERDUE = "CREDIT_OVERDUE"
 
     # Material stock. There is deliberately no LOW_STOCK, OUT_OF_STOCK or
     # STOCK_COVERAGE: all three divided stock by an average daily sales *rate*,
@@ -378,6 +386,29 @@ class GrowthToolInput(BaseToolInput):
     compare_to: dt.date
 
 
+class CreditToolInput(BaseToolInput):
+    """Credit Control questions.
+
+    The inherited date range filters on the **invoice date**: "invoices raised
+    this quarter" is the period question a receivable answers to. How *late*
+    those invoices are is a different question with a different date, which is
+    what ``as_on_date`` is for.
+
+    ``as_on_date`` is the day the overdue arithmetic is done against, and it
+    defaults to today rather than to ``date_to``. Those two are not the same
+    question and conflating them would be wrong in the common case: asking about
+    last quarter's invoices does not mean asking how late they were on the last
+    day of that quarter — it means how late they are *now*. A reader who wants
+    the month-end position says so.
+    """
+
+    as_on_date: dt.date | None = None
+    #: How near a due date counts as Due Soon, overriding the configured
+    #: horizon for one question. Configuration rather than a constant for the
+    #: same reason the stock expiry horizon is: "soon" is a collections policy.
+    due_soon_days: int | None = None
+
+
 class StockToolInput(BaseToolInput):
     """Material stock questions.
 
@@ -442,9 +473,13 @@ class AlertToolInput(BaseToolInput):
     achievement_below_percent: float = 80.0
     # No coverage threshold: stock alerts are now about shelf life, and the
     # horizon comes from STOCK_EXPIRING_SOON_DAYS rather than from the caller.
-    # No overdue threshold either — receivables left with the Outstanding
-    # module in revision 0020.
     sales_decline_percent: float = 10.0
+    #: How much of the outstanding book may be past due before it is an alert.
+    #:
+    #: A *share*, not an amount: a crore overdue is alarming on a small book and
+    #: routine on a large one, so a threshold in taka would need re-setting every
+    #: time the business grew.
+    overdue_share_percent: float = 25.0
 
 
 # ---------------------------------------------------------------------------

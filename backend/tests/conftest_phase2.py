@@ -90,7 +90,21 @@ MASTER_SEED: dict[str, Any] = {
 @pytest.fixture
 def seeded_engine(warehouse_engine: Engine) -> Engine:
     """Warehouse database seeded with master data and a date dimension."""
-    with Session(bind=warehouse_engine, future=True) as session:
+    seed_master_data(warehouse_engine)
+    return warehouse_engine
+
+
+def seed_master_data(engine: Engine) -> Engine:
+    """Put the standard master data into an already-migrated database.
+
+    Split out of the fixture above so a test that needs a *longer-lived* engine
+    can seed one the same way. The volume tests are the case: they load tens of
+    thousands of rows and cannot afford to rebuild the database per test, so they
+    keep their own module-scoped engine and call this — which is what makes their
+    database the same shape as everybody else's rather than a second, drifting
+    definition of what a seeded warehouse contains.
+    """
+    with Session(bind=engine, future=True) as session:
         session.add(DimCompany(company_code="C001", company_name="Example Industries Ltd."))
         session.add(DimBusinessUnit(bu_code="BU001", bu_name="Consumer Products",
                                     company_code="C001"))
@@ -146,7 +160,7 @@ def seeded_engine(warehouse_engine: Engine) -> Engine:
         ensure_master_source_status(session)
         populate_dim_date(session, dt.date(2026, 1, 1), dt.date(2027, 12, 31))
         session.commit()
-    return warehouse_engine
+    return engine
 
 
 def make_material(code: str, description: str, *, group: str = "MG01",

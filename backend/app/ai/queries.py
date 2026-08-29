@@ -44,6 +44,10 @@ SALES_VIEW = "vw_sales_detail"
 #: side by side; what still cannot be derived is a rate of consumption from a
 #: reading with no date on it.
 MATERIAL_STOCK_VIEW = "vw_material_stock_detail"
+#: Credit Control's row-level view. Its reporting date is ``invoice_date``; how
+#: late a row is comes from ``due_date`` against the date the caller asks about,
+#: which is why nothing here filters on a stored overdue column — there is none.
+CREDIT_INVOICE_VIEW = "vw_credit_invoice_detail"
 TARGET_VIEW = "vw_target_detail"
 TARGET_VS_ACTUAL_VIEW = "vw_target_vs_actual"
 
@@ -862,9 +866,140 @@ def expiring_rows(session: Session, filters: ScopeFilters, *, today: dt.date,
     return rows[:bounded], len(rows) > bounded
 
 
-# No ``aging_rows``. It bucketed receivables by how late they were, and the
-# Outstanding module left this platform in revision 0020 — there is no
-# receivable to age.
+# ---------------------------------------------------------------------------
+# Credit Control
+# ---------------------------------------------------------------------------
+#
+# ``aging_rows`` is back. It was removed with the Outstanding module in revision
+# 0020 because there was no receivable to age; revision 0031 reinstated
+# receivables against a source that exists, so there is again.
+#
+# The status and bucket expressions are **imported, not rebuilt**. They are
+# generated from ``etl.credit.OVERDUE_BUCKETS`` for a given reporting date, and
+# one generator shared between the reporting layer and this one is the whole
+# point: the agent and the Credit Control page must not be able to disagree
+# about which bucket an invoice is in, which is exactly what a second generator
+# here would eventually allow.
+
+
+def _credit_expressions():
+    """Imported late to keep the import graph acyclic.
+
+    ``reporting.credit`` imports the shared report helpers, and importing it at
+    module scope here would pull the reporting layer into every agent import.
+    The functions themselves are pure — a Table and a date in, an expression out.
+    """
+    from ..reporting.credit import (
+        aging_bucket_expression,
+        credit_status_expression,
+    )
+
+    return credit_status_expression, aging_bucket_expression
+
+
+def credit_totals(session: Session, filters: ScopeFilters,
+                  date_from: dt.date, date_to: dt.date, *,
+                  as_on: dt.date, due_soon_days: int) -> dict[str, Any]:
+    """The headline receivables figures for one reporting date.
+
+    Outstanding counts only *positive* balances, so a data-quality problem — an
+    over-adjusted invoice reading as a negative balance — cannot net off against
+    real debt and understate what is owed. That is the one direction a
+    receivables figure must never be wrong in.
+    """
+    table = view(session, CREDIT_INVOICE_VIEW)
+    conditions = filter_conditions(table, filters, date_from, date_to,
+                                   date_column="invoice_date")
+    open_invoice = table.c.balance_amount > 0
+    overdue = and_(open_invoice, table.c.due_date < as_on)
+    due_soon = and_(open_invoice, table.c.due_date >= as_on,
+                    table.c.due_date <= as_on + dt.timedelta(days=due_soon_days))
+
+    statement = select(
+        func.count().label("invoice_count"),
+        func.sum(table.c.invoice_value).label("invoice_value"),
+        func.sum(table.c.net_invoice_amount).label("net_invoice_amount"),
+        func.sum(table.c.payment_amount).label("payment_amount"),
+        func.sum(case((open_invoice, table.c.balance_amount), else_=0))
+            .label("outstanding_amount"),
+        func.sum(case((open_invoice, 1), else_=0)).label("open_invoice_count"),
+        func.sum(case((overdue, table.c.balance_amount), else_=0))
+            .label("overdue_amount"),
+        func.sum(case((overdue, 1), else_=0)).label("overdue_invoice_count"),
+        func.sum(case((due_soon, table.c.balance_amount), else_=0))
+            .label("due_soon_amount"),
+        func.sum(case((due_soon, 1), else_=0)).label("due_soon_invoice_count"),
+    ).select_from(table)
+    if conditions:
+        statement = statement.where(and_(*conditions))
+    row = session.execute(statement).one()
+    return dict(row._mapping)
+
+
+def credit_aging_rows(session: Session, filters: ScopeFilters,
+                      date_from: dt.date, date_to: dt.date, *,
+                      as_on: dt.date) -> list[dict[str, Any]]:
+    """Outstanding money per aging bucket, open invoices only.
+
+    Every bucket the module declares is returned, in order, including the ones
+    holding nothing: an empty bucket is a fact about the portfolio, and a gap in
+    the list reads as a rendering fault instead.
+    """
+    from ..etl import credit as credit_rules
+
+    _status, bucket_expression = _credit_expressions()
+    table = view(session, CREDIT_INVOICE_VIEW)
+    bucket = bucket_expression(table, as_on)
+    conditions = filter_conditions(table, filters, date_from, date_to,
+                                   date_column="invoice_date")
+    conditions.append(table.c.balance_amount > 0)
+
+    found = {
+        row["aging_bucket"]: row
+        for row in _rows(session.execute(
+            select(
+                bucket.label("aging_bucket"),
+                func.count().label("invoice_count"),
+                func.sum(table.c.balance_amount).label("outstanding_amount"),
+            ).select_from(table).where(and_(*conditions)).group_by(bucket)
+        ))
+    }
+    return [
+        {
+            "aging_bucket": code,
+            "invoice_count": found[code]["invoice_count"] if code in found else 0,
+            "outstanding_amount": (
+                found[code]["outstanding_amount"] if code in found else 0
+            ),
+        }
+        for code in credit_rules.AGING_BUCKETS
+    ]
+
+
+def overdue_customers(session: Session, filters: ScopeFilters,
+                      date_from: dt.date, date_to: dt.date, *,
+                      as_on: dt.date, limit: int = MAX_ROWS
+                      ) -> tuple[list[dict[str, Any]], bool]:
+    """Customers ranked by how much of their debt is past due."""
+    table = view(session, CREDIT_INVOICE_VIEW)
+    conditions = filter_conditions(table, filters, date_from, date_to,
+                                   date_column="invoice_date")
+    conditions.extend([table.c.balance_amount > 0, table.c.due_date < as_on])
+
+    bounded = max(1, min(limit, MAX_ROWS))
+    rows = _rows(session.execute(
+        select(
+            table.c.customer_code,
+            table.c.customer_name,
+            func.sum(table.c.balance_amount).label("overdue_amount"),
+            func.count().label("invoice_count"),
+            func.min(table.c.due_date).label("oldest_due_date"),
+        ).select_from(table).where(and_(*conditions))
+        .group_by(table.c.customer_code, table.c.customer_name)
+        .order_by(func.sum(table.c.balance_amount).desc())
+        .limit(bounded + 1)
+    ))
+    return rows[:bounded], len(rows) > bounded
 
 
 # No ``latest_stock_date``. It read the old fact's date column to answer "as of

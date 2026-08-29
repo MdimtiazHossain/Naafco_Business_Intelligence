@@ -235,22 +235,39 @@ def test_limit_is_extracted() -> None:
     assert detect_intent("show top 50 products").limit == 50
 
 
-def test_a_receivables_question_is_not_recognised_as_a_metric() -> None:
-    """The words survive as ordinary English; the *metric* does not.
+def test_a_receivables_question_is_recognised_and_a_collections_one_is_not() -> None:
+    """The test an intent has to pass is whether a tool can answer it.
 
-    Collection and Outstanding left the platform in revision 0020. Detecting
-    them as metrics would route a question to a tool that no longer exists, so
-    they fall through to the sales branch's default and the agent answers with
-    what it actually has rather than failing on a lookup.
+    Revision 0031 gave receivables a source, so outstanding, overdue and aging
+    route to the credit tools. A *collections* question still has no source — no
+    extract states individual payment transactions — so it stays unrecognised
+    and falls through to the sales default, where the agent answers with what it
+    has rather than routing to a tool that would return nothing.
+
+    The distinction matters more than it looks: an invoice's total paid amount
+    is sitting right there and is not a collection, so the cheap mistake here is
+    to answer a collections question with it.
     """
     from app.ai.intent import METRIC_KEYWORDS
 
-    assert set(METRIC_KEYWORDS) == {"sales", "stock", "target"}
-    for question in ("আজকের collection কত?", "Total outstanding কত?",
-                     "Outstanding aging দেখাও"):
-        prediction = detect_intent(question)
-        assert prediction.metric != "collection"
-        assert prediction.metric != "outstanding"
+    assert set(METRIC_KEYWORDS) == {"sales", "stock", "target", "credit"}
+
+    for question in ("Total outstanding কত?", "Outstanding aging দেখাও",
+                     "which customers are overdue?", "বকেয়া কত?"):
+        assert detect_intent(question).metric == "credit", question
+
+    # No "collection" metric, and the word must not drag a question into credit
+    # by accident either.
+    assert "collection" not in METRIC_KEYWORDS
+    prediction = detect_intent("আজকের collection কত?")
+    assert prediction.metric != "collection"
+
+
+def test_the_credit_intents_split_by_what_was_asked() -> None:
+    """Three questions, three tools — a bare total is not a customer ranking."""
+    assert detect_intent("total outstanding").intent is Intent.CREDIT_SUMMARY
+    assert detect_intent("outstanding aging buckets").intent is Intent.CREDIT_AGING
+    assert detect_intent("which customers are overdue").intent is Intent.CREDIT_OVERDUE
 
 
 def test_thresholds_are_extracted() -> None:
