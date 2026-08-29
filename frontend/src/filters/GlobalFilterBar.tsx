@@ -202,7 +202,7 @@ function FilterSelect({
         >
           {t(FILTER_LABELS[level])}
         </label>
-        <div className="min-w-[10rem] max-w-[16rem] flex-1">{select}</div>
+        <div className="min-w-[8rem] max-w-[16rem] flex-1 sm:min-w-[10rem]">{select}</div>
       </div>
     );
   }
@@ -365,9 +365,25 @@ export function GlobalFilterBar({
     );
   };
 
+  /*
+   * One column on a phone, and the desktop arrangement untouched.
+   *
+   * Two columns at 320px gave each control 135px — narrower than the dropdown
+   * it opens, which is what pushed those lists off the right edge of the
+   * screen, and too narrow to read a selected customer name in either. §7 asks
+   * for a 1- or 2-column filter layout on mobile rather than a squeezed grid,
+   * so the run starts at one and reaches the same five columns it always had by
+   * `lg`, which is where the desktop bar begins.
+   */
+  /**
+   * A bar's open panel is capped and scrolls on small screens; a rail's is
+   * not, because the rail already scrolls as a column of its own.
+   */
+  const panelBox = rail ? '' : 'max-h-[60vh] overflow-y-auto lg:max-h-none lg:overflow-visible';
+
   const grid = rail
     ? 'grid grid-cols-1 gap-2'
-    : 'grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5';
+    : 'grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5';
 
   return (
     <div
@@ -483,7 +499,13 @@ export function GlobalFilterBar({
         // One section, two runs. The groups are separated by a rule and a
         // heading rather than by a box each, so they read as parts of one
         // filter area — which is what they are, since they share its state.
-        <div className="mt-3 space-y-4 border-t border-slate-200 pt-3 dark:border-slate-800">
+        //
+        // `panelBox` is what keeps an open panel from filling a phone screen:
+        // the bar is sticky, so fifteen stacked controls would pin the page's
+        // own content out of view entirely. Bounded and scrolling, the panel is
+        // the expandable area §7 asks for. The cap lifts at `lg`, where the
+        // grid is five columns and the whole panel is a few rows tall.
+        <div className={`mt-3 space-y-4 border-t border-slate-200 pt-3 dark:border-slate-800 ${panelBox}`}>
           {groups.map((group) => (
             <div key={group.labelKey}>
               <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
@@ -499,7 +521,7 @@ export function GlobalFilterBar({
 
       {expanded && !groups && (
         <div
-          className={`mt-3 border-t border-slate-200 pt-3 dark:border-slate-800 ${grid}`}
+          className={`mt-3 border-t border-slate-200 pt-3 dark:border-slate-800 ${panelBox} ${grid}`}
         >
           {managed.filter(inGrid).map(control)}
         </div>

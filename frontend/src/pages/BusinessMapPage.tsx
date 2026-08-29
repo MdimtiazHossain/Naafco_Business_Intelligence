@@ -849,7 +849,7 @@ export default function BusinessMapPage() {
         <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label={t('map.drillPath')}>
           <button
             type="button"
-            className="rounded px-2 py-0.5 text-brand-600 hover:bg-brand-50 dark:hover:bg-slate-800"
+            className="tap-y inline-flex items-center rounded px-2 py-0.5 text-brand-600 hover:bg-brand-50 dark:hover:bg-slate-800"
             onClick={() => goToCrumb(-1)}
           >
             {t('map.allAreas')}
@@ -859,7 +859,7 @@ export default function BusinessMapPage() {
               <ChevronRight size={12} className="text-slate-400" />
               <button
                 type="button"
-                className="rounded px-2 py-0.5 text-brand-600 hover:bg-brand-50 dark:hover:bg-slate-800"
+                className="tap-y inline-flex items-center rounded px-2 py-0.5 text-brand-600 hover:bg-brand-50 dark:hover:bg-slate-800"
                 onClick={() => goToCrumb(index)}
               >
                 {crumb.label}
@@ -886,7 +886,12 @@ export default function BusinessMapPage() {
           Laid out as capped columns rather than stretched across the page: a
           KPI is read as a figure, and a figure spread over a third of a wide
           monitor stops looking like one. */}
-      <div className="mb-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(11.875rem,16.75rem))]">
+      {/* Two tiles to a row on a phone, and the capped columns above from `sm`
+          up. A 190px floor means exactly one tile fits a 294px screen, so five
+          KPIs became five full-width cards and five hundred pixels of scrolling
+          between the page's controls and its map. Halved, the figures are still
+          large enough to read and the map is a screen closer. */}
+      <div className="mb-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr))] sm:[grid-template-columns:repeat(auto-fit,minmax(11.875rem,16.75rem))]">
         {[
           {
             key: 'achievement',
@@ -1154,8 +1159,16 @@ export default function BusinessMapPage() {
           </MapLayerPanel>
         </div>
 
-        {/* ---- the map ---- */}
-        <section className="card flex min-h-0 flex-col overflow-hidden">
+        {/* ---- the map ----
+            `order-first` below `xl`: stacked, the source order put the control
+            rail and then the KPI strip above the map, so on a phone the one
+            thing this page exists to show started two thousand pixels down and
+            a reader had to scroll past every control to reach it. The three
+            columns are a grid, so the order is a presentation choice the layout
+            can make; the DOM order stays the one that reads correctly for a
+            screen reader and for the desktop three-column arrangement, which
+            `xl:order-none` hands straight back. */}
+        <section className="card order-first flex min-h-0 flex-col overflow-hidden xl:order-none">
           <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-800">
             <h2 className="text-xs font-semibold text-slate-700 dark:text-slate-200">
               {data.data?.metric_label ?? t('map.title')}
@@ -1170,7 +1183,15 @@ export default function BusinessMapPage() {
               skeleton={<CardSkeleton rows={8} />}
             >
               <BusinessMap
-                className="relative h-full min-h-[26rem] w-full overflow-hidden"
+                // Two floors, and the second is keyed to the viewport's
+                // *height* rather than its width. A handset in landscape is
+                // 812px wide and 375px tall — wide enough for every width-based
+                // breakpoint to treat it as a tablet, and far too short for a
+                // 26rem map, which would fill the window and leave the controls
+                // below the fold. Nothing else on the page reads the height,
+                // and nothing needs to: this is the one element whose whole
+                // purpose is to be looked at all at once.
+                className="relative h-full min-h-[22rem] w-full overflow-hidden sm:min-h-[26rem] [@media(max-height:560px)]:min-h-[15rem]"
                 styleUrl={basemapStyle}
                 theme={theme}
                 activeLevels={boundaryLevels}

@@ -147,7 +147,9 @@ function SidebarLink({ item, onNavigate, collapsed = false }: {
       title={collapsed ? label : undefined}
       aria-label={collapsed ? label : undefined}
       className={({ isActive }) =>
-        `flex items-center rounded-lg py-2 text-sm font-medium transition-colors ${
+        // `min-h-11` below `lg` is the touch floor; the desktop rail only
+        // exists from `lg` up, so its density is untouched.
+        `flex min-h-11 items-center rounded-lg py-2 text-sm font-medium transition-colors lg:min-h-0 ${
           collapsed ? 'justify-center px-2' : 'gap-3 px-3'
         } ${
           isActive
@@ -188,7 +190,7 @@ function UserMenu() {
     <div ref={ref} className="relative">
       <button
         type="button"
-        className="btn-ghost gap-2 px-2"
+        className="btn-ghost tap-y gap-2 px-2"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         aria-haspopup="menu"
@@ -314,6 +316,33 @@ export function AppLayout() {
   // Close the mobile drawer whenever the route changes.
   useEffect(() => setSidebarOpen(false), [location.pathname]);
 
+  /**
+   * While the drawer is open the page behind it stops scrolling, and Escape
+   * closes it.
+   *
+   * The drawer covers the viewport on a phone, so a scroll gesture landing on
+   * the backdrop used to move the report underneath — the reader closes the
+   * menu and finds the page somewhere else. This is the same contract `Modal`
+   * already keeps, for the same reason; the drawer is a modal surface too.
+   *
+   * The previous inline `overflow` is restored rather than being cleared, so
+   * closing the drawer while a dialog also holds the body cannot hand scrolling
+   * back to a page that is still covered.
+   */
+  useEffect(() => {
+    if (!sidebarOpen) return undefined;
+    const { overflow } = document.body.style;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSidebarOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = overflow;
+    };
+  }, [sidebarOpen]);
+
   const toggleCollapsed = () => {
     setCollapsed((previous) => {
       const next = !previous;
@@ -348,22 +377,26 @@ export function AppLayout() {
         <div className="flex h-14 items-center gap-3 px-3 sm:px-4">
           <button
             type="button"
-            className="btn-ghost px-2 lg:hidden"
+            className="btn-ghost tap shrink-0 px-2 lg:hidden"
             onClick={() => setSidebarOpen(true)}
             aria-label="Open navigation"
           >
             <Menu size={20} />
           </button>
 
-          <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">
               BI
             </span>
-            <div className="hidden sm:block">
-              <p className="text-sm font-semibold leading-tight">
+            {/* A long company name truncates rather than pushing the header's
+                actions off the right edge. */}
+            <div className="hidden min-w-0 sm:block">
+              <p className="truncate text-sm font-semibold leading-tight">
                 {user?.company_name ?? t('app.name')}
               </p>
-              <p className="text-[11px] leading-tight text-slate-500">{t('app.name')}</p>
+              <p className="truncate text-[11px] leading-tight text-slate-500">
+                {t('app.name')}
+              </p>
             </div>
           </div>
 
@@ -371,7 +404,7 @@ export function AppLayout() {
             <GlobalSearch />
           </div>
 
-          <div className="ml-auto flex items-center gap-1 md:ml-0">
+          <div className="ml-auto flex shrink-0 items-center gap-1 md:ml-0">
             {/* Sits in the layout, not on a page, so a running import is visible
                 from wherever the user navigates to. */}
             <UploadDock />
@@ -423,12 +456,23 @@ export function AppLayout() {
               onClick={() => setSidebarOpen(false)}
               aria-hidden="true"
             />
-            <aside className="animate-fade-in absolute left-0 top-0 h-full w-64 overflow-y-auto bg-white p-3 shadow-xl dark:bg-slate-900">
+            <aside
+              // Announced as a modal dialog: it covers the page, traps the
+              // reader's attention and is dismissed with Escape, so a screen
+              // reader should describe it the way `Modal` is described.
+              role="dialog"
+              aria-modal="true"
+              aria-label={t('app.name')}
+              // `max-w-[85vw]` is what keeps the drawer from filling a 320px
+              // screen edge to edge: the strip of backdrop left showing is the
+              // affordance that says tapping outside closes it.
+              className="animate-fade-in absolute left-0 top-0 flex h-full w-64 max-w-[85vw] flex-col overflow-y-auto overscroll-contain bg-white p-3 shadow-xl dark:bg-slate-900"
+            >
               <div className="mb-3 flex items-center justify-between">
                 <span className="text-sm font-semibold">{t('app.name')}</span>
                 <button
                   type="button"
-                  className="btn-ghost px-2"
+                  className="btn-ghost tap px-2"
                   onClick={() => setSidebarOpen(false)}
                   aria-label={t('common.close')}
                 >

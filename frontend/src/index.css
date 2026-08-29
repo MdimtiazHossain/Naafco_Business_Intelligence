@@ -43,8 +43,42 @@
 }
 
 @layer components {
+  /*
+   * `min-w-0` is load-bearing, not cosmetic.
+   *
+   * A grid or flex item's default `min-width: auto` refuses to shrink below its
+   * content's intrinsic width, and a card holding a `DataTable` has a very wide
+   * intrinsic width — the table inside carries `min-w-max` so its columns stay
+   * readable. Without this, a card placed in a grid (the Material Analysis page
+   * is the one that showed it) sizes the whole grid track to the table and
+   * pushes the *page* past the viewport, which is the one thing §17 forbids.
+   * The table's own `.table-wrap` is what should scroll, and it only can once
+   * the card above it is allowed to be narrower than its contents.
+   *
+   * It affects nothing on a desktop: `min-width` only ever lowers a floor, so a
+   * card with room to spare is laid out exactly as before.
+   */
   .card {
-    @apply rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900;
+    @apply min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900;
+  }
+
+  /*
+   * A horizontally scrolling strip of tabs.
+   *
+   * A tab row is a fixed list of names that cannot wrap without losing the
+   * single-baseline underline that says which one is current, so below the
+   * width where they all fit it scrolls sideways — the same answer §8 gives for
+   * a wide table. The scrollbar is hidden because the tabs are the affordance;
+   * `overscroll-x-contain` stops a swipe past the last tab turning into a
+   * browser back-navigation.
+   */
+  .tab-strip {
+    @apply -mx-1 flex overflow-x-auto overscroll-x-contain px-1;
+    scrollbar-width: none;
+  }
+
+  .tab-strip::-webkit-scrollbar {
+    display: none;
   }
 
   .card-header {
@@ -125,6 +159,32 @@
     @apply text-red-600 dark:text-red-400;
   }
 
+  /*
+   * A comfortable finger target on a touch screen, and nothing at all on a
+   * desktop.
+   *
+   * An icon-only control sized by its 16px glyph and a couple of pixels of
+   * padding is around 24px square — fine for a cursor, below the 44px a finger
+   * needs. The floor is lifted below `lg` and dropped from `lg` up, because
+   * `lg` is where this application stops being touched and starts being
+   * pointed at: it is the width at which the desktop sidebar appears and the
+   * mobile drawer goes away, so a tablet — which is a touch device however wide
+   * it is — keeps the larger targets, and the dense table footers and row
+   * actions a desktop reader has today are left exactly as they are.
+   *
+   * `min-height`/`min-width` rather than padding, so a control that is already
+   * large enough is untouched.
+   */
+  .tap {
+    @apply min-h-11 min-w-11 lg:min-h-0 lg:min-w-0;
+  }
+
+  /* The same idea for a control that carries a label: it needs the height but
+     its width comes from its text. */
+  .tap-y {
+    @apply min-h-11 lg:min-h-0;
+  }
+
   .table-wrap {
     /* Horizontal scrolling keeps wide tables usable on a phone. */
     @apply w-full overflow-x-auto;
@@ -167,6 +227,18 @@
   .dark .maplibregl-map .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
     filter: invert(1) hue-rotate(180deg);
     opacity: 0.85;
+  }
+
+  /* MapLibre sizes its buttons at 29px, which is a fine mouse target and a
+     poor thumb one. Below `lg` — the same line the `.tap` floor uses, and the
+     same reason — they are given the room a finger needs; the control group is
+     absolutely positioned over the map, so growing it moves nothing else on
+     the page and it is left exactly as it is on a desktop. */
+  @media (max-width: 1023px) {
+    .maplibregl-map .maplibregl-ctrl-group button {
+      width: 44px;
+      height: 44px;
+    }
   }
 
   .maplibregl-map .maplibregl-ctrl-scale {

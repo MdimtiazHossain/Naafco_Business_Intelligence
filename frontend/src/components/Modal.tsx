@@ -89,7 +89,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-3 sm:items-center sm:p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -99,9 +99,19 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`card w-full ${WIDTH[size]} my-auto shadow-xl`}
+        /*
+          Capped to the viewport and laid out as a column, so the header and the
+          footer are always reachable and only the body scrolls.
+
+          Without the cap a dialog whose header carries a long description grew
+          past the bottom of a short phone screen and took its footer — the Save
+          and Cancel buttons — with it. `100dvh` rather than `100vh` because a
+          mobile browser's address bar is part of `vh` but not of the space the
+          page can actually use.
+        */
+        className={`card flex max-h-[calc(100dvh-2rem)] w-full flex-col ${WIDTH[size]} my-auto shadow-xl`}
       >
-        <div className="card-header">
+        <div className="card-header shrink-0">
           <div className="min-w-0">
             <h2 className="card-title">{title}</h2>
             {description && (
@@ -119,9 +129,11 @@ export function Modal({
             <X size={16} />
           </button>
         </div>
-        <div className="max-h-[70vh] overflow-y-auto p-4">{children}</div>
+        {/* `min-h-0` lets this flex child shrink below its content so the
+            scrollbar lands here rather than on the dialog. */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
         {footer && (
-          <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 p-3 dark:border-slate-800">
+          <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-slate-200 p-3 dark:border-slate-800">
             {footer}
           </div>
         )}

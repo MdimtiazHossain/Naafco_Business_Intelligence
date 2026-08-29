@@ -107,13 +107,13 @@ export default function AgentLearningPage() {
         <StatCard label={t('learning.kpiExamples')} value={String(exampleRows.length)} />
       </div>
 
-      <div className="mt-4 flex gap-1 border-b border-slate-200 dark:border-slate-700">
+      <div className="tab-strip mt-4 gap-1 border-b border-slate-200 dark:border-slate-700">
         {(['queue', 'vocabulary', 'examples'] as Tab[]).map((key) => (
           <button
             key={key}
             type="button"
             onClick={() => setTab(key)}
-            className={`px-3 py-2 text-sm font-medium ${
+            className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm font-medium ${
               tab === key
                 ? 'border-b-2 border-brand-600 text-brand-700 dark:text-brand-300'
                 : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
@@ -172,7 +172,7 @@ export default function AgentLearningPage() {
                         <div className="flex gap-1">
                           <button
                             type="button"
-                            className="btn-ghost px-2 py-1 text-xs"
+                            className="btn-ghost tap-y px-2 py-1 text-xs"
                             onClick={() => {
                               setError(null);
                               setProposeFor(signal);
@@ -182,7 +182,7 @@ export default function AgentLearningPage() {
                           </button>
                           <button
                             type="button"
-                            className="btn-ghost px-2 py-1 text-xs"
+                            className="btn-ghost tap-y px-2 py-1 text-xs"
                             onClick={() =>
                               decide.mutate(() =>
                                 learningService.setSignalStatus(signal.signal_id, 'DISMISSED'),
@@ -240,7 +240,7 @@ export default function AgentLearningPage() {
                         return (
                           <button
                             type="button"
-                            className="btn-ghost px-2 py-1 text-xs"
+                            className="btn-ghost tap-y px-2 py-1 text-xs"
                             onClick={() =>
                               decide.mutate(() => learningService.retireAlias(alias.alias_id))
                             }
@@ -263,7 +263,7 @@ export default function AgentLearningPage() {
                           </button>
                           <button
                             type="button"
-                            className="btn-ghost px-2 py-1 text-xs"
+                            className="btn-ghost tap-y px-2 py-1 text-xs"
                             onClick={() =>
                               decide.mutate(() => learningService.rejectAlias(alias.alias_id))
                             }
@@ -318,7 +318,7 @@ export default function AgentLearningPage() {
                         return (
                           <button
                             type="button"
-                            className="btn-ghost px-2 py-1 text-xs"
+                            className="btn-ghost tap-y px-2 py-1 text-xs"
                             onClick={() =>
                               decide.mutate(() => learningService.retireExample(example.example_id))
                             }
@@ -343,7 +343,7 @@ export default function AgentLearningPage() {
                           </button>
                           <button
                             type="button"
-                            className="btn-ghost px-2 py-1 text-xs"
+                            className="btn-ghost tap-y px-2 py-1 text-xs"
                             onClick={() =>
                               decide.mutate(() => learningService.rejectExample(example.example_id))
                             }

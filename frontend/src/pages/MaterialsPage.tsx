@@ -132,7 +132,7 @@ export default function MaterialsPage() {
             type="button"
             onClick={() => setLevel(candidate)}
             aria-pressed={level === candidate}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+            className={`tap-y rounded-lg px-3 py-1.5 text-xs font-medium ${
               level === candidate
                 ? 'bg-brand-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'

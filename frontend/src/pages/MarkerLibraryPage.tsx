@@ -268,14 +268,14 @@ export default function MarkerLibraryPage() {
                     <div className="flex flex-wrap gap-1">
                       <Link
                         to={`/admin/map-settings/marker-designer/${design.design_id}`}
-                        className="btn-ghost px-2 py-1"
+                        className="btn-ghost tap px-2 py-1"
                         title={t('common.edit')}
                       >
                         <Pencil size={14} />
                       </Link>
                       <button
                         type="button"
-                        className="btn-ghost px-2 py-1"
+                        className="btn-ghost tap px-2 py-1"
                         title={t('marker.duplicate')}
                         onClick={() => duplicate.mutate(design)}
                       >
@@ -283,7 +283,7 @@ export default function MarkerLibraryPage() {
                       </button>
                       <button
                         type="button"
-                        className="btn-ghost px-2 py-1"
+                        className="btn-ghost tap px-2 py-1"
                         title={t('marker.assign')}
                         onClick={() =>
                           run(
@@ -297,7 +297,7 @@ export default function MarkerLibraryPage() {
                       {design.status === 'ACTIVE' ? (
                         <button
                           type="button"
-                          className="btn-ghost px-2 py-1"
+                          className="btn-ghost tap px-2 py-1"
                           title={t('marker.deactivate')}
                           disabled={design.is_system_default}
                           onClick={() =>
@@ -312,7 +312,7 @@ export default function MarkerLibraryPage() {
                       ) : (
                         <button
                           type="button"
-                          className="btn-ghost px-2 py-1"
+                          className="btn-ghost tap px-2 py-1"
                           title={t('marker.activate')}
                           onClick={() =>
                             run(markerService.activate(design.design_id), t('marker.activated'))
@@ -323,7 +323,7 @@ export default function MarkerLibraryPage() {
                       )}
                       <button
                         type="button"
-                        className="btn-ghost px-2 py-1 text-red-600"
+                        className="btn-ghost tap px-2 py-1 text-red-600"
                         title={t('common.delete')}
                         disabled={design.is_system_default}
                         onClick={() => remove(design)}
@@ -376,7 +376,7 @@ export default function MarkerLibraryPage() {
                 render: (row) => (
                   <button
                     type="button"
-                    className="btn-ghost px-2 py-1"
+                    className="btn-ghost tap px-2 py-1"
                     title={t('marker.resetDefault')}
                     onClick={() => {
                       if (window.confirm(t('marker.resetConfirm'))) {

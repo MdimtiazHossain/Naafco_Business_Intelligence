@@ -848,7 +848,7 @@ export default function MarkerDesignerPage() {
                     key={key}
                     type="button"
                     onClick={() => setTab(key)}
-                    className={`rounded-lg px-2.5 py-1 text-xs font-medium ${
+                    className={`tap-y rounded-lg px-2.5 py-1 text-xs font-medium ${
                       tab === key
                         ? 'bg-brand-600 text-white'
                         : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'

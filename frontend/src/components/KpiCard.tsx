@@ -50,8 +50,17 @@ export function KpiCard({
         )}
       </div>
 
+      {/*
+        A step smaller below `sm`.
+
+        A stock figure runs to eleven or twelve grouped digits, and at
+        `text-2xl` that is about 145px of tabular numerals — wider than a KPI
+        card gets on a phone, so the number ran past the edge of its own card.
+        A figure must never be clipped or truncated, so the type gives way
+        instead; from `sm` up the card has the room and keeps the size it had.
+      */}
       <p
-        className={`mt-2 text-2xl font-semibold tabular-nums ${
+        className={`mt-2 text-xl font-semibold tabular-nums sm:text-2xl ${
           status ?? 'text-slate-900 dark:text-slate-50'
         }`}
       >
@@ -119,7 +128,12 @@ export function StatCard({
       >
         {label}
       </p>
-      <p className={`mt-2 text-2xl font-semibold tabular-nums ${status ?? tones[tone]}`}>
+      {/* Same step down as `KpiCard`, and for the same reason. */}
+      <p
+        className={`mt-2 text-xl font-semibold tabular-nums sm:text-2xl ${
+          status ?? tones[tone]
+        }`}
+      >
         {value}
       </p>
       {/* The supporting count stays neutral: it is metadata about the metric,

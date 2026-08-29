@@ -183,7 +183,7 @@ function SummaryCards() {
     [t('admin.uploadsToday'), data?.uploads_today ?? 0],
   ];
   return (
-    <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+    <div className="mb-4 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 sm:grid-cols-4 lg:grid-cols-7">
       {cards.map(([label, value]) => (
         <div key={label} className="card p-3">
           <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
@@ -245,7 +245,7 @@ export default function AdminPage() {
             key={key}
             type="button"
             onClick={() => setTab(key)}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+            className={`tap-y rounded-lg px-3 py-1.5 text-xs font-medium ${
               tab === key
                 ? 'bg-brand-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'

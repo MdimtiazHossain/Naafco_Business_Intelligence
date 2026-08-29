@@ -720,13 +720,16 @@ export default function TargetManagementPage() {
         />
       </div>
 
-      <div className="mt-4 flex gap-1 border-b border-slate-200 dark:border-slate-700">
+      <div className="tab-strip mt-4 gap-1 border-b border-slate-200 dark:border-slate-700">
         {TABS.map((key) => (
           <button
             key={key}
             type="button"
             onClick={() => setParam('tab', key)}
-            className={`px-3 py-2 text-sm font-medium ${
+            // `shrink-0` and `whitespace-nowrap` are what make the strip
+            // scroll rather than squeeze: without them flex would compress
+            // eleven tabs into eleven unreadable slivers instead.
+            className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm font-medium ${
               tab === key
                 ? 'border-b-2 border-brand-600 text-brand-700 dark:text-brand-300'
                 : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'

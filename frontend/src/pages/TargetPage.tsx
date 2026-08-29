@@ -165,7 +165,7 @@ export default function TargetPage() {
         skeleton={<KpiSkeleton />}
       >
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <StatCard
               label={t('target.quantity')}
               value={formatQuantity(values.target_quantity)}
@@ -210,9 +210,10 @@ export default function TargetPage() {
           <Section
             title={t('target.regionAchievement')}
             actions={
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+              <label className="tap-y flex cursor-pointer items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
                 <input
                   type="checkbox"
+                  className="h-4 w-4 accent-brand-600"
                   checked={onlyBelow}
                   onChange={(event) => setOnlyBelow(event.target.checked)}
                 />

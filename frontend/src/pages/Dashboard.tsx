@@ -121,7 +121,13 @@ export default function Dashboard() {
             fourth column went with the Sales Volume card — six cards across
             four columns would have left the second row half empty.
           */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+          {/* One KPI to a row on the narrowest phones, two from 360px.
+              Two columns at 320px left each card about 104px of inner width,
+              which a grouped stock figure of eleven digits runs straight out
+              of — and a figure is the one thing on this page that may not be
+              clipped or shortened. `min-[360px]` rather than `sm`, so a 375 or
+              430px handset still gets the pair of columns it has room for. */}
+          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-3">
             {(data?.kpis ?? []).map((kpi) => (
               <KpiCard key={kpi.key} kpi={kpi} icon={KPI_ICONS[kpi.key]} />
             ))}

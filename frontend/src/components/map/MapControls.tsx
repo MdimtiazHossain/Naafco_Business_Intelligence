@@ -32,7 +32,7 @@ export function MapControls({ onFitCountry, onFitData }: MapControlsProps) {
           onClick={onFitCountry}
           title={t('map.fitCountry')}
           aria-label={t('map.fitCountry')}
-          className="rounded-lg border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur hover:bg-white dark:border-slate-700 dark:bg-slate-900/95 dark:hover:bg-slate-900"
+          className="tap flex items-center justify-center rounded-lg border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur hover:bg-white dark:border-slate-700 dark:bg-slate-900/95 dark:hover:bg-slate-900"
         >
           <MapIcon size={14} />
         </button>
@@ -42,7 +42,7 @@ export function MapControls({ onFitCountry, onFitData }: MapControlsProps) {
             onClick={onFitData}
             title={t('map.fitData')}
             aria-label={t('map.fitData')}
-            className="rounded-lg border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur hover:bg-white dark:border-slate-700 dark:bg-slate-900/95 dark:hover:bg-slate-900"
+            className="tap flex items-center justify-center rounded-lg border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur hover:bg-white dark:border-slate-700 dark:bg-slate-900/95 dark:hover:bg-slate-900"
           >
             <Crosshair size={14} />
           </button>

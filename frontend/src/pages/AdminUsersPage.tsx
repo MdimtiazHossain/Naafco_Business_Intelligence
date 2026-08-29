@@ -412,7 +412,7 @@ export default function AdminUsersPage() {
                   <div className="flex gap-1">
                     <button
                       type="button"
-                      className="btn-ghost px-2 py-1"
+                      className="btn-ghost tap px-2 py-1"
                       title={t('admin.editUser')}
                       onClick={() => {
                         setCreating(false);
@@ -423,7 +423,7 @@ export default function AdminUsersPage() {
                     </button>
                     <Link
                       to={`/admin/users/${row.user_id}/permissions`}
-                      className="btn-ghost px-2 py-1"
+                      className="btn-ghost tap px-2 py-1"
                       title={t('admin.permissions')}
                     >
                       <ShieldCheck size={14} />

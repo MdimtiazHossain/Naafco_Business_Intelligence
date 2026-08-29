@@ -543,7 +543,7 @@ export function DataTable<T extends Record<string, any>>({
                   <th scope="col" className="w-10 px-3 py-2">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 accent-brand-600"
+                      className="h-5 w-5 accent-brand-600 sm:h-4 sm:w-4"
                       checked={allOnPageSelected}
                       onChange={togglePage}
                       aria-label={t('table.selectPage')}
@@ -623,7 +623,12 @@ export function DataTable<T extends Record<string, any>>({
                           type="button"
                           onClick={() => handleSort(column)}
                           disabled={column.sortable === false}
-                          className={`inline-flex items-center gap-1 ${
+                          // `-my-2 py-2` grows the hit area to cover the
+                          // header cell's own vertical padding and then takes
+                          // the growth back out of the layout, so a sort
+                          // control is a 36px target on a touch screen while
+                          // the header row is exactly as tall as it was.
+                          className={`-my-2 inline-flex items-center gap-1 py-2 ${
                             column.sortable === false
                               ? 'cursor-default'
                               : 'hover:text-brand-600'
@@ -704,7 +709,7 @@ export function DataTable<T extends Record<string, any>>({
                         <td className="px-3 py-2">
                           <input
                             type="checkbox"
-                            className="h-4 w-4 accent-brand-600"
+                            className="h-5 w-5 accent-brand-600 sm:h-4 sm:w-4"
                             checked={selected?.has(key) ?? false}
                             onClick={(event) => event.stopPropagation()}
                             onChange={() => toggleRow(key)}
@@ -785,7 +790,7 @@ export function DataTable<T extends Record<string, any>>({
         <div className="flex items-center gap-2">
           {pageSizeOptions && onPageSizeChange && (
             <select
-              className="rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900"
+              className="tap-y rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-900"
               value={pageSize}
               onChange={(event) => onPageSizeChange(Number(event.target.value))}
               aria-label={t('common.rows')}
@@ -799,7 +804,7 @@ export function DataTable<T extends Record<string, any>>({
           )}
           <button
             type="button"
-            className="btn-ghost px-2 py-1"
+            className="btn-ghost tap px-2 py-1"
             onClick={() => goToPage(currentPage - 1)}
             disabled={currentPage <= 1}
             aria-label={t('common.previous')}
@@ -811,7 +816,7 @@ export function DataTable<T extends Record<string, any>>({
           </span>
           <button
             type="button"
-            className="btn-ghost px-2 py-1"
+            className="btn-ghost tap px-2 py-1"
             onClick={() => goToPage(currentPage + 1)}
             disabled={currentPage >= pageCount}
             aria-label={t('common.next')}

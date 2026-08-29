@@ -176,7 +176,7 @@ export default function StockPage() {
             total. Unrestricted leads because it is the only one that can be
             sold — the ordering is the point, not decoration.
           */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-5">
             {/* Green on both the name and the figure — the status standard, not
                 a tone on the number alone. */}
             <StatCard
@@ -212,7 +212,7 @@ export default function StockPage() {
               <label className="flex items-center gap-2 text-xs text-slate-500">
                 {t('stock.expiringWithin')}
                 <select
-                  className="input py-1 text-xs"
+                  className="input tap-y py-1 text-xs"
                   value={horizon ?? ''}
                   onChange={(event) =>
                     setHorizon(event.target.value ? Number(event.target.value) : undefined)
@@ -228,7 +228,7 @@ export default function StockPage() {
               </label>
             }
           >
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-4">
               {(data?.expiry.rows ?? []).map((row) => (
                 <StatCard
                   key={String(row.code)}

@@ -23,6 +23,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { useEffect, useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 import {
   formatAmount,
@@ -120,6 +121,101 @@ function useValueFormatter(kind: ChartValueKind = 'currency') {
   };
 }
 
+/**
+ * Whether the viewport is phone-width.
+ *
+ * A chart's axis configuration is JavaScript — Recharts measures and lays out
+ * its ticks itself, and no media query can reach inside it — so this is the one
+ * place the app asks the viewport a question rather than expressing the answer
+ * in CSS. It is deliberately the cheapest form of asking: `matchMedia` fires
+ * only when the breakpoint is actually crossed, so there is no resize listener,
+ * no polling and no re-render while a reader is merely scrolling.
+ *
+ * The query is `max-width: 639px`, one pixel below Tailwind's `sm`, so tablets
+ * and desktops take the exact configuration they take today and only a phone
+ * gets the thinned-out one.
+ */
+const NARROW_QUERY = '(max-width: 639px)';
+
+function useNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(NARROW_QUERY).matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia(NARROW_QUERY);
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    setNarrow(media.matches);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+
+  return narrow;
+}
+
+/**
+ * The x-axis settings for a categorical chart, at this width.
+ *
+ * `interval={0}` prints every category name. On a desktop that is what a
+ * reader wants; on a 320px phone thirteen region names in the same space
+ * collide into an unreadable smear, which is worse than showing fewer. So on a
+ * phone Recharts is allowed to drop the labels that will not fit — the bars,
+ * the tooltip and the underlying data are all untouched, and §11's instruction
+ * is exactly this: reduce the visual density rather than remove the chart.
+ *
+ * The steeper angle and the shorter reserved height go with it: at -45° a name
+ * needs less horizontal room per character, and 60px of axis out of a 260px
+ * chart is a quarter of the plot given to labels that are no longer all drawn.
+ */
+function categoryAxis(count: number, narrow: boolean) {
+  const crowded = count > 6;
+  if (narrow) {
+    return {
+      interval: 'preserveStartEnd' as const,
+      angle: crowded ? -45 : 0,
+      textAnchor: crowded ? ('end' as const) : ('middle' as const),
+      height: crowded ? 52 : 26,
+    };
+  }
+  return {
+    interval: 0 as const,
+    angle: crowded ? -25 : 0,
+    textAnchor: crowded ? ('end' as const) : ('middle' as const),
+    height: crowded ? 60 : 30,
+  };
+}
+
+/**
+ * How much of the plot the value axis may reserve for its own labels.
+ *
+ * 70px is a fifth of a desktop chart and nearly a quarter of a phone one, where
+ * the formatted amounts are the same length but the plot is a third the width.
+ */
+function valueAxisWidth(narrow: boolean) {
+  // 56 rather than something tighter: a formatted amount is as long on a phone
+  // as on a desktop, and below this "BDT 36.00 L" wraps onto two lines and the
+  // axis stops reading as a column of numbers.
+  return narrow ? 56 : 70;
+}
+
+/**
+ * Shorten a category name so a rotated tick stays inside the plot.
+ *
+ * A material description — "Naafco Granular 40kg (1's)" — is thirty characters
+ * of label under a bar 20px wide, and at -45 degrees it runs off the left edge
+ * of the chart and is clipped mid-word, which reads as a rendering fault rather
+ * than as a name too long to show. Truncating says the same thing deliberately,
+ * and nothing is lost: the tooltip carries the full name, and so does the table
+ * beneath every one of these charts.
+ *
+ * Desktop is untouched — it gets the name exactly as the backend sent it.
+ */
+function shortTick(value: unknown, narrow: boolean): string {
+  const text = String(value ?? '');
+  if (!narrow || text.length <= 14) return text;
+  return `${text.slice(0, 13)}…`;
+}
+
 function tooltipStyle(theme: ReturnType<typeof useChartTheme>) {
   return {
     contentStyle: {
@@ -144,6 +240,7 @@ export function TrendChart({
 }: BaseChartProps & { area?: boolean }) {
   const theme = useChartTheme();
   const format = useValueFormatter(valueKind);
+  const narrow = useNarrowViewport();
   if (!data?.length) return <EmptyState message={emptyMessage} />;
 
   const Chart = area ? AreaChart : LineChart;
@@ -155,12 +252,14 @@ export function TrendChart({
           dataKey={xKey}
           tick={{ fontSize: 11, fill: theme.axis }}
           tickFormatter={(value) => formatCell(xKey, value)}
-          minTickGap={16}
+          // A wider gap on a phone: dates are the same length whatever the
+          // plot is, so the same 16px lets them touch on a narrow screen.
+          minTickGap={narrow ? 28 : 16}
         />
         <YAxis
           tick={{ fontSize: 11, fill: theme.axis }}
           tickFormatter={format}
-          width={70}
+          width={valueAxisWidth(narrow)}
         />
         <Tooltip formatter={(value) => format(Number(value))} {...tooltipStyle(theme)} />
         {area ? (
@@ -211,14 +310,25 @@ export function CategoryBarChart({
 }) {
   const theme = useChartTheme();
   const format = useValueFormatter(valueKind);
+  const narrow = useNarrowViewport();
   if (!data?.length) return <EmptyState message={emptyMessage} />;
 
+  const xAxis = categoryAxis(data.length, narrow);
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart
         data={data}
         layout={horizontal ? 'vertical' : 'horizontal'}
-        margin={{ top: 8, right: 12, bottom: 4, left: horizontal ? 16 : 4 }}
+        // A tick rotated to -45 degrees extends down *and to the left* of the
+        // tick it belongs to, and Recharts reserves height for it but not
+        // width — so on a phone the first category's name was clipped by the
+        // left edge of the SVG. The extra margin is that missing room.
+        margin={{
+          top: 8,
+          right: 12,
+          bottom: 4,
+          left: horizontal ? 16 : narrow ? 14 : 4,
+        }}
       >
         <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} />
         {horizontal ? (
@@ -232,7 +342,11 @@ export function CategoryBarChart({
               type="category"
               dataKey={xKey}
               tick={{ fontSize: 11, fill: theme.axis }}
-              width={110}
+              // 110px of a 294px phone plot is over a third of it given to
+              // names; 88 keeps a territory name readable and gives the bars
+              // back the room that makes the comparison legible at all.
+              width={narrow ? 88 : 110}
+              tickFormatter={(value) => shortTick(value, narrow)}
             />
           </>
         ) : (
@@ -240,15 +354,13 @@ export function CategoryBarChart({
             <XAxis
               dataKey={xKey}
               tick={{ fontSize: 11, fill: theme.axis }}
-              interval={0}
-              angle={data.length > 6 ? -25 : 0}
-              textAnchor={data.length > 6 ? 'end' : 'middle'}
-              height={data.length > 6 ? 60 : 30}
+              tickFormatter={(value) => shortTick(value, narrow)}
+              {...xAxis}
             />
             <YAxis
               tick={{ fontSize: 11, fill: theme.axis }}
               tickFormatter={format}
-              width={70}
+              width={valueAxisWidth(narrow)}
             />
           </>
         )}
@@ -286,30 +398,40 @@ export function ComparisonBarChart({
   emptyMessage?: string;
 }) {
   const theme = useChartTheme();
+  const narrow = useNarrowViewport();
   if (!data?.length) return <EmptyState message={emptyMessage} />;
 
+  const xAxis = categoryAxis(data.length, narrow);
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+      <BarChart
+        data={data}
+        margin={{ top: 8, right: 12, bottom: 4, left: narrow ? 14 : 4 }}
+      >
         <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
         <XAxis
           dataKey={xKey}
           tick={{ fontSize: 11, fill: theme.axis }}
-          interval={0}
-          angle={data.length > 6 ? -25 : 0}
-          textAnchor={data.length > 6 ? 'end' : 'middle'}
-          height={data.length > 6 ? 60 : 30}
+          tickFormatter={(value) => shortTick(value, narrow)}
+          {...xAxis}
         />
         <YAxis
           tick={{ fontSize: 11, fill: theme.axis }}
           tickFormatter={(value) => formatAmount(value)}
-          width={70}
+          width={valueAxisWidth(narrow)}
         />
         <Tooltip
           formatter={(value) => formatAmount(Number(value))}
           {...tooltipStyle(theme)}
         />
-        <Legend wrapperStyle={{ fontSize: 12 }} />
+        {/* On a phone the rotated category names occupy the bottom of the
+            chart, and a legend placed there landed on top of them. Above the
+            plot it collides with nothing and is read before the bars rather
+            than after, which is if anything the better order. */}
+        <Legend
+          wrapperStyle={{ fontSize: 12 }}
+          verticalAlign={narrow ? 'top' : 'bottom'}
+        />
         {series.map((entry, index) => (
           <Bar
             key={entry.key}

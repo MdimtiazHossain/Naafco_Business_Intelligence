@@ -132,7 +132,7 @@ export default function PerformancePage() {
               key={option}
               type="button"
               onClick={() => setLevel(option)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+              className={`tap-y rounded-lg px-3 py-1.5 text-xs font-medium ${
                 level === option
                   ? 'bg-brand-600 text-white'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
@@ -146,7 +146,7 @@ export default function PerformancePage() {
               key={option}
               type="button"
               onClick={() => setLevel(option)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+              className={`tap-y rounded-lg px-3 py-1.5 text-xs font-medium ${
                 level === option
                   ? 'bg-brand-600 text-white'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'

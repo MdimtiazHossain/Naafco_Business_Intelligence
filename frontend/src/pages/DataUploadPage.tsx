@@ -743,7 +743,7 @@ export default function DataUploadPage({ initialTab }: { initialTab?: Tab } = {}
     <>
       <PageHeader title={t('upload.title')} description={t('upload.subtitle')} />
 
-      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="mb-4 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-5">
         <Stat label={t('upload.totalUploads')} value={summary?.total_uploads ?? 0} />
         <Stat label={t('upload.completed')} value={summary?.completed_imports ?? 0} />
         <Stat
@@ -791,7 +791,7 @@ export default function DataUploadPage({ initialTab }: { initialTab?: Tab } = {}
               setSelected(null);
               setOpenBatch(null);
             }}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+            className={`tap-y rounded-lg px-3 py-1.5 text-xs font-medium ${
               tab === key
                 ? 'bg-brand-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'

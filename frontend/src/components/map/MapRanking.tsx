@@ -67,7 +67,7 @@ export function MapRanking({
         <label className="flex items-center gap-1.5">
           <span className="sr-only">{t('map.rankBy')}</span>
           <select
-            className="input w-auto py-1 text-xs"
+            className="input tap-y w-auto py-1 text-xs"
             value={level}
             onChange={(event) => onLevelChange(event.target.value)}
             aria-label={t('map.rankBy')}

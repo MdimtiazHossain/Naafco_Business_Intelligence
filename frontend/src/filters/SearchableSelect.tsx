@@ -154,7 +154,20 @@ export function SearchableSelect({
       {open && (
         <div
           role="listbox"
-          className="absolute z-30 mt-1 w-full min-w-[14rem] rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900"
+          /*
+            The floor only applies from `sm` up.
+
+            `min-w-[14rem]` exists so a control in a narrow rail still opens a
+            list wide enough to read a customer name in. Below `sm` it did the
+            opposite: in a two-column filter grid on a 320px phone the cell was
+            135px and the panel 224px, so a control in the right-hand column
+            opened a list that ran off the right edge of the screen. Below `sm`
+            the panel is exactly as wide as its control, which is safe at every
+            width because the control is itself inside the page — and the filter
+            grid is one column there, so that control is the full width of the
+            card anyway.
+          */
+          className="absolute z-30 mt-1 w-full min-w-0 rounded-lg border border-slate-200 bg-white shadow-lg sm:min-w-[14rem] dark:border-slate-700 dark:bg-slate-900"
         >
           <div className="relative border-b border-slate-100 p-2 dark:border-slate-800">
             <Search

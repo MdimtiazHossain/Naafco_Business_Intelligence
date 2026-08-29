@@ -48,11 +48,17 @@ export function DateFilter() {
     <div className="flex flex-wrap items-center gap-2">
       <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
         <CalendarDays size={16} />
-        <span className="text-xs font-medium">{t('common.period')}</span>
+        {/* The word is dropped on a phone, not the meaning: the icon stays and
+            the select keeps its `aria-label`, so the control is still named for
+            a screen reader while the caption stops competing with the period
+            itself for a 320px line. */}
+        <span className="hidden text-xs font-medium sm:inline">{t('common.period')}</span>
       </div>
 
       <select
-        className="input w-auto min-w-[10rem] py-1.5"
+        // Narrower below `sm` so the period and the company filter can share
+        // one line on a phone instead of taking a row each.
+        className="input w-auto min-w-[8.5rem] py-1.5 sm:min-w-[10rem]"
         value={period.period}
         onChange={(event) => choose(event.target.value)}
         aria-label={t('common.period')}

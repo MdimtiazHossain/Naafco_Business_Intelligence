@@ -58,7 +58,7 @@ export default function AlertsPage() {
         <button
           type="button"
           onClick={() => setSeverity(undefined)}
-          className={`rounded-lg px-2.5 py-1 text-xs ${
+          className={`tap-y rounded-lg px-2.5 py-1 text-xs ${
             !severity ? 'bg-brand-600 text-white' : 'bg-slate-100 dark:bg-slate-800'
           }`}
         >
@@ -69,7 +69,7 @@ export default function AlertsPage() {
             key={value}
             type="button"
             onClick={() => setSeverity(value)}
-            className={`rounded-lg px-2.5 py-1 text-xs ${
+            className={`tap-y rounded-lg px-2.5 py-1 text-xs ${
               severity === value
                 ? 'bg-brand-600 text-white'
                 : `${severityClass(value)}`
@@ -83,7 +83,7 @@ export default function AlertsPage() {
           {t('alerts.category')}
         </span>
         <select
-          className="input w-auto py-1 text-xs"
+          className="input tap-y w-auto py-1 text-xs"
           value={category ?? ''}
           onChange={(event) => setCategory(event.target.value || undefined)}
         >
