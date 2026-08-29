@@ -21,9 +21,45 @@ export interface ModalProps {
   footer?: ReactNode;
   /** `lg` for forms, `md` for confirmations. */
   size?: 'md' | 'lg';
+  /**
+   * Where the panel sits. `center` is the dialog every form uses; `sheet` docks
+   * it to the right edge, full height.
+   *
+   * A sheet is right when the dialog is a *detail view* of a row in a table
+   * behind it — an invoice, opened from the invoice list. Keeping the table
+   * visible alongside is the point: a reader comparing three invoices reads the
+   * list and the detail together, and a centred dialog covers the row it came
+   * from.
+   *
+   * Behaviour is identical either way — Escape, the focus trap, the scroll lock
+   * and the overlay click are all shared, because they are what a dialog owes
+   * the user regardless of where it is drawn. Only the placement classes differ.
+   */
+  placement?: 'center' | 'sheet';
 }
 
 const WIDTH = { md: 'max-w-lg', lg: 'max-w-3xl' } as const;
+
+/**
+ * How the overlay lays its panel out, and how the panel is capped.
+ *
+ * The sheet stays a full-height column on a wide screen and falls back to the
+ * ordinary centred behaviour below `sm`: a 400px-wide phone has no room for a
+ * side panel, and pinning one to the edge there would leave a sliver of table
+ * nobody can read.
+ */
+const PLACEMENT = {
+  center: {
+    overlay: 'flex items-start justify-center p-3 sm:items-center sm:p-4',
+    panel: 'max-h-[calc(100dvh-2rem)] w-full my-auto',
+  },
+  sheet: {
+    overlay: 'flex items-start justify-center p-3 sm:items-stretch sm:justify-end sm:p-0',
+    panel:
+      'max-h-[calc(100dvh-2rem)] w-full my-auto'
+      + ' sm:my-0 sm:h-full sm:max-h-none sm:rounded-none sm:border-y-0 sm:border-r-0',
+  },
+} as const;
 
 export function Modal({
   open,
@@ -33,6 +69,7 @@ export function Modal({
   children,
   footer,
   size = 'md',
+  placement = 'center',
 }: ModalProps) {
   const t = useT();
   const panel = useRef<HTMLDivElement>(null);
@@ -89,7 +126,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-3 sm:items-center sm:p-4"
+      className={`fixed inset-0 z-50 overflow-y-auto bg-slate-900/50 ${PLACEMENT[placement].overlay}`}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -109,7 +146,7 @@ export function Modal({
           mobile browser's address bar is part of `vh` but not of the space the
           page can actually use.
         */
-        className={`card flex max-h-[calc(100dvh-2rem)] w-full flex-col ${WIDTH[size]} my-auto shadow-xl`}
+        className={`card flex flex-col ${WIDTH[size]} ${PLACEMENT[placement].panel} shadow-xl`}
       >
         <div className="card-header shrink-0">
           <div className="min-w-0">

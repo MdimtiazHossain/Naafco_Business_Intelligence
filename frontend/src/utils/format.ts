@@ -356,6 +356,17 @@ export function severityClass(severity: string): string {
 }
 
 const STATUS_STYLES: Record<string, string> = {
+  // The three credit statuses. Green for settled, amber for money still inside
+  // its terms, red for money that is late — the same severity reading the aging
+  // ramp uses, so a badge and a bar never disagree about how bad a row is.
+  //
+  // Note that CLEARED is the *green* one here while NOT_YET_DUE is amber. That
+  // is deliberate and is not the stock convention: on a receivable the good
+  // outcome is money collected, and an invoice inside its terms is not yet a
+  // problem but is still money out of the business.
+  CLEARED: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
+  NOT_YET_DUE: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+  OVER_DUE: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
   OUT_OF_STOCK: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
   CRITICAL: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
   WARNING: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300',

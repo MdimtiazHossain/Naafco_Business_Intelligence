@@ -160,6 +160,38 @@ export const STOCK_FILTERS: FilterLevel[] = [
 ];
 
 /**
+ * The Credit Control filter set — every filter that page offers, and only those.
+ *
+ * Same rule as `STOCK_FILTERS`: these are the ones `vw_credit_invoice_detail`
+ * can actually honour. An invoice states a company, a plant and a customer, and
+ * the customer carries its sub-territory; the sales hierarchy between company
+ * and sub-territory names columns the view does not have, so offering region or
+ * territory here would advertise a control that silently does nothing.
+ *
+ * There are no material filters either. A credit invoice is money owed against
+ * a *document*, not against an item — the source states no material code, and
+ * the invoice total cannot be decomposed into lines from anything this file
+ * carries.
+ *
+ * The last four are the credit-specific narrowings. Two are stored columns and
+ * two are derived **for the As On date**, which is why they travel with it: the
+ * same invoice is Not Yet Due in June and Over Due in August, so a status chip
+ * without the date it was resolved against would be meaningless.
+ *
+ * Order is the order the bar draws them: who owes it, then what kind of debt.
+ */
+export const CREDIT_FILTERS: FilterLevel[] = [
+  'company_code',
+  'plant_code',
+  'sub_territory_code',
+  'customer_code',
+  'credit_days',
+  'payment_mode',
+  'credit_status',
+  'aging_bucket',
+];
+
+/**
  * Every filter the URL may carry.
  *
  * This is what the provider reads out of the query string and what "clear
@@ -177,6 +209,7 @@ export const ALL_FILTERS: FilterLevel[] = [
     ...HIERARCHY_ORDER,
     ...INDEPENDENT_FILTERS,
     ...STOCK_FILTERS,
+    ...CREDIT_FILTERS,
   ]),
 ];
 
@@ -303,6 +336,21 @@ export const DASHBOARD_FILTERS: FilterLevel[] = [
  */
 export const STATIC_OPTIONS: Partial<Record<FilterLevel, string[]>> = {
   expiry_status: ['EXPIRED', 'EXPIRING_SOON', 'VALID', 'NO_EXPIRY'],
+  // The seven credit terms the business has described. A *filter* list may be
+  // fixed where the column is not: the ETL deliberately accepts an unexpected
+  // term and flags it rather than refusing a real invoice, so a term outside
+  // this list can exist in the data and simply has no chip to select it. That
+  // is the right trade — an options request for seven values a person can
+  // recite is a round trip for nothing.
+  credit_days: ['30', '45', '90', '150', '180', '190', '250'],
+  payment_mode: ['CASH', 'CREDIT'],
+  credit_status: ['NOT_YET_DUE', 'OVER_DUE', 'CLEARED'],
+  // The eight buckets, in reporting order — the same order the aging chart
+  // draws and the same list `app.etl.credit.AGING_BUCKETS` declares.
+  aging_bucket: [
+    'NOT_YET_DUE', '1-30', '31-60', '61-90',
+    '91-120', '121-180', '181-365', '365+',
+  ],
 };
 
 /** Backend level name -> the translation key for its label. */
@@ -325,6 +373,10 @@ export const FILTER_LABELS: Record<FilterLevel, string> = {
   material_group_code: 'filters.materialGroup',
   material_brand: 'filters.materialBrand',
   expiry_status: 'filters.expiryStatus',
+  credit_days: 'filters.creditDays',
+  payment_mode: 'filters.paymentMode',
+  credit_status: 'filters.creditStatus',
+  aging_bucket: 'filters.agingBucket',
 };
 
 export const DEFAULT_PERIOD = 'THIS_MONTH';

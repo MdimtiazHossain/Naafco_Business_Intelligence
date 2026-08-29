@@ -27,6 +27,7 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  ReceiptText,
   ShieldCheck,
   Sun,
   Target,
@@ -72,6 +73,14 @@ const MAIN_NAV: NavItem[] = [
   { to: '/performance', labelKey: 'nav.performance', icon: <TrendingUp size={18} />, section: 'performance' },
   { to: '/materials', labelKey: 'nav.materials', icon: <Package size={18} />, section: 'materials' },
   { to: '/customers', labelKey: 'nav.customers', icon: <Users size={18} />, section: 'customers' },
+  // Beside Customers, because the customer-money entry belongs next to the
+  // customer entry, and above Map so the operational reports stay one run.
+  {
+    to: '/credit-control',
+    labelKey: 'nav.creditControl',
+    icon: <ReceiptText size={18} />,
+    section: 'credit_control',
+  },
   { to: '/map', labelKey: 'nav.map', icon: <Map size={18} />, section: 'map' },
   { to: '/alerts', labelKey: 'nav.alerts', icon: <AlertTriangle size={18} />, section: 'alerts' },
   { to: '/data-quality', labelKey: 'nav.dataQuality', icon: <ClipboardCheck size={18} />, section: 'data_quality' },

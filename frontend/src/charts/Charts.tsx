@@ -65,14 +65,33 @@ export const STOCK_STATUS_COLORS: Record<StockStatus, { light: string; dark: str
   expired: { light: '#dc2626', dark: '#f87171' },
 };
 
-/** Aging buckets read best when the colour tracks severity. */
+/**
+ * Aging buckets read best when the colour tracks severity: green for money
+ * inside its terms, through yellow and orange, to deepening red for debt that
+ * has been owed for a year.
+ *
+ * **Eight buckets, and the keys are the backend's own.** This table used to hold
+ * six — `CURRENT`, `91-180`, `180+` — and had held them since revision 0020
+ * removed the Outstanding module that was its only reader, so every key in it
+ * named a bucket nothing produced. Credit Control returns receivables with a
+ * finer split (a 120-day debt and a 179-day debt are chased by different
+ * people), so the table is *replaced* rather than extended: not one of the old
+ * keys survives in the new scheme, and leaving them would be six more names
+ * outliving what they named.
+ *
+ * Keep these in step with `app.etl.credit.AGING_BUCKETS`. A bucket with no
+ * colour here falls back to the palette's default, which is legible but breaks
+ * the severity ramp — the one thing this table exists to provide.
+ */
 export const AGING_COLORS: Record<string, string> = {
-  CURRENT: '#059669',
+  NOT_YET_DUE: '#059669',
   '1-30': '#65a30d',
   '31-60': '#ca8a04',
   '61-90': '#ea580c',
-  '91-180': '#dc2626',
-  '180+': '#991b1b',
+  '91-120': '#f97316',
+  '121-180': '#dc2626',
+  '181-365': '#b91c1c',
+  '365+': '#7f1d1d',
 };
 
 /** How a chart's numbers should read. `stock` carries the MT unit with it. */

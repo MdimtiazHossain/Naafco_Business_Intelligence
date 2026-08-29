@@ -33,6 +33,10 @@ import type {
   LearningOptions,
   LearningSignal,
   TermAlias,
+  CreditControlSummary,
+  CreditCustomerPage,
+  CreditInvoiceDetail,
+  CreditInvoicePage,
   CustomersPage,
   DashboardResponse,
   DataCatalogue,
@@ -173,6 +177,53 @@ export const stockService = {
 export const targetService = {
   page: (query: ReportQuery & { below_percent?: number }) =>
     request<TargetPage>('/api/pages/target', { params: query }),
+};
+
+/**
+ * Credit Control: what is owed, how late it is, and against which invoices.
+ *
+ * Four reads rather than one page bundle plus client-side slicing, because the
+ * two tables are server-paged: a customer with four thousand invoices is not a
+ * payload the browser should be asked to hold so it can show twenty-five rows.
+ *
+ * `as_on_date` travels with every one of them. Overdue is a function of a date,
+ * and the derived columns — status, aging bucket, days overdue — are resolved
+ * against it server-side, so a page that sent it to one endpoint and not another
+ * would show a KPI strip and a table that disagreed.
+ */
+export interface CreditQuery extends ReportQuery {
+  as_on_date?: string;
+  due_soon_days?: number;
+  search?: string;
+  sort_by?: string;
+  sort_dir?: 'asc' | 'desc';
+  page?: number;
+  page_size?: number;
+}
+
+export const creditService = {
+  summary: (query: CreditQuery) =>
+    request<CreditControlSummary>('/api/reports/credit-control', { params: query }),
+  invoices: (query: CreditQuery) =>
+    request<CreditInvoicePage>('/api/reports/credit-control/invoices', {
+      params: query,
+    }),
+  customers: (query: CreditQuery) =>
+    request<CreditCustomerPage>('/api/reports/credit-control/customers', {
+      params: query,
+    }),
+  /**
+   * Addressed by company *and* invoice number: the number alone is unique only
+   * within its company, and two group companies each numbering from 1 is
+   * ordinary. Both are encoded — an invoice number is a source-supplied string
+   * and may legitimately contain a slash.
+   */
+  invoice: (companyCode: string, invoiceNo: string, query: CreditQuery) =>
+    request<CreditInvoiceDetail>(
+      `/api/reports/credit-control/invoices/${encodeURIComponent(companyCode)}`
+      + `/${encodeURIComponent(invoiceNo)}`,
+      { params: query },
+    ),
 };
 
 /**

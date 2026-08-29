@@ -34,6 +34,7 @@ export type SectionKey =
   | 'performance'
   | 'materials'
   | 'customers'
+  | 'credit_control'
   | 'alerts'
   | 'data_quality'
   | 'data_upload'
@@ -1153,6 +1154,25 @@ export interface GlobalFilters {
   storage_location_key?: string;
   /** One shelf-life bucket: EXPIRED, EXPIRING_SOON, VALID or NO_EXPIRY. */
   expiry_status?: string;
+  /**
+   * Exact credit term in days, as the invoice states it.
+   *
+   * Credit Control only. A sale carries no terms — an invoice does — so the
+   * backend skips this on any other view rather than returning nothing.
+   */
+  credit_days?: string;
+  /** How the invoice is settled: CASH or CREDIT. Credit Control only. */
+  payment_mode?: string;
+  /**
+   * NOT_YET_DUE, OVER_DUE or CLEARED.
+   *
+   * Derived rather than stored, and derived **for the reporting date**: the same
+   * invoice is Not Yet Due in June and Over Due in August. So this filter and
+   * the As On date are read together, and neither means much without the other.
+   */
+  credit_status?: string;
+  /** One aging bucket, derived for the reporting date exactly as the status is. */
+  aging_bucket?: string;
   // No `volume_unit`. A transaction line records one Total Volume and no unit
   // of measure, so there is no subset of a report to select.
 }
@@ -1332,6 +1352,184 @@ export interface StockPage extends PageResponse {
   by_material_brand: ToolResult;
   expiry: ToolResult;
   expiring: ToolResult;
+}
+
+/**
+ * Credit Control's page bundle: everything drawn above the table, in one read.
+ *
+ * One request rather than six, for the reason the dashboard is one: six queries
+ * against the same filtered rows can arrive at six slightly different answers if
+ * a load lands between them, and a KPI strip disagreeing with its own chart is
+ * worse than a slower page.
+ */
+export interface CreditControlSummary {
+  filters: Record<string, unknown>;
+  /** The date every derived figure below was resolved against. */
+  as_on_date: string;
+  due_soon_days: number;
+  metrics: CreditMetrics;
+  /** All eight buckets, in order, zeros included — an empty bucket is a fact. */
+  aging: CreditAgingRow[];
+  status: CreditStatusRow[];
+  top_overdue_customers: CreditTopOverdueRow[];
+  outstanding_trend: CreditTrend;
+  notes: CreditNote[];
+}
+
+export interface CreditMetrics {
+  invoice_count: number;
+  open_invoice_count: number;
+  overdue_invoice_count: number;
+  due_soon_invoice_count: number;
+  total_invoice_amount: number | null;
+  net_invoice_amount: number | null;
+  payment_amount: number | null;
+  discount_amount: number | null;
+  adjustment_amount: number | null;
+  outstanding_amount: number | null;
+  overdue_amount: number | null;
+  due_soon_amount: number | null;
+  /**
+   * Both `null` when their denominator is zero, never `0`. A portfolio with
+   * nothing outstanding has no overdue *proportion*, and rendering `0%` would
+   * read as good news about a book that does not exist.
+   */
+  payment_rate_percent: number | null;
+  overdue_share_percent: number | null;
+}
+
+export interface CreditAgingRow {
+  bucket: string;
+  invoice_count: number;
+  outstanding_amount: number;
+}
+
+export interface CreditStatusRow {
+  status: string;
+  invoice_count: number;
+  outstanding_amount: number;
+}
+
+export interface CreditTopOverdueRow {
+  customer_code: string;
+  customer_name: string | null;
+  overdue_amount: number | null;
+  invoice_count: number;
+}
+
+/**
+ * The outstanding trend, which this platform cannot currently measure.
+ *
+ * `state` is `NOT_AVAILABLE` and `points` is empty: the source states one
+ * aggregate payment per invoice and a single last payment date, so what was owed
+ * at a past month end is unrecorded. `reason` says so, and the page prints it
+ * rather than drawing an empty chart — a chart of assumed history looks exactly
+ * like a measured one.
+ */
+export interface CreditTrend {
+  state: 'NOT_AVAILABLE' | 'VALID_ZERO' | 'NO_DATA';
+  points: { period: string; outstanding_amount: number }[];
+  reason: string;
+}
+
+export interface CreditNote {
+  code: string;
+  count: number;
+  message: string;
+}
+
+/** One invoice row. The last three are derived for the request's As On date. */
+export interface CreditInvoiceRow {
+  credit_invoice_id: number;
+  company_code: string;
+  invoice_no: string;
+  plant_code: string | null;
+  plant_name: string | null;
+  customer_code: string;
+  customer_name: string | null;
+  sub_territory_code: string | null;
+  invoice_date: string;
+  credit_days: number;
+  due_date: string;
+  invoice_value: number;
+  return_amount: number;
+  net_invoice_amount: number;
+  payment_amount: number;
+  discount_amount: number;
+  adjustment_amount: number;
+  balance_amount: number;
+  payment_mode: string | null;
+  last_payment_date: string | null;
+  clearing_date: string | null;
+  clearing_document: string | null;
+  /** Pipe-separated, or `null`. Shown, never used to hide the row. */
+  data_quality_flag: string | null;
+  days_overdue: number | null;
+  credit_status: string;
+  /** `null` on a cleared invoice: aging measures money still owed. */
+  aging_bucket: string | null;
+}
+
+interface CreditPage {
+  filters: Record<string, unknown>;
+  as_on_date: string;
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface CreditInvoicePage extends CreditPage {
+  rows: CreditInvoiceRow[];
+}
+
+export interface CreditCustomerRow {
+  company_code: string;
+  customer_code: string;
+  customer_name: string | null;
+  sub_territory_code: string | null;
+  invoice_count: number;
+  total_invoice_amount: number | null;
+  net_invoice_amount: number | null;
+  payment_amount: number | null;
+  discount_amount: number | null;
+  adjustment_amount: number | null;
+  outstanding_amount: number | null;
+  overdue_amount: number | null;
+  overdue_invoice_count: number;
+  oldest_due_date: string | null;
+  last_payment_date: string | null;
+  /**
+   * This customer's share of the whole filtered portfolio, not of the page.
+   * `null` when nothing is outstanding. The Customer Master carries no credit
+   * limit, so a limit-versus-used exposure would have to be invented; a share of
+   * the portfolio is a real ratio of two figures this system holds.
+   */
+  credit_exposure_percent: number | null;
+}
+
+export interface CreditCustomerPage extends CreditPage {
+  rows: CreditCustomerRow[];
+  portfolio_outstanding: number;
+  page_outstanding: number;
+}
+
+export interface CreditInvoiceDetail {
+  as_on_date: string;
+  invoice: CreditInvoiceRow;
+  /**
+   * At most one payment event, and it may be undated. The source aggregates
+   * payments into one figure, so a schedule cannot be reconstructed and none is
+   * invented; where the file states no last payment date the event is reported
+   * without one rather than dropped, because the money is real.
+   */
+  payment_events: {
+    date: string | null;
+    amount: number | null;
+    kind: 'PAYMENT' | 'CLEARING';
+    note: string;
+  }[];
+  data_quality_flags: string[];
 }
 
 export interface TargetPage extends PageResponse {
