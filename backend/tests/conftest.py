@@ -183,6 +183,7 @@ def full_workbook(make_workbook):
 
 # Phase 2 fixtures: a migrated, master-seeded warehouse database.
 from conftest_phase2 import (  # noqa: E402,F401
+    credit_invoice_row,
     make_material,
     material_stock_row,
     sales_row,

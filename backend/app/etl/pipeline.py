@@ -52,7 +52,12 @@ from .errors import ErrorSpec
 from .mapping import MasterDataIndex, ensure_master_source_status
 from .readers import SourceReader, SourceRow, reader_for_file
 from .period import RECORD_PERIOD_RESOLVERS
-from .transforms import MEASURE_BUILDERS, PASSTHROUGH_COLUMNS, apply_volume
+from .transforms import (
+    DERIVATIONS,
+    MEASURE_BUILDERS,
+    PASSTHROUGH_COLUMNS,
+    apply_volume,
+)
 from . import volume as volume_mod
 from .volume import VolumeResult
 from .validation import DATE_FORMAT_AUTO, parse_date, parse_number
@@ -366,7 +371,26 @@ class EtlPipeline:
 
         if failed:
             return None
-        return self._resolve_period(cleaned, row)
+        resolved = self._resolve_period(cleaned, row)
+        if resolved is None:
+            return None
+        return self._apply_derivations(resolved)
+
+    def _apply_derivations(self, cleaned: dict[str, Any]) -> dict[str, Any]:
+        """Add a dataset's derived fields to the cleaned record.
+
+        Placed here, after cleaning and period resolution and before anything
+        reads the record, because the derived values are inputs to three later
+        steps rather than outputs of them: the business key may name them, the
+        ``dim_date`` entries are created from them, and the fact builder maps
+        them onto columns. Deriving inside the fact builder — the obvious place —
+        would be after all three.
+
+        A dataset with no derivation registered passes straight through, which is
+        every dataset but credit invoices.
+        """
+        derive = DERIVATIONS.get(self.spec.data_type)
+        return {**cleaned, **derive(cleaned)} if derive is not None else cleaned
 
     def _resolve_period(self, cleaned: dict[str, Any],
                         row: SourceRow) -> dict[str, Any] | None:
@@ -441,11 +465,17 @@ class EtlPipeline:
         # sales hierarchy. Driven off the fact table's own columns, like the
         # optional dimensions above, so no dataset needs a flag for it.
         #
-        # Keyed on ``plant_id`` rather than ``material_id``: since revision 0022
-        # every fact that names an item has a ``material_id``, and the sales and
-        # target datasets resolved theirs above. What distinguishes a stock
-        # position is that it is *located* — and a plant is what locates it.
-        if "plant_id" in fact_columns:
+        # Keyed on ``storage_location_id``, not ``material_id`` and not
+        # ``plant_id``. Since revision 0022 every fact naming an item has a
+        # ``material_id``, and the sales and target datasets resolved theirs
+        # above — so that column does not distinguish stock. ``plant_id`` did
+        # until ``fact_credit_invoice`` arrived, which names the plant that
+        # raised an invoice and states no storage location or material at all;
+        # keyed on the plant, every credit row would be rejected for missing
+        # masters it has no reason to carry. The storage location is what
+        # actually distinguishes a stock position: it is where the goods *are*,
+        # and no other fact records one.
+        if "storage_location_id" in fact_columns:
             stock = index.resolve_stock_masters(cleaned)
             if not stock.ok:
                 for error in stock.errors:
@@ -544,6 +574,14 @@ class EtlPipeline:
         # dated observation the file never made.
         if self.spec.date_field is not None:
             fact["date_id"] = to_date_id(cleaned[self.spec.date_field])
+        # A fact holding several dates names a column per date instead. Absent
+        # dates write nothing rather than a default: an invoice with no clearing
+        # date has genuinely not been cleared, and a placeholder would make an
+        # open receivable look settled.
+        for field_name, column in self.spec.date_columns:
+            value = cleaned.get(field_name)
+            if value is not None:
+                fact[column] = to_date_id(value)
         measures = MEASURE_BUILDERS[self.spec.data_type](cleaned)
 
         # Volume, where the fact table has somewhere to put it: the total the
@@ -839,6 +877,14 @@ class EtlPipeline:
 
             if self.spec.date_field is not None:
                 needed_dates.add(cleaned[self.spec.date_field])
+            # Every other date the row states needs its ``dim_date`` entry too,
+            # or the foreign key fails at the write — after the whole file has
+            # been read and validated, which is the most expensive moment to
+            # discover it.
+            for field_name, _column in self.spec.date_columns:
+                value = cleaned.get(field_name)
+                if value is not None:
+                    needed_dates.add(value)
             fact_rows.append(
                 self._build_fact_row(cleaned, dimensions, source_row, key, volume)
             )

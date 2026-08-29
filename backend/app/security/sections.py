@@ -53,6 +53,7 @@ class SectionKey:
     PERFORMANCE = "performance"
     MATERIALS = "materials"
     CUSTOMERS = "customers"
+    CREDIT_CONTROL = "credit_control"
     ALERTS = "alerts"
     DATA_QUALITY = "data_quality"
     DATA_UPLOAD = "data_upload"
@@ -331,6 +332,29 @@ SECTIONS: tuple[Section, ...] = (
         description="Customer analytics and sales performance.",
         api_prefixes=("/api/pages/customers",),
         actions=_REPORT_ACTIONS,
+    ),
+    Section(
+        key=SectionKey.CREDIT_CONTROL,
+        label="Credit Control",
+        route="/credit-control",
+        group=GROUP_REPORTING,
+        description=(
+            "Receivables: what each customer owes, how overdue it is, and "
+            "against which invoices."
+        ),
+        api_prefixes=("/api/reports/credit-control",),
+        actions=_REPORT_ACTIONS,
+        # Off by default for everyone except the roles that already see the
+        # whole company. What a customer owes is more sensitive than what they
+        # bought — it is the basis for stopping their supply — so it does not
+        # ride along with the Customers grant the way the other reporting
+        # sections ride along with each other.
+        #
+        # Not ``locked_to_roles``: an administrator may grant it to a regional
+        # manager, whose data scope then limits them to their own region's
+        # receivables. A hard ceiling would make that impossible, and collections
+        # are chased by the line managers rather than by head office.
+        default_roles=Role.UNRESTRICTED,
     ),
     Section(
         key=SectionKey.ALERTS,

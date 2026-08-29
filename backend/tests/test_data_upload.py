@@ -206,10 +206,13 @@ def test_the_catalogue_is_derived_from_the_real_schema(upload_client):
     assert {"dim_company", "dim_business_unit", "dim_sales_line", "dim_zone",
             "dim_region", "dim_area", "dim_unit", "dim_territory",
             "dim_sub_territory", "dim_material"} <= master_keys
-    # The Phase 2 fact data types, and only those. Collection and Outstanding
-    # went with their datasets in revision 0020: the catalogue is derived from
-    # `etl.datasets.DATASETS`, so an upload type cannot outlive its pipeline.
-    assert transactional_keys == {"sales", "material_stock", "target"}
+    # The Phase 2 fact data types, and only those. The catalogue is derived from
+    # `etl.datasets.DATASETS`, so an upload type can neither outlive its pipeline
+    # nor lag behind one: Collection and Outstanding left in revision 0020 and
+    # `credit_invoice` arrived in 0031, and this list followed both times without
+    # anybody editing it.
+    assert transactional_keys == {
+        "sales", "material_stock", "target", "credit_invoice"}
     assert body["limits"]["extensions"] == [".xlsx", ".csv"]
 
 

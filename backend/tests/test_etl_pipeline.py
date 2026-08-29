@@ -84,10 +84,16 @@ def test_the_retired_data_types_are_not_importable(seeded_engine) -> None:
     no dataset spec means no staging table, no fact table, no upload template
     and no route. A file naming one of them is refused by name rather than
     loaded into something that happens to accept it.
+
+    ``credit_invoice`` joined the list in revision 0031 and neither of these did.
+    That is the distinction worth keeping: receivables reporting returned against
+    a source that exists, while a *collection* extract still does not, so the
+    honest answer to a Collection file is still that this system cannot load one.
     """
     from app.etl.datasets import DATA_TYPES, get_dataset
 
-    assert set(DATA_TYPES) == {"sales", "material_stock", "target"}
+    assert set(DATA_TYPES) == {
+        "sales", "material_stock", "target", "credit_invoice"}
     for data_type in ("collection", "outstanding"):
         with pytest.raises(ValueError):
             get_dataset(data_type)

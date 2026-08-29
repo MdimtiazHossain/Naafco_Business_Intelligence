@@ -166,10 +166,101 @@ def build_target_measures(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def derive_credit_invoice(record: dict[str, Any]) -> dict[str, Any]:
+    """Compute a credit invoice's stable derivations into the cleaned record.
+
+    This runs *before* the fact row is assembled, and that ordering is the whole
+    reason it is a separate step rather than part of the measure builder. Two
+    consumers need ``due_date`` as a real date and neither is the builder: the
+    pipeline collects every date the row states so ``ensure_dates_exist`` can
+    create the ``dim_date`` entries the foreign keys need, and the date-column
+    mapping then turns it into ``due_date_id``. A due date computed inside the
+    builder would arrive after both.
+
+    The arithmetic itself is not here. :mod:`app.etl.credit` owns it, so the
+    loader, the reporting views and any future caller cannot come to different
+    answers about what a balance is — see that module for why the date-relative
+    figures are deliberately *not* among the derivations.
+
+    The file's own due date and balance are read only to be contradicted: where
+    either disagrees with what the row's other columns imply, the derived value
+    wins and the disagreement is recorded on ``data_quality_flag``.
+    """
+    from . import credit
+
+    invoice_date = record.get("invoice_date")
+    credit_days = record.get("credit_days")
+    if invoice_date is None or credit_days is None:
+        # Both are required fields, so a row reaching here without them has
+        # already been rejected; returning nothing keeps this a pure function
+        # rather than raising on a row the pipeline is finished with.
+        return {}
+
+    derived = credit.derive(
+        invoice_date=invoice_date,
+        credit_days=int(credit_days),
+        invoice_value=_dec(record.get("invoice_value")),
+        return_amount=_dec(record.get("return_amount")),
+        payment_amount=_dec(record.get("payment_amount")),
+        discount_amount=_dec(record.get("discount_amount")),
+        adjustment_amount=_dec(record.get("adjustment_amount")),
+        stated_due_date=record.get("due_date"),
+        stated_balance=_dec(record.get("balance_amount"), None),
+    )
+    return {
+        "due_date": derived.due_date,
+        "net_invoice_amount": derived.net_invoice_amount,
+        "balance_amount": derived.balance_amount,
+        "data_quality_flag": derived.data_quality_flag,
+    }
+
+
+def build_credit_invoice_measures(record: dict[str, Any]) -> dict[str, Any]:
+    """The amounts a credit invoice carries, as stated and as derived.
+
+    Every source amount defaults to zero rather than NULL: an invoice states a
+    value and the four deductions describe what has been posted against it, so
+    an absent deduction means "none posted", not "unknown". That is the same
+    reasoning the four stock categories follow, and the opposite of the sales
+    volume rule where an absent figure genuinely is unknown.
+
+    ``net_invoice_amount``, ``balance_amount`` and ``data_quality_flag`` are read
+    back from the record rather than recomputed, because
+    :func:`derive_credit_invoice` has already put them there. Recomputing would
+    be a second implementation of the same arithmetic, which is the one thing
+    this module and :mod:`app.etl.credit` exist to avoid between them.
+    """
+    # Validated as a number so a non-numeric term is rejected with the same
+    # message as any other bad figure, but stored as an integer: credit days are
+    # whole days, and the column is an INTEGER that will not take a Decimal.
+    credit_days = record.get("credit_days")
+    return {
+        "credit_days": None if credit_days is None else int(credit_days),
+        "invoice_value": _dec(record.get("invoice_value")),
+        "return_amount": _dec(record.get("return_amount")),
+        "payment_amount": _dec(record.get("payment_amount")),
+        "discount_amount": _dec(record.get("discount_amount")),
+        "adjustment_amount": _dec(record.get("adjustment_amount")),
+        "net_invoice_amount": _dec(record.get("net_invoice_amount")),
+        "balance_amount": _dec(record.get("balance_amount")),
+        "data_quality_flag": record.get("data_quality_flag"),
+        "payment_mode": record.get("payment_mode"),
+    }
+
+
 MEASURE_BUILDERS = {
     "sales": build_sales_measures,
     "material_stock": build_material_stock_measures,
     "target": build_target_measures,
+    "credit_invoice": build_credit_invoice_measures,
+}
+
+#: Derivations that must run on the cleaned record *before* the fact row is
+#: built, keyed by data type. A dataset with no entry needs none, which is every
+#: dataset but one: credit invoices are the only source here that states terms
+#: rather than the date those terms imply.
+DERIVATIONS = {
+    "credit_invoice": derive_credit_invoice,
 }
 
 #: Extra pass-through columns each fact keeps for traceability.
@@ -195,6 +286,12 @@ PASSTHROUGH_COLUMNS = {
                        "material_code", "material_group_code",
                        "material_brand_code"),
     "target": ("material_code", "customer_code", "sales_force_code"),
+    # Company and invoice number are the row's identity and what the business
+    # key is built from; the customer and plant codes travel beside the master
+    # links resolved from them, so an invoice still says who it was raised
+    # against after the Customer Master is corrected.
+    "credit_invoice": ("company_code", "invoice_no", "customer_code",
+                       "plant_code", "clearing_document"),
 }
 
 __all__ = [
@@ -202,5 +299,6 @@ __all__ = [
     "achievement_percent",
     "growth_percent",
     "MEASURE_BUILDERS",
+    "DERIVATIONS",
     "PASSTHROUGH_COLUMNS",
 ]

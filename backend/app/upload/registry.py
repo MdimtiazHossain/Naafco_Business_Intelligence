@@ -514,6 +514,7 @@ _TRANSACTION_LABELS = {
     "sales": "Sales",
     "material_stock": "Material Stock",
     "target": "Target",
+    "credit_invoice": "Credit Invoice",
 }
 
 
@@ -758,7 +759,7 @@ DISPLAY_GROUPS: tuple[dict[str, str], ...] = (
     {"key": "MATERIAL", "label": "Material",
      "description": "Plants, storage locations and the material master."},
     {"key": "TRANSACTIONS", "label": "Transactions",
-     "description": "Sales, material stock and target facts."},
+     "description": "Sales, material stock, target and credit invoice facts."},
 )
 
 #: Which group each upload type is listed under.
@@ -797,6 +798,7 @@ GROUP_BY_KEY: dict[str, str] = {
     "sales": "TRANSACTIONS",
     "material_stock": "TRANSACTIONS",
     "target": "TRANSACTIONS",
+    "credit_invoice": "TRANSACTIONS",
 }
 
 
@@ -825,7 +827,7 @@ CATEGORIES: tuple[dict[str, Any], ...] = (
         "key": UploadCategory.TRANSACTIONAL,
         "label": "Transactional Data",
         "description": (
-            "Sales, material stock and target facts. Every row is validated "
+            "Sales, material stock, target and credit invoice facts. Every row is validated "
             "against the master data before it reaches the warehouse."
         ),
     },

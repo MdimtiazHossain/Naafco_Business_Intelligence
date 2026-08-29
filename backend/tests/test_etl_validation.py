@@ -222,19 +222,30 @@ def test_gross_margin_handles_zero_net_sales() -> None:
     assert gross_margin_percent(1000, 250) == Decimal(25)
 
 
-def test_no_receivables_measures_remain() -> None:
-    """Aging and overdue arithmetic left with the Outstanding module (0020).
+def test_receivables_arithmetic_does_not_live_in_transforms() -> None:
+    """Aging and overdue arithmetic is back, and deliberately not back *here*.
 
-    Asserted rather than merely deleted: these were the only functions that
-    measured one date against another to classify money owed, and a future
-    reader looking for them should find the reason they are gone.
+    Revision 0020 removed these functions with the Outstanding module. Revision
+    0031 reinstated receivables against a source that exists, so the arithmetic
+    returned — but to :mod:`app.etl.credit`, which owns it alone so that the
+    loader, the reporting views and the endpoints cannot come to three different
+    answers about how late an invoice is. A copy reappearing in this module would
+    be exactly the drift that module exists to prevent.
+
+    ``build_outstanding_measures`` and ``build_collection_measures`` stay absent
+    for the original reason: ``fact_outstanding`` and ``fact_collection`` are
+    still gone, and no source produces either.
     """
-    from app.etl import transforms
+    from app.etl import credit, transforms
 
     for name in ("aging_bucket", "days_overdue_between", "AGING_BUCKETS",
                  "build_outstanding_measures", "build_collection_measures"):
         assert not hasattr(transforms, name), name
-    assert set(transforms.MEASURE_BUILDERS) == {"sales", "material_stock", "target"}
+    # ...and every one of the first three does exist, once, over here.
+    for name in ("aging_bucket", "days_overdue", "AGING_BUCKETS"):
+        assert hasattr(credit, name), name
+    assert set(transforms.MEASURE_BUILDERS) == {
+        "sales", "material_stock", "target", "credit_invoice"}
 
 
 def test_material_stock_measures_are_taken_verbatim() -> None:

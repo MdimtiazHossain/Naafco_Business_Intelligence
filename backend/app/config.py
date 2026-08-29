@@ -84,6 +84,14 @@ class Settings:
     #: threshold to inherit: 90 days is a starting point, not a rule, and an
     #: agent question can override it for one answer. Nothing hard-codes it.
     stock_expiring_soon_days: int = int(os.getenv("STOCK_EXPIRING_SOON_DAYS", "90"))
+    #: How near a due date has to be for a receivable to count as Due Soon.
+    #:
+    #: Configuration rather than a constant for the same reason the stock horizon
+    #: is: "soon" is a collections policy, not a fact about the data, and a
+    #: business chasing on a weekly cycle means something different by it than
+    #: one chasing monthly. Overridable per request, so a user can widen the
+    #: window without an administrator changing it for everybody.
+    credit_due_soon_days: int = int(os.getenv("CREDIT_DUE_SOON_DAYS", "7"))
 
     # --- ETL ----------------------------------------------------------------
     #: Rows per bulk insert / upsert statement.

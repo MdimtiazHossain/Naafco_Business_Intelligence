@@ -134,6 +134,21 @@ class DatasetSpec:
     #: as it is in most spreadsheet exports — the fallback key identifies the
     #: line by what distinguishes it: invoice, material and batch.
     preferred_key_fields: tuple[str, ...] | None = None
+    #: Additional ``(cleaned field, fact column)`` pairs for a dataset whose fact
+    #: table holds more than one date.
+    #:
+    #: ``date_field`` above names the single *reporting* date and lands in a
+    #: column called ``date_id``, which is all a sale, a target or a stock
+    #: position needs. A credit invoice is the exception: it carries an invoice
+    #: date, a derived due date and two optional settlement dates, each in its own
+    #: column, and no one of them is "the" reporting date — you report on invoices
+    #: raised in a period, but a row is *overdue* by reference to a different one.
+    #:
+    #: Every date named here is created in ``dim_date`` alongside the reporting
+    #: date, so the foreign keys resolve. A pair whose field is absent from the
+    #: cleaned record writes nothing rather than a default, because an invoice
+    #: with no clearing date has genuinely not been cleared.
+    date_columns: tuple[tuple[str, str], ...] = ()
     #: Organisational levels this dataset may carry.
     org_levels: tuple[str, ...] = ORG_LEVELS
     #: True when a valid Material Code is mandatory.
@@ -550,7 +565,146 @@ TARGET = DatasetSpec(
 )
 
 
-DATASETS: tuple[DatasetSpec, ...] = (SALES, MATERIAL_STOCK, TARGET)
+# A credit invoice states terms, not consequences. The file says an invoice was
+# raised on a date with ninety days to pay; when it falls due, how late it is and
+# whether it is still open are all *derived* — the first once, by the ETL, and
+# the last two at read time, because they depend on the day you ask. See
+# ``app.etl.credit`` for that split and why it matters.
+#
+# ``org_levels=()``: an invoice names a customer, and which territory that
+# customer sits in is the Customer Master's answer. Running the org resolver here
+# would reject every row for carrying no region — a code its source has no reason
+# to state — exactly as it would for material stock.
+CREDIT_INVOICE = DatasetSpec(
+    data_type="credit_invoice",
+    staging_table="stg_credit_invoice",
+    fact_table="fact_credit_invoice",
+    # The invoice date is the reporting date: "invoices raised this quarter" is
+    # the period question this dataset answers. The other three dates are in
+    # ``date_columns``, and the fact has no ``date_id`` for this one to land in —
+    # it lands in ``invoice_date_id`` with the rest, so that every date on the row
+    # is reached by the same name it has in the file.
+    date_field="invoice_date",
+    date_columns=(
+        ("invoice_date", "invoice_date_id"),
+        ("due_date", "due_date_id"),
+        ("last_payment_date", "last_payment_date_id"),
+        ("clearing_date", "clearing_date_id"),
+    ),
+    org_levels=(),
+    # No material. A credit invoice is money owed against a document, not against
+    # an item: the source states no material code, and the invoice total is not
+    # decomposable into lines from anything this file carries.
+    material_required=False,
+    # Company plus invoice number, and nothing else. An ERP has already decided
+    # what an invoice *is*, so its number is the identity — there is no
+    # attribute-reconstructed fallback here of the kind sales needs, because
+    # there is no line grain below the document to reconstruct.
+    business_key_fields=("company_code", "invoice_no"),
+    description=(
+        "Credit invoices: what was billed, what has been posted against it, and "
+        "the terms that decide when it falls due."
+    ),
+    fields=(
+        FieldSpec("company_code", FieldKind.CODE, ("company", "company id", "bukrs"),
+                  required=True, description="Company code that raised the invoice."),
+        FieldSpec("invoice_no", FieldKind.CODE,
+                  ("invoice", "invoice number", "bill no", "billing document",
+                   "invoice_number", "vbeln"),
+                  required=True, normalise_for_key=True,
+                  description="Invoice number; unique within its company, not "
+                              "globally."),
+        FieldSpec("customer_code", FieldKind.CODE,
+                  ("customer", "customer id", "dealer code", "party code",
+                   "kunnr"),
+                  required=True,
+                  description="Who owes it. Resolved against the Customer "
+                              "Master; a code the master lacks is a deferred "
+                              "mapping, not a rejection."),
+        FieldSpec("plant_code", FieldKind.CODE, ("plant", "plant id", "werks"),
+                  description="Plant the invoice was raised from. Optional: it "
+                              "describes the invoice, and nothing is keyed on it."),
+        FieldSpec("invoice_date", FieldKind.DATE,
+                  ("invoice dt", "billing date", "document date", "bill date",
+                   "invoice_dt", "fkdat"),
+                  required=True,
+                  description="When the invoice was raised. The reporting date, "
+                              "and the date the credit period runs from."),
+        FieldSpec("credit_days", FieldKind.NUMERIC,
+                  ("credit day", "credit term", "credit terms", "payment terms",
+                   "terms", "credit period"),
+                  required=True, allow_negative=False,
+                  description="Days allowed to pay. Not constrained to the seven "
+                              "known values — an unexpected term is flagged and "
+                              "kept, because refusing it on an assumption we "
+                              "have not verified would lose a real invoice."),
+        FieldSpec("invoice_value", FieldKind.NUMERIC,
+                  ("invoice amount", "gross amount", "bill value", "bill amount",
+                   "invoice_amt"),
+                  required=True, default_numeric=0,
+                  description="What was billed, before anything posted against it."),
+        FieldSpec("return_amount", FieldKind.NUMERIC,
+                  ("return", "returns", "sales return", "return value"),
+                  default_numeric=0,
+                  description="Goods returned against this invoice. Deducted to "
+                              "give the net invoice amount."),
+        FieldSpec("payment_amount", FieldKind.NUMERIC,
+                  ("payment", "paid", "paid amount", "collection", "receipt"),
+                  default_numeric=0,
+                  description="Total posted in payment. One aggregate figure — "
+                              "the source states no individual transactions, so "
+                              "no payment history is reconstructed from it."),
+        FieldSpec("discount_amount", FieldKind.NUMERIC,
+                  ("discount", "disc", "cash discount", "discount value"),
+                  default_numeric=0,
+                  description="Discount allowed against the invoice."),
+        FieldSpec("adjustment_amount", FieldKind.NUMERIC,
+                  ("adjustment", "adj", "adjustments", "credit note",
+                   "adjustment value"),
+                  default_numeric=0,
+                  description="Anything else posted against the invoice. "
+                              "Negative values are accepted: whether a credit "
+                              "note arrives this way is not established, and a "
+                              "row that over-adjusts is flagged rather than "
+                              "refused."),
+        FieldSpec("payment_mode", FieldKind.TEXT,
+                  ("mode", "payment type", "pay mode", "payment_method"),
+                  description="Cash or Credit, as the file states it. Not "
+                              "constrained, for the same reason credit days is "
+                              "not."),
+        FieldSpec("last_payment_date", FieldKind.DATE,
+                  ("last payment", "last paid date", "last receipt date",
+                   "last_pay_date"),
+                  description="When the most recent payment was posted. Absent "
+                              "on an invoice nothing has been paid against, "
+                              "which is a real state and not a missing value."),
+        FieldSpec("clearing_date", FieldKind.DATE,
+                  ("clearing dt", "cleared date", "clearance date", "augdt"),
+                  description="When the invoice was cleared in the source system."),
+        FieldSpec("clearing_document", FieldKind.CODE,
+                  ("clearing doc", "clearing document no", "augbl"),
+                  description="The document that cleared it. Indexed, because "
+                              "finance searches by it."),
+        # Read only to be contradicted. Where either disagrees with what the
+        # row's own columns imply, the derived value wins and the disagreement is
+        # recorded — a source computing its due date from a term it did not send
+        # us must not be able to move a figure this system reports.
+        FieldSpec("due_date", FieldKind.DATE,
+                  ("due dt", "payment due date", "net due date", "due"),
+                  description="The file's own due date, if it states one. Never "
+                              "stored: invoice date + credit days wins, and a "
+                              "disagreement becomes DUE_DATE_MISMATCH."),
+        FieldSpec("balance_amount", FieldKind.NUMERIC,
+                  ("balance", "outstanding", "outstanding amount", "due amount"),
+                  description="The file's own balance, if it states one. Never "
+                              "stored as given: the derived balance wins, and a "
+                              "disagreement becomes BALANCE_MISMATCH."),
+        _COMMON_SOURCE_ID,
+    ),
+)
+
+
+DATASETS: tuple[DatasetSpec, ...] = (SALES, MATERIAL_STOCK, TARGET, CREDIT_INVOICE)
 DATASET_BY_TYPE: dict[str, DatasetSpec] = {d.data_type: d for d in DATASETS}
 DATA_TYPES: tuple[str, ...] = tuple(d.data_type for d in DATASETS)
 
@@ -594,6 +748,7 @@ __all__ = [
     "SALES",
     "MATERIAL_STOCK",
     "TARGET",
+    "CREDIT_INVOICE",
     "DATASETS",
     "DATASET_BY_TYPE",
     "DATA_TYPES",

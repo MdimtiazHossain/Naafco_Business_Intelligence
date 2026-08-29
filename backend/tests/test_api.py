@@ -77,7 +77,8 @@ def test_health(client) -> None:
 
 def test_datasets_endpoint_documents_business_keys(client) -> None:
     body = client.get("/api/etl/datasets").json()
-    assert set(body["data_types"]) == {"sales", "material_stock", "target"}
+    assert set(body["data_types"]) == {
+        "sales", "material_stock", "target", "credit_invoice"}
     sales = next(d for d in body["datasets"] if d["data_type"] == "sales")
     assert sales["business_key"] == (
         "company_code + invoice_no + invoice_line_no + source_system when "

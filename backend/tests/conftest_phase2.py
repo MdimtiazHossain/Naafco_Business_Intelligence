@@ -239,6 +239,36 @@ def material_stock_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
+def credit_invoice_row(**overrides: Any) -> dict[str, Any]:
+    """A valid credit invoice: what was billed, what was posted, and the terms.
+
+    The headers are the ones a real export uses rather than the canonical field
+    names, so the alias resolution is exercised by every test that builds a row
+    instead of only by the test that checks aliases.
+
+    The row states no due date and no balance. Both are derived — and the file's
+    own values, where it supplies them, are read only to be contradicted — so a
+    fixture that stated them would be asserting the derivation against itself.
+    The tests that care pass them explicitly to provoke a mismatch flag.
+    """
+    row = {
+        "Company": "C001",
+        "Invoice No": "INV-0001",
+        "Customer": "CUST-001",
+        "Plant": "PL01",
+        "Invoice Date": "2026-03-12",
+        "Credit Days": 90,
+        "Invoice Value": 100000,
+        "Return": 0,
+        "Payment": 25000,
+        "Discount": 0,
+        "Adjustment": 0,
+        "Payment Mode": "CREDIT",
+    }
+    row.update(overrides)
+    return row
+
+
 def target_row(**overrides: Any) -> dict[str, Any]:
     """A valid target row: a month, a financial year, a territory and a material.
 

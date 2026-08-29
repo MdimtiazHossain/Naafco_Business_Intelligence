@@ -771,16 +771,182 @@ class FactTarget(Base, FullOrgDimensionMixin, FactAuditMixin, VoidableMixin):
     )
 
 
+class StgCreditInvoice(Base, StagingMixin):
+    """Credit invoices as the file supplied them.
+
+    No ``OrgCodeMixin``. A credit invoice states a customer, and which region or
+    territory that customer sits in is the Customer Master's answer, not this
+    file's — reached through ``dim_customer.sub_territory_code`` the same way
+    every other customer-keyed report reaches it. Carrying org columns here
+    would invite a second mapping that no source states, which is the mistake
+    ``stg_material_stock`` avoids for the same reason.
+
+    ``due_date`` and ``balance_amount`` are staged even though both are derived
+    downstream. The file may state them; where it does, the derived value wins
+    and the disagreement is recorded as a data-quality flag, so what the source
+    claimed has to survive long enough to be compared.
+    """
+
+    __tablename__ = "stg_credit_invoice"
+
+    company_code: Mapped[str | None] = mapped_column(CODE)
+    invoice_no: Mapped[str | None] = mapped_column(CODE)
+    plant_code: Mapped[str | None] = mapped_column(CODE)
+    customer_code: Mapped[str | None] = mapped_column(CODE)
+    invoice_date: Mapped[str | None] = mapped_column(String(64))
+    credit_days: Mapped[str | None] = mapped_column(String(64))
+    invoice_value: Mapped[str | None] = mapped_column(String(64))
+    return_amount: Mapped[str | None] = mapped_column(String(64))
+    payment_amount: Mapped[str | None] = mapped_column(String(64))
+    discount_amount: Mapped[str | None] = mapped_column(String(64))
+    adjustment_amount: Mapped[str | None] = mapped_column(String(64))
+    payment_mode: Mapped[str | None] = mapped_column(String(64))
+    last_payment_date: Mapped[str | None] = mapped_column(String(64))
+    clearing_date: Mapped[str | None] = mapped_column(String(64))
+    clearing_document: Mapped[str | None] = mapped_column(CODE)
+    #: What the file claimed, kept only to be checked against what we derive.
+    due_date: Mapped[str | None] = mapped_column(String(64))
+    balance_amount: Mapped[str | None] = mapped_column(String(64))
+    source_transaction_id: Mapped[str | None] = mapped_column(SOURCE_ID)
+
+    __table_args__ = (
+        Index("ix_stg_credit_invoice_batch", "import_batch_id", "validation_status"),
+    )
+
+
+class FactCreditInvoice(Base, FactAuditMixin, VoidableMixin):
+    """One credit invoice and what is still owed on it.
+
+    **Receivables reporting returns here.** Revision 0020 removed
+    ``fact_outstanding`` and ``fact_collection`` because no source extract was
+    ever produced for either, and reporting on money that nothing could measure
+    was worse than saying the platform did not track it. This table is that
+    decision reversed against a source that exists: the Credit Invoice file
+    states the invoice, its terms and every amount posted against it, so what is
+    outstanding is read rather than estimated.
+
+    **The grain is one invoice, not one posting.** The source aggregates
+    payments into a single ``payment_amount`` plus a Last Payment Date, so this
+    table cannot reconstruct a payment history and does not pretend to — the
+    detail panel shows one payment event and says why. A future source stating
+    individual transactions would be a second table beside this one, not more
+    columns on it.
+
+    **Stable derivations are stored; date-relative ones are not.**
+    ``net_invoice_amount``, ``balance_amount`` and ``due_date_id`` depend only on
+    what the file said, so the ETL computes them once. Days overdue, aging
+    bucket and credit status depend on the day you ask, so they live in the
+    reporting views instead — a ``days_overdue`` frozen at upload is wrong the
+    next morning, and it is precisely because they are computed that
+    ``as_on_date`` can be a real request parameter. See :mod:`app.etl.credit`.
+
+    **A balance is never floored.** An over-adjusted invoice keeps its negative
+    figure and carries ``BALANCE_NEGATIVE``; it reads as Cleared for status and
+    is excluded from aging, and it is listed on the Data Quality page rather
+    than quietly corrected. The source's numbers are never overwritten.
+    """
+
+    __tablename__ = "fact_credit_invoice"
+
+    credit_invoice_id: Mapped[int] = mapped_column(
+        SURROGATE_PK, primary_key=True, autoincrement=True
+    )
+
+    #: Resolved master rows. Nullable for the reason ``dim_customer`` is nullable
+    #: on every other fact: a customer code the master has not received yet is a
+    #: deferred mapping, not a rejected invoice.
+    customer_id: Mapped[int | None] = fk_column("dim_customer.customer_id")
+    plant_id: Mapped[int | None] = fk_column("dim_plant.plant_id")
+
+    #: The codes as the file stated them, kept beside the resolved keys so a row
+    #: still says what it came from after a master record is renamed.
+    company_code: Mapped[str] = mapped_column(CODE, nullable=False)
+    invoice_no: Mapped[str] = mapped_column(CODE, nullable=False)
+    plant_code: Mapped[str | None] = mapped_column(CODE)
+    customer_code: Mapped[str] = mapped_column(CODE, nullable=False)
+
+    invoice_date_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dim_date.date_id"), nullable=False
+    )
+    #: Invoice date + credit days. Derived, never the file's own column: a source
+    #: computing its due date from a term it did not send us could otherwise move
+    #: a figure this system reports with no record of having done so.
+    due_date_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dim_date.date_id"), nullable=False
+    )
+    #: Both nullable and both genuinely absent on an unpaid invoice.
+    last_payment_date_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("dim_date.date_id")
+    )
+    clearing_date_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("dim_date.date_id")
+    )
+
+    #: No CHECK constraint. The seven credit terms the business has described are
+    #: what we have been told about, not a guarantee about what the source will
+    #: send; an unexpected value is flagged and kept, because refusing a row on
+    #: an unverified assumption loses a real invoice.
+    credit_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Likewise unconstrained. Whether a credit note ever arrives as a negative
+    #: adjustment is not yet established, so every amount is recorded as stated
+    #: and inconsistency is reported rather than rejected.
+    invoice_value: Mapped[float] = mapped_column(MONEY, nullable=False, default=0)
+    return_amount: Mapped[float] = mapped_column(MONEY, nullable=False, default=0)
+    payment_amount: Mapped[float] = mapped_column(MONEY, nullable=False, default=0)
+    discount_amount: Mapped[float] = mapped_column(MONEY, nullable=False, default=0)
+    adjustment_amount: Mapped[float] = mapped_column(MONEY, nullable=False, default=0)
+
+    payment_mode: Mapped[str | None] = mapped_column(String(16))
+    clearing_document: Mapped[str | None] = mapped_column(CODE)
+
+    #: invoice_value − return_amount.
+    net_invoice_amount: Mapped[float] = mapped_column(MONEY, nullable=False, default=0)
+    #: net − payment − discount − adjustment. Not floored; see the class note.
+    balance_amount: Mapped[float] = mapped_column(MONEY, nullable=False, default=0)
+
+    #: Pipe-separated flags from :mod:`app.etl.credit`, or NULL when the row is
+    #: consistent. A row can be wrong in more than one way and a reviewer needs
+    #: to see all of them, so these concatenate rather than one winning.
+    data_quality_flag: Mapped[str | None] = mapped_column(String(128))
+
+    __table_args__ = (
+        UniqueConstraint("business_key", name="uq_fact_credit_invoice_business_key"),
+        # An invoice number is unique within the company that raised it, not
+        # globally: two group companies numbering from 1 each is ordinary, and a
+        # global constraint would reject the second one's whole file.
+        UniqueConstraint(
+            "company_code", "invoice_no", name="uq_fact_credit_invoice_company_invoice"
+        ),
+        Index("ix_fact_credit_invoice_company", "company_code"),
+        Index("ix_fact_credit_invoice_invoice_no", "invoice_no"),
+        Index("ix_fact_credit_invoice_customer", "customer_code"),
+        Index("ix_fact_credit_invoice_customer_id", "customer_id"),
+        Index("ix_fact_credit_invoice_plant", "plant_code"),
+        Index("ix_fact_credit_invoice_plant_id", "plant_id"),
+        Index("ix_fact_credit_invoice_invoice_date", "invoice_date_id"),
+        # The one index the whole module leans on: every aging figure, every
+        # overdue KPI and the status filter are a comparison against this column
+        # and the reporting date.
+        Index("ix_fact_credit_invoice_due_date", "due_date_id"),
+        Index("ix_fact_credit_invoice_clearing_doc", "clearing_document"),
+        Index("ix_fact_credit_invoice_quality", "data_quality_flag"),
+        Index("ix_fact_credit_invoice_batch", "import_batch_id"),
+        Index("ix_fact_credit_invoice_source_system", "source_system"),
+    )
+
+
 STAGING_MODEL_BY_DATA_TYPE = {
     "sales": StgSales,
     "material_stock": StgMaterialStock,
     "target": StgTarget,
+    "credit_invoice": StgCreditInvoice,
 }
 
 FACT_MODEL_BY_DATA_TYPE = {
     "sales": FactSales,
     "material_stock": FactMaterialStock,
     "target": FactTarget,
+    "credit_invoice": FactCreditInvoice,
 }
 
 FUTURE_READY_DIMENSIONS = {
@@ -798,10 +964,12 @@ __all__ = [
     "StgSales",
     "StgMaterialStock",
     "StgTarget",
+    "StgCreditInvoice",
     "VoidableMixin",
     "FactSales",
     "FactMaterialStock",
     "FactTarget",
+    "FactCreditInvoice",
     "STAGING_MODEL_BY_DATA_TYPE",
     "FACT_MODEL_BY_DATA_TYPE",
     "FUTURE_READY_DIMENSIONS",
