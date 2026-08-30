@@ -817,7 +817,11 @@ export default function TargetManagementPage() {
         <>
           {!selectedPlan ? (
             <Section title={t('targetMgmt.countryTitle')} className="mt-4">
-              <EmptyState message={t('targetMgmt.pickPlan')} />
+              <EmptyState
+                message={t('targetMgmt.pickPlanFor', {
+                  what: t('targetMgmt.pickPlanWhat.country'),
+                })}
+              />
             </Section>
           ) : (
             <QueryState
@@ -876,7 +880,11 @@ export default function TargetManagementPage() {
         <>
           {!selectedPlan ? (
             <Section title={t('targetMgmt.historyTitle')} className="mt-4">
-              <EmptyState message={t('targetMgmt.pickPlan')} />
+              <EmptyState
+                message={t('targetMgmt.pickPlanFor', {
+                  what: t('targetMgmt.pickPlanWhat.history'),
+                })}
+              />
             </Section>
           ) : (
             <QueryState
@@ -894,7 +902,11 @@ export default function TargetManagementPage() {
         <>
           {!selectedPlan ? (
             <Section title={t('targetMgmt.allocationTitle')} className="mt-4">
-              <EmptyState message={t('targetMgmt.pickPlan')} />
+              <EmptyState
+                message={t('targetMgmt.pickPlanFor', {
+                  what: t('targetMgmt.pickPlanWhat.allocation'),
+                })}
+              />
             </Section>
           ) : (
             <QueryState
@@ -937,7 +949,11 @@ export default function TargetManagementPage() {
         <>
           {!selectedPlan ? (
             <Section title={t('targetMgmt.reviewTitle')} className="mt-4">
-              <EmptyState message={t('targetMgmt.pickPlan')} />
+              <EmptyState
+                message={t('targetMgmt.pickPlanFor', {
+                  what: t('targetMgmt.pickPlanWhat.review'),
+                })}
+              />
             </Section>
           ) : (
             <QueryState
@@ -964,7 +980,11 @@ export default function TargetManagementPage() {
         <>
           {!selectedPlan ? (
             <Section title={t('targetMgmt.approval.chainTitle')} className="mt-4">
-              <EmptyState message={t('targetMgmt.pickPlan')} />
+              <EmptyState
+                message={t('targetMgmt.pickPlanFor', {
+                  what: t('targetMgmt.pickPlanWhat.approval'),
+                })}
+              />
             </Section>
           ) : (
             <div className="mt-4 space-y-4">
@@ -1046,7 +1066,11 @@ export default function TargetManagementPage() {
         <div className="mt-4 space-y-4">
           {!selectedPlan ? (
             <Section title={t('targetMgmt.compare.rowsTitle')}>
-              <EmptyState message={t('targetMgmt.pickPlan')} />
+              <EmptyState
+                message={t('targetMgmt.pickPlanFor', {
+                  what: t('targetMgmt.pickPlanWhat.compare'),
+                })}
+              />
             </Section>
           ) : (
             <>
@@ -1165,7 +1189,11 @@ export default function TargetManagementPage() {
           }
         >
           {!selectedPlan ? (
-            <EmptyState message={t('targetMgmt.pickPlan')} />
+            <EmptyState
+                message={t('targetMgmt.pickPlanFor', {
+                  what: t('targetMgmt.pickPlanWhat.versions'),
+                })}
+              />
           ) : (
             <>
               <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
