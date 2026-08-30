@@ -324,11 +324,22 @@ def credit_control_report(
 
     metrics: dict[str, Any] = {
         name: _f(totals[name]) for name in (
-            "total_invoice_amount", "net_invoice_amount", "payment_amount",
-            "discount_amount", "adjustment_amount", "outstanding_amount",
+            "total_invoice_amount", "net_invoice_amount", "outstanding_amount",
             "overdue_amount", "due_soon_amount",
         )
     }
+    # The three deduction columns are *stored* signed, exactly as the source
+    # posts them — a payment arrives as a negative number. They are *reported* as
+    # magnitudes, because a card headed "Total Payment" showing −1.10 Cr is not a
+    # figure anybody can read, and the payment rate underneath it would come out
+    # negative as well.
+    #
+    # Storage stays faithful and presentation stays legible: the sign carries the
+    # arithmetic (see ``etl.credit.derive``), the label carries the meaning.
+    metrics.update({
+        name: _deduction(totals[name])
+        for name in ("payment_amount", "discount_amount", "adjustment_amount")
+    })
     metrics.update({
         "invoice_count": totals["invoice_count"],
         "open_invoice_count": totals["open_invoice_count"] or 0,
@@ -338,8 +349,11 @@ def credit_control_report(
     # Shares are suppressed rather than rendered as 0%: a portfolio with nothing
     # outstanding has no overdue *proportion*, and "0%" would read as good news
     # about a book that does not exist.
+    # The already-flipped magnitude, not the signed total: a rate computed from
+    # the negative would come out negative and read as money flowing the wrong
+    # way.
     metrics["payment_rate_percent"] = _share(
-        totals["payment_amount"], totals["net_invoice_amount"])
+        metrics["payment_amount"], totals["net_invoice_amount"])
     metrics["overdue_share_percent"] = _share(
         totals["overdue_amount"], totals["outstanding_amount"])
 
@@ -354,6 +368,22 @@ def credit_control_report(
         "outstanding_trend": _outstanding_trend(),
         "notes": _notes(session, view, filters, query),
     }
+
+
+def _deduction(value: Any) -> float | None:
+    """A signed deduction as the magnitude a reader expects to see.
+
+    The source posts payments, discounts and adjustments as negative numbers and
+    the warehouse stores them that way, because the sign is what makes the
+    balance arithmetic a plain sum. Nobody wants to read "Total Payment
+    −1.10 Cr", so the reporting layer flips it once, here, rather than every
+    caller remembering to.
+
+    A genuinely positive value — a debit note that increases what is owed —
+    comes back negative, which is the honest rendering of "this added to the
+    balance rather than reducing it".
+    """
+    return None if value is None else -float(value)
 
 
 def _share(part: Any, whole: Any) -> float | None:
@@ -735,7 +765,10 @@ def _payment_events(record: dict[str, Any]) -> list[dict[str, Any]]:
         # which is the true statement.
         events.append({
             "date": record.get("last_payment_date"),
-            "amount": _f(record["payment_amount"]),
+            # The magnitude, for the same reason the KPI is: a timeline entry
+            # reading "− 40,000" beside the word Payment says the opposite of
+            # what happened.
+            "amount": _deduction(record["payment_amount"]),
             "kind": "PAYMENT",
             "note": (
                 "Total posted in payment. The source states one aggregate figure "

@@ -933,7 +933,15 @@ def credit_totals(session: Session, filters: ScopeFilters,
     if conditions:
         statement = statement.where(and_(*conditions))
     row = session.execute(statement).one()
-    return dict(row._mapping)
+    totals = dict(row._mapping)
+    # Reported as a magnitude, exactly as ``reporting.credit`` does it. The
+    # column is stored signed because that is what makes the balance a plain sum,
+    # but an assistant that answered "-1,100,000 BDT paid" would be stating the
+    # opposite of what happened. The two surfaces flip it the same way so a
+    # question asked in chat and the same figure read off the page agree.
+    if totals.get("payment_amount") is not None:
+        totals["payment_amount"] = -totals["payment_amount"]
+    return totals
 
 
 def credit_aging_rows(session: Session, filters: ScopeFilters,

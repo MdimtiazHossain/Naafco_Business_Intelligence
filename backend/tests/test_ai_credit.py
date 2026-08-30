@@ -49,7 +49,7 @@ def _invoice(no: str, *, invoice_date: str, credit_days: int, value: int,
 #:   OPEN-30   due 2026-08-11 ->  18 days overdue,  50000
 #:   OPEN-90   due 2026-06-01 ->  89 days overdue,  70000
 #:   OPEN-OLD  due 2026-01-05 -> 236 days overdue,  30000 (second customer)
-#:   PAID      cleared
+#:   PAID      cleared (payment is negative: the source deducts by sign)
 INVOICES = [
     _invoice("OPEN-NYD", invoice_date="2026-08-11", credit_days=30, value=100000),
     _invoice("OPEN-30", invoice_date="2026-07-12", credit_days=30, value=50000),
@@ -57,7 +57,7 @@ INVOICES = [
     _invoice("OPEN-OLD", invoice_date="2025-10-07", credit_days=90, value=30000,
              customer="CUST-002"),
     _invoice("PAID", invoice_date="2026-06-01", credit_days=30, value=40000,
-             payment=40000),
+             payment=-40000),
 ]
 
 

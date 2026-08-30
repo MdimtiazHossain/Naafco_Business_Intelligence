@@ -7,8 +7,9 @@ rather than assumed:
 
 * the fact carries **four** date columns and no ``date_id``, so the single
   reporting date every other dataset resolves is not enough;
-* the due date is **derived** rather than read, which means it has to exist in
-  ``dim_date`` even though no column of the file ever named it;
+* the due date is **read where the file states one and derived where it does
+  not**, and either way has to exist in ``dim_date`` — including the derived
+  case, where no column of the file ever named it;
 * the fact has a ``plant_id``, which used to be what told the pipeline it was
   looking at a stock position.
 """
@@ -72,8 +73,8 @@ def test_a_credit_invoice_imports(seeded_engine) -> None:
 def test_the_derivations_are_stored(seeded_engine) -> None:
     """Net and balance are computed by the loader, not read from the file."""
     do_import(seeded_engine, [credit_invoice_row(
-        **{"Invoice Value": 100000, "Return": 20000, "Payment": 25000,
-           "Discount": 5000, "Adjustment": 1000})])
+        **{"Invoice Value": 100000, "Return": 20000, "Payment": -25000,
+           "Discount": -5000, "Adjustment": -1000})])
 
     (row,) = invoices(seeded_engine)
     assert Decimal(str(row.net_invoice_amount)) == Decimal("80000")
@@ -161,7 +162,7 @@ def test_an_unknown_customer_is_a_deferred_mapping_not_a_rejection(seeded_engine
 
 def test_an_over_adjusted_invoice_is_flagged_and_kept(seeded_engine) -> None:
     result = do_import(seeded_engine, [credit_invoice_row(
-        **{"Invoice Value": 100000, "Payment": 150000})])
+        **{"Invoice Value": 100000, "Payment": -150000})])
     assert result.inserted_rows == 1
 
     (row,) = invoices(seeded_engine)
@@ -169,20 +170,32 @@ def test_an_over_adjusted_invoice_is_flagged_and_kept(seeded_engine) -> None:
     assert row.data_quality_flag == credit.FLAG_BALANCE_NEGATIVE
 
 
-def test_a_disagreeing_due_date_is_flagged_and_the_derived_one_wins(seeded_engine):
+def test_a_stated_due_date_wins_and_lands_in_dim_date(seeded_engine):
+    """The stated date is stored, and the terms disagreeing is still recorded.
+
+    Reversed from how this started. The first real file settled it: 11,791 rows
+    state credit days of 0 beside a genuine due date, so deriving handed back the
+    invoice date and made all of them look immediately overdue.
+
+    The stated date still has to reach ``dim_date`` — it is a foreign key like
+    any other, and it is now the one the row is keyed to.
+    """
     result = do_import(seeded_engine, [credit_invoice_row(
         **{"Invoice Date": "2026-03-12", "Credit Days": 90,
            "Due Date": "2026-09-01"})])
     assert result.inserted_rows == 1
 
     (row,) = invoices(seeded_engine)
-    assert row.due_date_id == 20260610, "the derived date wins"
+    assert row.due_date_id == 20260901, "the stated date wins"
     assert row.data_quality_flag == credit.FLAG_DUE_DATE_MISMATCH
+
+    with Session(seeded_engine) as session:
+        assert session.get(DimDate, 20260901) is not None
 
 
 def test_a_disagreeing_balance_is_flagged(seeded_engine) -> None:
     do_import(seeded_engine, [credit_invoice_row(
-        **{"Invoice Value": 100000, "Payment": 25000, "Balance": 60000})])
+        **{"Invoice Value": 100000, "Payment": -25000, "Balance": 60000})])
 
     (row,) = invoices(seeded_engine)
     assert Decimal(str(row.balance_amount)) == Decimal("75000")
@@ -236,15 +249,15 @@ def test_a_negative_credit_term_is_rejected(seeded_engine) -> None:
 
 def test_the_same_invoice_twice_updates_rather_than_duplicates(seeded_engine) -> None:
     """The business key is company + invoice number, so a re-upload corrects."""
-    do_import(seeded_engine, [credit_invoice_row(**{"Payment": 25000})])
-    result = do_import(seeded_engine, [credit_invoice_row(**{"Payment": 40000})])
+    do_import(seeded_engine, [credit_invoice_row(**{"Payment": -25000})])
+    result = do_import(seeded_engine, [credit_invoice_row(**{"Payment": -40000})])
 
     assert result.inserted_rows == 0
     with Session(seeded_engine) as session:
         assert session.execute(
             select(func.count()).select_from(FactCreditInvoice)).scalar_one() == 1
     (row,) = invoices(seeded_engine)
-    assert Decimal(str(row.payment_amount)) == Decimal("40000")
+    assert Decimal(str(row.payment_amount)) == Decimal("-40000")
     assert Decimal(str(row.balance_amount)) == Decimal("60000"), (
         "the balance must be re-derived from the corrected payment"
     )

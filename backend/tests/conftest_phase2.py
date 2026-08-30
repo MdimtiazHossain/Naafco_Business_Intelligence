@@ -274,7 +274,7 @@ def credit_invoice_row(**overrides: Any) -> dict[str, Any]:
         "Credit Days": 90,
         "Invoice Value": 100000,
         "Return": 0,
-        "Payment": 25000,
+        "Payment": -25000,
         "Discount": 0,
         "Adjustment": 0,
         "Payment Mode": "CREDIT",

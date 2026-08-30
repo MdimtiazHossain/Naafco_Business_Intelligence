@@ -322,20 +322,72 @@ def test_the_fact_stores_no_date_relative_column(migrated_engine):
 # ---------------------------------------------------------------------------
 
 
-def test_net_and_balance_follow_the_stated_arithmetic():
+def test_net_and_balance_follow_the_measured_signs():
+    """Payment, discount and adjustment are added; return is subtracted.
+
+    The source posts a payment as a negative number, so subtracting one *added*
+    it and an invoice paid in full came out at roughly twice its value. Return
+    goes the other way: a returned-goods document arrives negative and increases
+    what is owed on the invoice it offsets. Measured over a real 16,614-row file
+    against the source's own balance: 54% for the original all-subtract rule,
+    93.5% for all-add, 95.0% for this mixture.
+    """
     derived = credit.derive(
         invoice_date=date(2026, 3, 12),
         credit_days=90,
         invoice_value=Decimal("4850000"),
         return_amount=Decimal("50000"),
-        payment_amount=Decimal("1200000"),
-        discount_amount=Decimal("50000"),
-        adjustment_amount=Decimal("25000"),
+        payment_amount=Decimal("-1200000"),
+        discount_amount=Decimal("-50000"),
+        adjustment_amount=Decimal("-25000"),
     )
     assert derived.net_invoice_amount == Decimal("4800000")
     assert derived.balance_amount == Decimal("3525000")
     assert derived.due_date == date(2026, 6, 10)
     assert derived.data_quality_flag is None
+
+
+def test_a_payment_that_settles_an_invoice_clears_it():
+    """The regression the whole correction exists for.
+
+    Invoice AI00000002 of the first real file: value 86,970, payment -86,970,
+    discount -1,739. The source says -1,739; the old arithmetic said 175,679 —
+    an invoice that was paid in full reported as owing twice its value.
+    """
+    derived = credit.derive(
+        invoice_date=date(2026, 1, 1),
+        credit_days=0,
+        invoice_value=Decimal("86970"),
+        payment_amount=Decimal("-86970"),
+        discount_amount=Decimal("-1739"),
+    )
+    assert derived.balance_amount == Decimal("-1739")
+    assert credit.credit_status(
+        balance_amount=derived.balance_amount, due_date=derived.due_date,
+        as_on=date(2026, 8, 29)) == credit.STATUS_CLEARED
+
+
+def test_a_negative_return_increases_what_is_owed():
+    """The one column that goes the other way, pinned so it cannot drift back."""
+    derived = credit.derive(
+        invoice_date=date(2026, 1, 1), credit_days=30,
+        invoice_value=Decimal("22700"), return_amount=Decimal("-13221339.50"),
+    )
+    assert derived.balance_amount == Decimal("13244039.50")
+
+
+def test_a_positive_adjustment_still_increases_the_balance():
+    """Signed means signed, in both directions.
+
+    A credit note arrives negative and reduces what is owed; a debit note
+    arrives positive and increases it. One column, one rule, no second sign
+    convention to remember.
+    """
+    derived = credit.derive(
+        invoice_date=date(2026, 1, 1), credit_days=30,
+        invoice_value=Decimal("1000"), adjustment_amount=Decimal("250"),
+    )
+    assert derived.balance_amount == Decimal("1250")
 
 
 def test_a_negative_balance_is_kept_and_flagged():
@@ -344,21 +396,52 @@ def test_a_negative_balance_is_kept_and_flagged():
         invoice_date=date(2026, 1, 1),
         credit_days=30,
         invoice_value=Decimal("100000"),
-        payment_amount=Decimal("150000"),
+        payment_amount=Decimal("-150000"),
     )
     assert derived.balance_amount == Decimal("-50000")
     assert derived.data_quality_flag == credit.FLAG_BALANCE_NEGATIVE
 
 
-def test_a_stated_due_date_that_disagrees_is_flagged_and_loses():
+def test_a_stated_due_date_wins_and_the_disagreement_is_still_flagged():
+    """The stated date is the fact; the terms column is what is missing.
+
+    This was the other way round. The reasoning then was that a source computing
+    a due date from terms it had not sent us should not move a reported figure —
+    but 11,791 rows of the first real file state ``credit_days`` of 0 alongside a
+    real due date, so deriving handed back the invoice date and made every one of
+    them look immediately overdue.
+    """
     derived = credit.derive(
         invoice_date=date(2026, 1, 1),
         credit_days=30,
         invoice_value=Decimal("1000"),
         stated_due_date=date(2026, 3, 1),
     )
-    assert derived.due_date == date(2026, 1, 31)
+    assert derived.due_date == date(2026, 3, 1)
     assert derived.data_quality_flag == credit.FLAG_DUE_DATE_MISMATCH
+
+
+def test_a_due_date_is_derived_only_when_the_file_states_none():
+    derived = credit.derive(
+        invoice_date=date(2026, 1, 1), credit_days=30,
+        invoice_value=Decimal("1000"),
+    )
+    assert derived.due_date == date(2026, 1, 31)
+    assert derived.data_quality_flag is None
+
+
+def test_zero_credit_days_is_an_ordinary_term_not_an_anomaly():
+    """Three quarters of the first real file carried it.
+
+    Flagging that many rows would teach everyone to ignore the flag, which costs
+    more than it catches.
+    """
+    derived = credit.derive(
+        invoice_date=date(2026, 1, 1), credit_days=0,
+        invoice_value=Decimal("1000"), stated_due_date=date(2026, 2, 15),
+    )
+    assert credit.FLAG_CREDIT_DAYS_UNEXPECTED not in (derived.data_quality_flag or "")
+    assert derived.due_date == date(2026, 2, 15)
 
 
 def test_a_stated_balance_that_disagrees_is_flagged():
@@ -398,7 +481,7 @@ def test_several_faults_are_all_reported():
         invoice_date=date(2026, 1, 1),
         credit_days=60,
         invoice_value=Decimal("100"),
-        payment_amount=Decimal("500"),
+        payment_amount=Decimal("-500"),
     )
     flags = set(derived.data_quality_flag.split("|"))
     assert flags == {credit.FLAG_BALANCE_NEGATIVE, credit.FLAG_CREDIT_DAYS_UNEXPECTED}
@@ -531,7 +614,7 @@ def test_cleared_and_voided_invoices_leave_the_aging_view(migrated_engine):
         _insert_invoice(conn, batch, invoice_no="PAID",
                         invoice_date=overdue_invoice_date, credit_days=30,
                         invoice_value=Decimal("100000"),
-                        payment_amount=Decimal("100000"))
+                        payment_amount=Decimal("-100000"))
         _insert_invoice(conn, batch, invoice_no="VOID",
                         invoice_date=overdue_invoice_date, credit_days=30,
                         is_void=True)
@@ -564,7 +647,7 @@ def test_customer_exposure_totals_only_positive_balances(migrated_engine):
                         credit_days=30, invoice_value=Decimal("100000"))
         _insert_invoice(conn, batch, invoice_no="OVERPAID", invoice_date=invoice_date,
                         credit_days=30, invoice_value=Decimal("100000"),
-                        payment_amount=Decimal("150000"))
+                        payment_amount=Decimal("-150000"))
 
     with migrated_engine.connect() as conn:
         row = conn.execute(text(

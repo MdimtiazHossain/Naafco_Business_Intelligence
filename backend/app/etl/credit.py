@@ -101,8 +101,13 @@ FLAG_BALANCE_MISMATCH = "BALANCE_MISMATCH"
 #: assumption would lose a real invoice.
 FLAG_CREDIT_DAYS_UNEXPECTED = "CREDIT_DAYS_UNEXPECTED"
 
-#: The credit terms the business has described. Advisory — see the flag above.
-KNOWN_CREDIT_DAYS: tuple[int, ...] = (30, 45, 90, 150, 180, 190, 250)
+#: The credit terms the business has described, plus the one the data added.
+#:
+#: ``0`` is here because 11,791 rows of the first real file carried it — it is
+#: the ordinary value in this source, not an anomaly, and flagging three
+#: quarters of a file teaches everyone to ignore the flag. It means the terms
+#: were not stated on that row; the due date the source supplies is what stands.
+KNOWN_CREDIT_DAYS: tuple[int, ...] = (0, 30, 45, 90, 150, 180, 190, 250)
 
 #: Money is compared to the paisa and no finer. Two systems rounding differently
 #: should not raise a mismatch flag on every row.
@@ -136,20 +141,60 @@ def derive(
 ) -> Derived:
     """Compute the stable figures for one invoice and flag what disagrees.
 
-    ``stated_due_date`` and ``stated_balance`` are what the *file* claimed,
-    where it claimed anything. Neither is trusted: the derived value wins and
-    the disagreement becomes a flag. A source computing its own due date from a
-    credit term it did not send us would otherwise be able to move a figure this
-    system reports, with no record of having done so.
+    **The four deduction columns are signed, and are summed rather than
+    subtracted.** This was the other way round, and it was wrong: the source
+    posts a payment as a negative number, so subtracting it *added* it and an
+    invoice paid in full came out at roughly twice its value. Measured against
+    the source's own Balance Amount over a real 16,614-row file, summing the
+    signed amounts agrees on 93.5% of rows and subtracting them on 54% — and the
+    54% is almost entirely rows where payment is zero and the two agree anyway.
+    Payment was never once positive in that file.
+
+    So a *negative* payment, discount or adjustment reduces the balance and a
+    positive one increases it, which is what lets a credit note and a receipt
+    live in the same column without a second sign rule.
+
+    **A stated due date wins over a derived one.** Also the reverse of what this
+    did first. The reasoning then was that a source computing a due date from
+    terms it had not sent us should not be able to move a reported figure — but
+    the file settles it: 11,791 of those rows state ``credit_days`` of 0 while
+    carrying a real due date, so deriving gives back the invoice date and makes
+    every one of them look immediately overdue. The stated date is the fact; the
+    terms column is the thing that is missing. Deriving is the fallback for a row
+    that states no due date at all.
+
+    Both disagreements are still flagged. The figure no longer moves because of
+    them, but "the terms do not explain this due date" and "the source's balance
+    does not equal its own columns" are exactly what a data-quality review needs
+    to see.
     """
+    # Return is *subtracted*; the other three are *added*. Not a slip — the
+    # source genuinely mixes the two conventions, and it was measured rather
+    # than assumed. Over the first real 16,614-row file, agreement with the
+    # source's own Balance Amount by sign combination:
+    #
+    #     value - return + pay + disc + adj   15,776  (95.0%)   <- this
+    #     value + return + pay + disc + adj   15,539  (93.5%)
+    #
+    # A returned-goods document arrives negative and *increases* what is owed on
+    # the invoice it offsets, which is why subtracting a negative is right here
+    # and wrong three columns to the left.
+    #
+    # The adjustment sign is **not** determined by this data: flipping it changes
+    # the agreement by exactly nothing, because every row it would affect has a
+    # zero adjustment. It is written ``+`` to match payment and discount, which
+    # is a consistency choice rather than a measurement, and the day a file
+    # contains a non-zero adjustment that disagrees is the day to re-measure.
     net = invoice_value - return_amount
-    balance = net - payment_amount - discount_amount - adjustment_amount
-    due = invoice_date + timedelta(days=credit_days)
+    balance = net + payment_amount + discount_amount + adjustment_amount
+
+    derived_due = invoice_date + timedelta(days=credit_days)
+    due = stated_due_date if stated_due_date is not None else derived_due
 
     flags: list[str] = []
     if balance < 0:
         flags.append(FLAG_BALANCE_NEGATIVE)
-    if stated_due_date is not None and stated_due_date != due:
+    if stated_due_date is not None and stated_due_date != derived_due:
         flags.append(FLAG_DUE_DATE_MISMATCH)
     if stated_balance is not None and abs(stated_balance - balance) > TOLERANCE:
         flags.append(FLAG_BALANCE_MISMATCH)

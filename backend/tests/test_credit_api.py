@@ -65,7 +65,7 @@ INVOICES = [
     _invoice("OPEN-OLD", invoice_date="2025-10-07", credit_days=90, value=30000,
              customer="CUST-002"),
     _invoice("PAID", invoice_date="2026-06-01", credit_days=30, value=40000,
-             payment=40000),
+             payment=-40000),
 ]
 
 
