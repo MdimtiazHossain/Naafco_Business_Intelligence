@@ -59,7 +59,13 @@ from ..etl.pipeline import (
 from ..etl.readers import SourceReader
 from ..utils.progress import ImportCancelled, Phase, ProgressReporter
 from . import master_loader
-from .errors import UploadIssue, hierarchy_fix, suggested_fix
+from .errors import (
+    UploadIssue,
+    failure_issue,
+    hierarchy_fix,
+    is_file_fault,
+    suggested_fix,
+)
 from .files import StoredUpload, discard
 from .registry import UploadType
 
@@ -273,18 +279,22 @@ def run_validation(session: Session, batch: UploadBatch, upload_type: UploadType
         # a deliberate stop as an unreadable file.
         raise
     except Exception as exc:  # noqa: BLE001 - a bad file must not 500
-        logger.exception("upload validation failed for %s", stored.original_name)
+        # Classified rather than assumed. This used to report *every* failure as
+        # an unreadable file and put ``str(exc)`` in the downloadable CSV, so a
+        # missing table reached the user as a live INSERT statement telling them
+        # to re-save their spreadsheet — wrong twice over, and a leak besides.
+        #
+        # The log keeps the whole traceback either way, and is where the Import
+        # Job ID in the user's message points.
+        logger.exception(
+            "upload %s failed for %s (%s)",
+            batch.upload_uuid, stored.original_name,
+            "bad file" if is_file_fault(exc) else "system error",
+        )
         batch.status = UploadStatus.FAILED
         batch.completed_at = _now()
-        batch.message = (
-            "The file could not be read. Check that it is a valid Excel or CSV "
-            "file exported from the template."
-        )
-        _store_issues(session, batch, [UploadIssue(
-            row_number=None, column=None, value=None,
-            error_code="UNREADABLE_FILE", message=str(exc)[:500],
-            suggested_fix="Re-save the file from the downloaded template.",
-        )])
+        batch.message, issue = failure_issue(exc, job_id=batch.upload_uuid)
+        _store_issues(session, batch, [issue])
         discard(batch.stored_path)
         batch.stored_path = None
         progress.finish(message=batch.message, failed=True)

@@ -12,6 +12,8 @@ upload and a scripted import agree on why a row failed.
 
 from __future__ import annotations
 
+import csv
+import zipfile
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +32,13 @@ class code:
     NOT_FOUND = "RECORD_NOT_FOUND"
     EMPTY_FILE = "EMPTY_FILE"
     UNREADABLE = "UNREADABLE_FILE"
+    #: The upload failed for a reason that is **not** the file's fault — the
+    #: database was unreachable, a table was missing, the disk was full. Its own
+    #: code because it sends the reader somewhere completely different:
+    #: ``UNREADABLE_FILE`` asks them to fix and re-save their spreadsheet, and
+    #: telling somebody that when their file is perfectly good wastes their
+    #: afternoon and hides a real outage.
+    SYSTEM = "SYSTEM_ERROR"
 
 
 @dataclass
@@ -137,5 +146,78 @@ def hierarchy_fix(error_code: str) -> str | None:
     return None
 
 
+#: Exception types that genuinely mean "this file cannot be read".
+#:
+#: A **whitelist**, and the direction matters. Anything not listed here is
+#: treated as a system failure, because an exception nobody anticipated is far
+#: more likely to be ours than the uploader's — and the two mistakes are not
+#: symmetrical. Calling our outage a bad file sends somebody to re-export a
+#: spreadsheet that was always correct; calling a bad file our outage merely
+#: sends them to an administrator, who can read the log and put them right.
+#:
+#: ``ValueError`` is here because the readers raise it for a malformed sheet;
+#: ``KeyError``/``TypeError`` are deliberately absent, being what a bug in our
+#: own code raises.
+_FILE_FAULTS: tuple[type[BaseException], ...] = (
+    UnicodeDecodeError,   # a text file in an encoding we cannot read
+    ValueError,           # the readers' own "this is not a usable sheet"
+    zipfile.BadZipFile,   # .xlsx is a zip; a truncated upload lands here
+    csv.Error,
+)
+
+#: The message a system failure shows. It names no table, no driver and no SQL —
+#: see the "Errors reveal nothing" invariant in ``CLAUDE.md``. What it does give
+#: is the Import Job ID, which is already on screen and already in the log line,
+#: so an administrator can find the detail without the user having to relay it.
+_SYSTEM_MESSAGE = (
+    "The upload could not be completed because of a problem on the server, not "
+    "with your file. Nothing was imported. Quote Import Job ID {job_id} to your "
+    "administrator, who can see the details in the server log."
+)
+
+_SYSTEM_FIX = (
+    "There is nothing to fix in the file. Try again shortly, and if it keeps "
+    "failing send the Import Job ID to your administrator."
+)
+
+
+def is_file_fault(exc: BaseException) -> bool:
+    """Whether ``exc`` means the *file* is bad, rather than the platform."""
+    return isinstance(exc, _FILE_FAULTS)
+
+
+def failure_issue(exc: BaseException, *, job_id: str) -> tuple[str, UploadIssue]:
+    """Classify a failed upload into a batch message and one reportable issue.
+
+    Returns ``(batch_message, issue)``. Two outcomes, deliberately far apart:
+
+    * a **file fault** keeps the reader's exception text, because it was written
+      for whoever prepared the file — "File is not a zip file" tells them their
+      download truncated — and asks them to re-save;
+    * anything else is a **system error**, and carries none of the exception:
+      no SQL, no table name, no driver class, no path. The detail belongs in the
+      server log, which is where the caller is pointed.
+
+    The exception is never interpolated into the system message. That is the
+    whole point: a missing table used to arrive at the user as a full ``INSERT``
+    statement in a downloadable CSV.
+    """
+    if is_file_fault(exc):
+        message = ("The file could not be read. Check that it is a valid Excel "
+                   "or CSV file exported from the template.")
+        return message, UploadIssue(
+            row_number=None, column=None, value=None,
+            error_code=code.UNREADABLE, message=str(exc)[:500],
+            suggested_fix="Re-save the file from the downloaded template.",
+        )
+
+    message = _SYSTEM_MESSAGE.format(job_id=job_id)
+    return message, UploadIssue(
+        row_number=None, column=None, value=None,
+        error_code=code.SYSTEM, message=message, suggested_fix=_SYSTEM_FIX,
+        category="SYSTEM",
+    )
+
+
 __all__ = ["code", "UploadIssue", "SUGGESTED_FIX_BY_CODE", "suggested_fix",
-           "hierarchy_fix"]
+           "hierarchy_fix", "failure_issue", "is_file_fault"]
