@@ -6,6 +6,7 @@
  * scope, so hiding a menu item here is convenience, never security.
  */
 
+import { useQueryClient } from '@tanstack/react-query';
 import {
   createContext,
   useCallback,
@@ -55,11 +56,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [initialising, setInitialising] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const clearSession = useCallback(() => {
     authService.clearToken();
     setUser(null);
-  }, []);
+    // Every cached response belongs to the session that fetched it, so the
+    // cache ends when the session does. Two things go wrong without this.
+    //
+    // A 401 is deliberately not retried — retrying an auth failure only wastes
+    // the user's time — so the error it caches survives the next sign-in and
+    // the query never runs again. On Target Management that left
+    // `options.data` undefined, which reads as "you hold no actions", and the
+    // upload controls silently vanished while everything fed by other queries
+    // carried on working.
+    //
+    // Worse, a *successful* response is equally sticky: sign out and back in
+    // as somebody else and the new session is served the previous user's data
+    // from cache, for as long as it stays fresh.
+    queryClient.clear();
+  }, [queryClient]);
 
   // A 401 from any request drops the session so the router falls back to login.
   useEffect(() => {
@@ -97,6 +113,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setError(null);
       try {
         const response = await authService.login(username, password, remember);
+        // Cleared on the way in as well as the way out. A session can end
+        // without `clearSession` running — a server restart invalidates every
+        // token, and the tab may simply be reloaded — so sign-in must not
+        // inherit whatever the last one left behind.
+        queryClient.clear();
         authService.storeToken(response.access_token, remember);
         // Re-read the profile so scope description and company settings arrive.
         setUser(await authService.me().catch(() => response.user));
@@ -107,7 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSigningIn(false);
       }
     },
-    [],
+    [queryClient],
   );
 
   const signOut = useCallback(async () => {
