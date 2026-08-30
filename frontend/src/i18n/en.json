@@ -1096,6 +1096,7 @@
   "targetMgmt.upload.readCounts": "{file}: {read} rows read — {created} new, {changed} changed, {rejected} rejected.",
   "targetMgmt.upload.row": "Row",
   "targetMgmt.upload.template": "Download template",
+  "targetMgmt.upload.templateHint": "A CSV of this plan's own materials, pre-filled with the figures this version already holds. Materials with no figure yet are left blank.",
   "targetMgmt.upload.title": "Load from a file",
   "targetMgmt.upload.waiting": "Reading the file…",
   "targetMgmt.versionFrozen": "This version has been approved or locked, so its figures are read-only. Create the next version to change them.",

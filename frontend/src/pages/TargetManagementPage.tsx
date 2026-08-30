@@ -60,7 +60,10 @@ import {
 import { ReviewTree } from '../components/targetmgmt/ReviewTree';
 import { ApprovalMatrixEditor } from '../components/targetmgmt/ApprovalMatrixEditor';
 import { AuditTrail } from '../components/targetmgmt/AuditTrail';
-import { CountryTargetUpload } from '../components/targetmgmt/CountryTargetUpload';
+import {
+  CountryTargetUpload,
+  CountryTargetUploadActions,
+} from '../components/targetmgmt/CountryTargetUpload';
 import { TargetDashboard } from '../components/targetmgmt/TargetDashboard';
 import { VersionComparison } from '../components/targetmgmt/VersionComparison';
 import { LockPanel } from '../components/targetmgmt/LockPanel';
@@ -824,6 +827,22 @@ export default function TargetManagementPage() {
             >
               {countryTarget.data && (
                 <>
+                <CountryTargetUpload
+                  preview={uploadPreview}
+                  result={uploadResult}
+                  editable={countryTarget.data.editable}
+                  canUpload={canUpload}
+                  busy={previewUpload.isPending || applyUpload.isPending}
+                  error={uploadError}
+                  onApply={() =>
+                    uploadPreview &&
+                    applyUpload.mutate(uploadPreview.upload_token)
+                  }
+                  onDismiss={() => {
+                    setUploadPreview(null);
+                    setUploadError(null);
+                  }}
+                />
                 <CountryTargetGrid
                   lines={countryTarget.data.lines}
                   totals={countryTarget.data.totals}
@@ -833,27 +852,18 @@ export default function TargetManagementPage() {
                   available={availableMaterials.data?.materials ?? []}
                   saving={saveCountry.isPending}
                   onSave={(lines) => saveCountry.mutate(lines)}
-                />
-                <CountryTargetUpload
-                  preview={uploadPreview}
-                  result={uploadResult}
-                  editable={countryTarget.data.editable}
-                  canUpload={canUpload}
-                  busy={previewUpload.isPending || applyUpload.isPending}
-                  error={uploadError}
-                  onTemplate={() =>
-                    void targetManagementService.countryTargetTemplate(
-                      currentVersionId as number)
+                  actions={
+                    <CountryTargetUploadActions
+                      editable={countryTarget.data.editable}
+                      canUpload={canUpload}
+                      busy={previewUpload.isPending || applyUpload.isPending}
+                      onTemplate={() =>
+                        void targetManagementService.countryTargetTemplate(
+                          currentVersionId as number)
+                      }
+                      onFile={(file) => previewUpload.mutate(file)}
+                    />
                   }
-                  onFile={(file) => previewUpload.mutate(file)}
-                  onApply={() =>
-                    uploadPreview &&
-                    applyUpload.mutate(uploadPreview.upload_token)
-                  }
-                  onDismiss={() => {
-                    setUploadPreview(null);
-                    setUploadError(null);
-                  }}
                 />
                 </>
               )}

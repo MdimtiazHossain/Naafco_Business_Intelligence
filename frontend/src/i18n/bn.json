@@ -1096,6 +1096,7 @@
   "targetMgmt.upload.readCounts": "{file}: {read}টি সারি পড়া হয়েছে — {created}টি নতুন, {changed}টি পরিবর্তিত, {rejected}টি বাতিল।",
   "targetMgmt.upload.row": "সারি",
   "targetMgmt.upload.template": "টেমপ্লেট ডাউনলোড",
+  "targetMgmt.upload.templateHint": "এই পরিকল্পনার নিজস্ব ম্যাটেরিয়ালের একটি CSV, এই সংস্করণে থাকা সংখ্যাগুলো আগে থেকেই বসানো। যেগুলোর কোনো সংখ্যা নেই সেগুলো ফাঁকা রাখা হয়।",
   "targetMgmt.upload.title": "ফাইল থেকে লোড করুন",
   "targetMgmt.upload.waiting": "ফাইল পড়া হচ্ছে…",
   "targetMgmt.versionFrozen": "এই ভার্সন অনুমোদিত বা লকড, তাই এর সংখ্যাগুলো কেবল পড়া যাবে। পরিবর্তন করতে পরবর্তী ভার্সন তৈরি করুন।",

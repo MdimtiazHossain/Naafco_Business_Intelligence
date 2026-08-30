@@ -23,7 +23,7 @@
  */
 
 import { Plus, Save, Undo2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Section } from '../PageHeader';
 import { EmptyState } from '../States';
 import { useT } from '../../contexts/I18nContext';
@@ -66,6 +66,12 @@ export interface CountryTargetGridProps {
   available: TargetAvailableMaterial[];
   saving: boolean;
   onSave: (lines: { material_code: string; target_volume: string }[]) => void;
+  /**
+   * Extra controls for this section's own header — the country-target upload
+   * buttons. Passed in rather than imported so the grid stays a grid: it knows
+   * it has a header, not what else the page wants to put in it.
+   */
+  actions?: ReactNode;
 }
 
 export function CountryTargetGrid({
@@ -77,6 +83,7 @@ export function CountryTargetGrid({
   available,
   saving,
   onSave,
+  actions,
 }: CountryTargetGridProps) {
   const t = useT();
   /**
@@ -240,9 +247,12 @@ export function CountryTargetGrid({
         title={t('targetMgmt.countryTitle')}
         className="mt-4"
         actions={
-          <span className="text-xs text-slate-400 dark:text-slate-500">
-            {t('targetMgmt.countryRowCount', { count: String(rows.length) })}
-          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs text-slate-400 dark:text-slate-500">
+              {t('targetMgmt.countryRowCount', { count: String(rows.length) })}
+            </span>
+            {actions}
+          </div>
         }
       >
         <div className="mb-3 rounded-lg border border-brand-200 bg-brand-50/50 px-3 py-2 text-xs text-brand-800 dark:border-brand-900 dark:bg-brand-950/30 dark:text-brand-200">
