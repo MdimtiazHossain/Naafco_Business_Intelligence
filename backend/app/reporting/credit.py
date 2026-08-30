@@ -293,6 +293,11 @@ def credit_control_report(
             func.count().label("invoice_count"),
             func.sum(view.c.invoice_value).label("total_invoice_amount"),
             func.sum(view.c.net_invoice_amount).label("net_invoice_amount"),
+            # Reported so the card above it is explicable. Returns are the one
+            # column this source posts negative *and* subtracts, so they can push
+            # the net figure above the gross one — and a reader looking at that
+            # is owed the number that caused it rather than left to wonder.
+            func.sum(view.c.return_amount).label("return_amount"),
             func.sum(view.c.payment_amount).label("payment_amount"),
             func.sum(view.c.discount_amount).label("discount_amount"),
             func.sum(view.c.adjustment_amount).label("adjustment_amount"),
@@ -324,10 +329,14 @@ def credit_control_report(
 
     metrics: dict[str, Any] = {
         name: _f(totals[name]) for name in (
-            "total_invoice_amount", "net_invoice_amount", "outstanding_amount",
-            "overdue_amount", "due_soon_amount",
+            "total_invoice_amount", "net_invoice_amount", "return_amount",
+            "outstanding_amount", "overdue_amount", "due_soon_amount",
         )
     }
+    # ``return_amount`` stays **signed**, unlike the three deductions below it.
+    # The sign is the whole message: a negative return is what makes the net
+    # figure exceed the gross one, and flipping it to a magnitude would hide
+    # exactly the thing the card needs to explain.
     # The three deduction columns are *stored* signed, exactly as the source
     # posts them — a payment arrives as a negative number. They are *reported* as
     # magnitudes, because a card headed "Total Payment" showing −1.10 Cr is not a

@@ -182,6 +182,38 @@ def test_the_kpis_add_up(credit_api) -> None:
     assert metrics["overdue_invoice_count"] == 3
 
 
+def test_the_returns_total_is_reported_signed(credit_api) -> None:
+    """The one figure that explains a net larger than a gross.
+
+    Returns are posted negative by this source *and* subtracted, so they push
+    the net figure above the invoice total — 1.59 Cr against 1.41 Cr on the first
+    real file. The card carries this number so the difference is accounted for
+    rather than mysterious, which means it must stay signed: flipped to a
+    magnitude it would hide the very thing it is there to explain.
+    """
+    metrics = get(credit_api, BASE).json()["metrics"]
+    assert "return_amount" in metrics
+
+    # The identity the card relies on: net − gross is exactly minus the returns.
+    difference = metrics["net_invoice_amount"] - metrics["total_invoice_amount"]
+    assert difference == pytest.approx(-metrics["return_amount"])
+
+
+def test_a_negative_return_pushes_net_above_gross(credit_api) -> None:
+    """Reproduced from the real file, so the arithmetic is pinned end to end."""
+    reader = RecordsSourceReader(
+        [_invoice("RET-1", invoice_date="2026-08-01", credit_days=30, value=22700)
+         | {"Return": -13221339.50}],
+        source_name="returns.csv", source_type="CSV")
+    from app.api.deps import get_session
+    session = next(app.dependency_overrides[get_session]())
+    run_import(session.get_bind(), "credit_invoice", reader, source_system="TEST")
+
+    metrics = get(credit_api, BASE).json()["metrics"]
+    assert metrics["return_amount"] < 0
+    assert metrics["net_invoice_amount"] > metrics["total_invoice_amount"]
+
+
 def test_a_share_is_suppressed_rather_than_shown_as_zero(credit_api) -> None:
     """A portfolio with nothing outstanding has no overdue *proportion*."""
     body = get(credit_api, BASE, company_code="NOSUCH").json()

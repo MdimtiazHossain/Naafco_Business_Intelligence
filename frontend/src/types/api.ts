@@ -1383,6 +1383,14 @@ export interface CreditMetrics {
   due_soon_invoice_count: number;
   total_invoice_amount: number | null;
   net_invoice_amount: number | null;
+  /**
+   * Signed, unlike the three deductions below it.
+   *
+   * A return is posted negative and *subtracted*, so it pushes the net figure
+   * above the gross one — the sign is what explains a card reading higher than
+   * the invoice total beside it, and a magnitude would hide exactly that.
+   */
+  return_amount: number | null;
   payment_amount: number | null;
   discount_amount: number | null;
   adjustment_amount: number | null;

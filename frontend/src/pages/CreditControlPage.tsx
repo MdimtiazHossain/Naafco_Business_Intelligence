@@ -312,9 +312,26 @@ export default function CreditControlPage() {
               value={formatAmount(metrics?.total_invoice_amount)}
               hint={t('credit.invoiceCount', { count: metrics?.invoice_count ?? 0 })}
             />
+            {/*
+              "Net Invoice" promised a reduction this data does not always
+              deliver: returns are posted negative and subtracted, so the net
+              figure can exceed the gross one — 1.59 Cr against 1.41 Cr on the
+              first real file, which reads as a bug to anyone who has not been
+              told about the sign convention.
+
+              The label is now literal about the operation rather than about its
+              expected direction, and the hint carries the returns total signed,
+              so the number that caused the surprise is on the card beside it.
+              The column heading in the tables below is untouched: a per-row net
+              is read next to that row's own return, where the arithmetic is
+              already visible.
+            */}
             <StatCard
-              label={t('credit.netInvoice')}
+              label={t('credit.invoiceLessReturns')}
               value={formatAmount(metrics?.net_invoice_amount)}
+              hint={t('credit.returnsHint', {
+                amount: formatAmount(metrics?.return_amount),
+              })}
             />
             <StatCard
               label={t('credit.totalPayment')}

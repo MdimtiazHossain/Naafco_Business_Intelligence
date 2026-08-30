@@ -58,6 +58,7 @@ const SUMMARY = {
     due_soon_invoice_count: 2,
     total_invoice_amount: 36000000,
     net_invoice_amount: 35500000,
+    return_amount: -520000,
     payment_amount: 11000000,
     discount_amount: 0,
     adjustment_amount: 0,
@@ -199,6 +200,22 @@ describe('Credit Control', () => {
     for (const stale of ['CURRENT', '91-180', '180+']) {
       expect(AGING_COLORS[stale]).toBeUndefined();
     }
+  });
+
+  it('labels the net card literally and shows the returns that explain it', async () => {
+    /*
+      "Net Invoice" promised a reduction this data does not always deliver.
+      Returns are posted negative and subtracted, so the net figure can exceed
+      the gross one — 1.59 Cr against 1.41 Cr on the first real file — which
+      reads as a bug to anyone who has not been told about the sign convention.
+      The label is now literal about the operation, and the returns total sits
+      on the card so the difference is accounted for.
+    */
+    wrap(<CreditControlPage />);
+    expect(await screen.findByText('Invoice less Returns')).toBeInTheDocument();
+    expect(screen.queryByText('Net Invoice')).not.toBeInTheDocument();
+    // Signed, so a negative return reads as the increase it caused.
+    expect(await screen.findByText(/returns.*-/)).toBeInTheDocument();
   });
 
   it('states that the outstanding trend has no source, and draws no chart', async () => {
