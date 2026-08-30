@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: Inter, system-ui, sans-serif; background: #f8fafc; color: #0f172a; -webkit-font-smoothing: antialiased; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { color: #1d4ed8; }
+  input, select, button { font: inherit; }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</helmet>
+
+<div style="min-height:100vh;background:#f8fafc;color:#0f172a;font-size:14px">
+
+  <header style="position:sticky;top:0;z-index:40;display:flex;flex-direction:column;background:rgba(255,255,255,0.95);backdrop-filter:blur(8px);border-bottom:1px solid #e2e8f0">
+    <div style="display:flex;height:56px;align-items:center;gap:12px;padding:0 16px">
+      <span style="display:flex;height:32px;width:32px;align-items:center;justify-content:center;border-radius:8px;background:#2563eb;font-size:13px;font-weight:700;color:#fff">BI</span>
+      <div>
+        <p style="margin:0;font-size:14px;font-weight:600;line-height:1.2">Naafco Agro Ltd.</p>
+        <p style="margin:0;font-size:11px;line-height:1.2;color:#64748b">Business Intelligence</p>
+      </div>
+      <div style="margin-left:auto;display:flex;flex:1;justify-content:center;padding:0 16px">
+        <div style="position:relative;width:100%;max-width:420px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" style="position:absolute;left:12px;top:50%;transform:translateY(-50%)"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+          <input type="search" placeholder="Search customers, invoices, materials…" style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px 8px 36px;font-size:14px;color:#0f172a" />
+        </div>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+        <button type="button" style="display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;border-radius:8px;padding:8px;color:#475569;cursor:pointer" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13v8"></path><path d="m8 17 4-4 4 4"></path><path d="M20.9 18.4A5 5 0 0 0 18 9h-1.3A8 8 0 1 0 4 16.3"></path></svg>
+        </button>
+        <button type="button" style="display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;border-radius:8px;padding:8px;color:#475569;cursor:pointer" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 21a2 2 0 0 0 3.4 0"></path><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"></path></svg>
+        </button>
+        <button type="button" style="display:inline-flex;align-items:center;gap:8px;border:0;background:transparent;border-radius:8px;padding:6px 8px;color:#334155;cursor:pointer" style-hover="background:#f1f5f9">
+          <span style="display:flex;height:28px;width:28px;align-items:center;justify-content:center;border-radius:9999px;background:#2563eb;font-size:12px;font-weight:600;color:#fff">M</span>
+          <span style="font-size:14px">Imtiaz Hossain</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"></path></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div style="display:flex">
+
+    <aside style="position:sticky;top:56px;height:calc(100vh - 56px);width:240px;flex-shrink:0;overflow-y:auto;border-right:1px solid #e2e8f0;background:#fff;padding:12px">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+        <button type="button" style="border:0;background:transparent;padding:4px 8px;color:#64748b;cursor:pointer;border-radius:8px" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M9 3v18"></path><path d="m16 15-3-3 3-3"></path></svg>
+        </button>
+      </div>
+      <nav style="display:flex;flex-direction:column;gap:2px">
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>
+          <span>Dashboard</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2M20 14h2M15 13v2M9 13v2"></path></svg>
+          <span>AI Assistant</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"></path><path d="M18 17V9M13 17V5M8 17v-3"></path></svg>
+          <span>Sales</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-4.5-2.6a2 2 0 0 0-2.06 0z"></path><path d="m7 16.5-4.74-2.85M7 16.5v5.17M12 13.5V19l4.97 2.98a2 2 0 0 0 2.06 0l3-1.8A2 2 0 0 0 23 18.47v-3.24a2 2 0 0 0-.97-1.71L17.5 10.9a2 2 0 0 0-2.06 0z"></path><path d="M7.5 4.21 12 6.81l4.5-2.6"></path></svg>
+          <span>Stock</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle></svg>
+          <span>Target</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7h6v6"></path><path d="m22 7-8.5 8.5-5-5L2 17"></path></svg>
+          <span>Performance</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"></path><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><path d="m3.3 7 8.7 5 8.7-5M12 22V12"></path></svg>
+          <span>Materials</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          <span>Customers</span>
+        </a>
+        <a href="#" data-screen-label="Credit Control" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;background:#eff6ff;color:#1d4ed8">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"></path><path d="M8 7h8M8 11h8M8 15h5"></path></svg>
+          <span>Credit Control</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.1 4.1 20 2l-2 5.9M4 6l6-2 4 2 6-2v14l-6 2-4-2-6 2z"></path><path d="M10 4v16M14 6v16"></path></svg>
+          <span>Map</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"></path><path d="M12 9v4M12 17h.01"></path></svg>
+          <span>Alerts</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"></rect><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><path d="m9 14 2 2 4-4"></path></svg>
+          <span>Data Quality</span>
+        </a>
+        <div style="margin:8px 4px;height:1px;background:#e2e8f0"></div>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13v8"></path><path d="m8 17 4-4 4 4"></path><path d="M20.9 18.4A5 5 0 0 0 18 9h-1.3A8 8 0 1 0 4 16.3"></path></svg>
+          <span>Data Upload</span>
+        </a>
+        <a href="#" style="display:flex;align-items:center;gap:12px;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:500;color:#475569" style-hover="background:#f1f5f9">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14a9 3 0 0 0 18 0V5"></path><path d="M3 12a9 3 0 0 0 18 0"></path></svg>
+          <span>Data Management</span>
+        </a>
+      </nav>
+    </aside>
+
+    <main style="min-width:0;flex:1;padding:24px;display:flex;flex-direction:column;gap:16px">
+
+      <div style="display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px">
+        <div style="min-width:0">
+          <h1 style="margin:0;font-size:20px;font-weight:600;color:#0f172a">Credit Control</h1>
+          <p style="margin:2px 0 0;font-size:14px;color:#64748b">As on 2026-08-29 · FY 2026-27 · 16 invoices in scope</p>
+          <p style="margin:2px 0 0;font-size:12px;color:#94a3b8">Net Invoice, Balance, Due Date and Status are calculated by the backend and cannot be edited.</p>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+          <button type="button" style="display:inline-flex;align-items:center;gap:8px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px;font-size:14px;font-weight:500;color:#334155;cursor:pointer" style-hover="background:#f1f5f9">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"></path><path d="M14 2v5h5M8 13h2l2 5 2-5h2"></path></svg>Excel</button>
+          <button type="button" style="display:inline-flex;align-items:center;gap:8px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px;font-size:14px;font-weight:500;color:#334155;cursor:pointer" style-hover="background:#f1f5f9">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 9h18M3 15h18M9 3v18M15 3v18"></path></svg>CSV</button>
+          <button type="button" style="display:inline-flex;align-items:center;gap:8px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px;font-size:14px;font-weight:500;color:#334155;cursor:pointer" style-hover="background:#f1f5f9">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"></path><path d="M14 2v5h5M9 13h6M9 17h6"></path></svg>PDF</button>
+        </div>
+      </div>
+
+      <div style="position:sticky;top:57px;z-index:30;border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:12px">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px">
+          <div style="display:flex;flex:1;flex-wrap:wrap;align-items:center;gap:8px 16px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <label style="white-space:nowrap;font-size:12px;font-weight:500;color:#64748b">Period</label>
+              <select style="border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px;color:#0f172a">
+                <option>This Month</option>
+                <option>This Quarter</option>
+                <option selected="">Financial Year</option>
+                <option>Custom</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label style="white-space:nowrap;font-size:12px;font-weight:500;color:#64748b">Company</label>
+              <select style="min-width:160px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px;color:#0f172a">
+                <option>1000 — Naafco Agro</option>
+                <option>All</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label style="white-space:nowrap;font-size:12px;font-weight:500;color:#64748b">As on</label>
+              <input type="date" value="2026-08-29" style="border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px;color:#0f172a" />
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <button type="button" style="border:0;background:transparent;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:500;color:#475569;cursor:pointer" style-hover="background:#f1f5f9">Clear all</button>
+            <button type="button" onClick="{{ toggleFilters }}" style="display:inline-flex;align-items:center;gap:8px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px;font-size:14px;font-weight:500;color:#334155;cursor:pointer" style-hover="background:#f1f5f9">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18l-7 8v7l-4-2v-5z"></path></svg>
+              Filters
+              <span style="display:inline-flex;align-items:center;border-radius:9999px;background:#dbeafe;padding:1px 8px;font-size:12px;font-weight:500;color:#1d4ed8">2</span>
+            </button>
+          </div>
+        </div>
+
+        <sc-if value="{{ chipsVisible }}" hint-placeholder-val="{{ true }}">
+          <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">
+            <button type="button" style="display:inline-flex;align-items:center;gap:4px;border:0;border-radius:9999px;background:#f1f5f9;padding:2px 8px;font-size:12px;font-weight:500;color:#334155;cursor:pointer">Company: 1000
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+            </button>
+            <button type="button" style="display:inline-flex;align-items:center;gap:4px;border:0;border-radius:9999px;background:#f1f5f9;padding:2px 8px;font-size:12px;font-weight:500;color:#334155;cursor:pointer">Credit Days: 90
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+            </button>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ filtersOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:12px;border-top:1px solid #e2e8f0;padding-top:12px;display:flex;flex-direction:column;gap:16px">
+          <div>
+          <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Credit</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Plant</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Gazipur</option><option>Bogura</option><option>Khulna</option><option>Sylhet</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Customer</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Rahman Traders</option><option>Meghna Agro</option><option>Padma Distribution</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Invoice No</label>
+              <input placeholder="All" style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px" />
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Invoice Date</label>
+              <input type="date" style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px" />
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Due Date</label>
+              <input type="date" style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px" />
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Credit Days</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>30 Days</option><option>45 Days</option><option selected="">90 Days</option><option>150 Days</option><option>180 Days</option><option>190 Days</option><option>250 Days</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Payment Mode</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Cash</option><option>Credit</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Status</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Not Yet Due</option><option>Over Due</option><option>Cleared</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Aging Bucket</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Not Yet Due</option><option>1–30 Days</option><option>31–60 Days</option><option>61–90 Days</option><option>91–120 Days</option><option>121–180 Days</option><option>181–365 Days</option><option>365+ Days</option></select>
+            </div>
+          </div>
+          </div>
+
+          <div>
+          <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Sales Structure</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Sales Line</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>SL-01 Crop Care</option><option>SL-02 Seeds</option><option>SL-03 Nutrition</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Zone</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Dhaka Zone</option><option>Rajshahi Zone</option><option>Khulna Zone</option><option>Sylhet Zone</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Region</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Dhaka North</option><option>Dhaka South</option><option>Bogura</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Area</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Gazipur Area</option><option>Tangail Area</option><option>Jashore Area</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Unit</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Unit 11</option><option>Unit 12</option><option>Unit 21</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Territory</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Kaliakair</option><option>Sreepur</option><option>Kotchandpur</option></select>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:12px;font-weight:500;color:#475569">Sub-Territory</label>
+              <select style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:6px 10px;font-size:14px"><option>All</option><option>Kaliakair East</option><option>Kaliakair West</option><option>Sreepur North</option></select>
+            </div>
+          </div>
+          </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:16px">
+          <p style="margin:0;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Total Invoice</p>
+          <p style="margin:8px 0 0;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳3.60 Cr</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#64748b">16 invoices</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:16px">
+          <p style="margin:0;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Net Invoice</p>
+          <p style="margin:8px 0 0;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳3.55 Cr</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#64748b">after ৳5.20 L returns</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:16px">
+          <p style="margin:0;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Total Payment</p>
+          <p style="margin:8px 0 0;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳1.10 Cr</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#64748b">31.1% of net invoice</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:16px">
+          <p style="margin:0;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Total Outstanding</p>
+          <p style="margin:8px 0 0;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳2.40 Cr</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#64748b">13 open invoices</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:16px">
+          <p style="margin:0;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Overdue Amount</p>
+          <p style="margin:8px 0 0;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#dc2626">৳1.19 Cr</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#64748b">7 invoices · 49.8% of outstanding</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:16px">
+          <p style="margin:0;font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Due Soon</p>
+          <p style="margin:8px 0 0;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;color:#d97706">{{ dueSoonAmount }}</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#64748b">{{ dueSoonHint }}</p>
+        </div>
+      </div>
+
+      <section style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:12px 16px">
+          <h2 style="margin:0;font-size:14px;font-weight:600;color:#334155">Credit Aging — Outstanding by bucket</h2>
+          <span style="font-size:12px;color:#94a3b8">Today − Due Date, open invoices only</span>
+        </div>
+        <div style="padding:16px;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px">
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#059669;height:148px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">Not Yet Due</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳1.20 Cr</p>
+            <p style="margin:0;font-size:12px;color:#64748b">6 invoices</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#65a30d;height:18px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">1–30 Days</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳14.60 L</p>
+            <p style="margin:0;font-size:12px;color:#64748b">2 invoices</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#ca8a04;height:55px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">31–60 Days</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳45.00 L</p>
+            <p style="margin:0;font-size:12px;color:#64748b">2 invoices</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#ea580c;height:62px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">61–90 Days</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳50.00 L</p>
+            <p style="margin:0;font-size:12px;color:#64748b">2 invoices</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#e2e8f0;height:2px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">91–120 Days</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#94a3b8">৳0</p>
+            <p style="margin:0;font-size:12px;color:#94a3b8">no invoices</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#b91c1c;height:12px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">121–180 Days</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">৳9.80 L</p>
+            <p style="margin:0;font-size:12px;color:#64748b">1 invoice</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#e2e8f0;height:2px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">181–365 Days</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#94a3b8">৳0</p>
+            <p style="margin:0;font-size:12px;color:#94a3b8">no invoices</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;height:148px;align-items:flex-end"><div style="width:100%;border-radius:4px 4px 0 0;background:#e2e8f0;height:2px"></div></div>
+            <p style="margin:0;font-size:12px;font-weight:500;color:#334155">365+ Days</p>
+            <p style="margin:0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:#94a3b8">৳0</p>
+            <p style="margin:0;font-size:12px;color:#94a3b8">no invoices</p>
+          </div>
+        </div>
+      </section>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">
+        <section style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05)">
+          <div style="border-bottom:1px solid #e2e8f0;padding:12px 16px"><h2 style="margin:0;font-size:14px;font-weight:600;color:#334155">Credit Status</h2></div>
+          <div style="padding:16px;display:flex;align-items:center;gap:24px">
+            <div style="position:relative;height:140px;width:140px;flex-shrink:0;border-radius:9999px;background:conic-gradient(#64748b 0% 37.5%, #dc2626 37.5% 81.25%, #059669 81.25% 100%)">
+              <div style="position:absolute;inset:26px;border-radius:9999px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center">
+                <span style="font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">16</span>
+                <span style="font-size:11px;color:#64748b">invoices</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px;font-size:12px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="height:10px;width:10px;border-radius:2px;background:#64748b"></span>
+                <span style="color:#334155">Not Yet Due</span>
+                <span style="margin-left:auto;font-variant-numeric:tabular-nums;color:#64748b">6 · ৳1.20 Cr</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="height:10px;width:10px;border-radius:2px;background:#dc2626"></span>
+                <span style="color:#334155">Over Due</span>
+                <span style="margin-left:auto;font-variant-numeric:tabular-nums;color:#64748b">7 · ৳1.19 Cr</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="height:10px;width:10px;border-radius:2px;background:#059669"></span>
+                <span style="color:#334155">Cleared</span>
+                <span style="margin-left:auto;font-variant-numeric:tabular-nums;color:#64748b">3 · ৳0</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05)">
+          <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e2e8f0;padding:12px 16px">
+            <h2 style="margin:0;font-size:14px;font-weight:600;color:#334155">Top Overdue Customers</h2>
+            <span style="font-size:12px;color:#94a3b8">Top 5 of 6</span>
+          </div>
+          <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="width:132px;flex-shrink:0;font-size:12px;color:#334155">Rahman Traders</span>
+              <div style="flex:1;height:14px;border-radius:4px;background:#f1f5f9"><div style="height:14px;width:100%;border-radius:4px;background:#dc2626"></div></div>
+              <span style="width:72px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:#0f172a">৳50.00 L</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="width:132px;flex-shrink:0;font-size:12px;color:#334155">Padma Distribution</span>
+              <div style="flex:1;height:14px;border-radius:4px;background:#f1f5f9"><div style="height:14px;width:49%;border-radius:4px;background:#dc2626"></div></div>
+              <span style="width:72px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:#0f172a">৳24.60 L</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="width:132px;flex-shrink:0;font-size:12px;color:#334155">Meghna Agro</span>
+              <div style="flex:1;height:14px;border-radius:4px;background:#f1f5f9"><div style="height:14px;width:48%;border-radius:4px;background:#dc2626"></div></div>
+              <span style="width:72px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:#0f172a">৳24.00 L</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="width:132px;flex-shrink:0;font-size:12px;color:#334155">Titas Seeds</span>
+              <div style="flex:1;height:14px;border-radius:4px;background:#f1f5f9"><div style="height:14px;width:22%;border-radius:4px;background:#dc2626"></div></div>
+              <span style="width:72px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:#0f172a">৳11.00 L</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="width:132px;flex-shrink:0;font-size:12px;color:#334155">Jamuna Krishi</span>
+              <div style="flex:1;height:14px;border-radius:4px;background:#f1f5f9"><div style="height:14px;width:20%;border-radius:4px;background:#dc2626"></div></div>
+              <span style="width:72px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:#0f172a">৳9.80 L</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05)">
+        <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e2e8f0;padding:12px 16px">
+          <h2 style="margin:0;font-size:14px;font-weight:600;color:#334155">Outstanding Trend</h2>
+          <span style="font-size:12px;color:#94a3b8">Closing outstanding, month end</span>
+        </div>
+        <div style="padding:16px">
+          <svg viewBox="0 0 600 140" preserveAspectRatio="none" width="100%" height="140" style="display:block">
+            <path d="M0,74.5 L120,62.5 L240,50 L360,42.2 L480,34.8 L600,29.2 L600,140 L0,140 Z" fill="#2563eb" fill-opacity="0.12"></path>
+            <path d="M0,74.5 L120,62.5 L240,50 L360,42.2 L480,34.8 L600,29.2" fill="none" stroke="#2563eb" stroke-width="2" vector-effect="non-scaling-stroke"></path>
+          </svg>
+          <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:#64748b">
+            <span>Mar ৳1.42 Cr</span><span>Apr ৳1.68 Cr</span><span>May ৳1.95 Cr</span><span>Jun ৳2.12 Cr</span><span>Jul ৳2.28 Cr</span><span>Aug ৳2.40 Cr</span>
+          </div>
+        </div>
+      </section>
+
+      <section style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05)">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:12px 16px">
+          <h2 style="margin:0;font-size:14px;font-weight:600;color:#334155">{{ tableTitle }}</h2>
+          <div style="display:flex;align-items:center;gap:2px;border-radius:8px;background:#f1f5f9;padding:2px">
+            <button type="button" onClick="{{ showCustomerView }}" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:500;cursor:pointer;background:{{ customerTabBg }};color:{{ customerTabFg }}">Customer View</button>
+            <button type="button" onClick="{{ showInvoiceView }}" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:500;cursor:pointer;background:{{ invoiceTabBg }};color:{{ invoiceTabFg }}">Invoice View</button>
+          </div>
+        </div>
+
+        <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px">
+            <div style="position:relative;min-width:0;flex:1;max-width:320px">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" style="position:absolute;left:12px;top:50%;transform:translateY(-50%)"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+              <input type="search" placeholder="Invoice no, customer, clearing document…" style="width:100%;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px 8px 36px;font-size:14px" />
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <sc-if value="{{ drillActive }}" hint-placeholder-val="{{ false }}">
+                <button type="button" onClick="{{ clearDrill }}" style="display:inline-flex;align-items:center;gap:6px;border-radius:9999px;border:1px dashed #93c5fd;background:#eff6ff;padding:4px 10px;font-size:12px;font-weight:500;color:#1d4ed8;cursor:pointer">{{ drillLabel }}
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+                </button>
+              </sc-if>
+              <button type="button" style="display:inline-flex;align-items:center;gap:8px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px;font-size:14px;font-weight:500;color:#334155;cursor:pointer" style-hover="background:#f1f5f9">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 3v18M12 3v18M20 3v18"></path></svg>Columns
+              </button>
+            </div>
+          </div>
+
+          <sc-if value="{{ isCustomerView }}" hint-placeholder-val="{{ true }}">
+            <div style="width:100%;overflow-x:auto;border-radius:8px;border:1px solid #e2e8f0">
+              <table style="width:100%;min-width:1180px;border-collapse:collapse;font-size:14px">
+                <thead>
+                  <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0">
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Customer</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Code</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Invoices</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Total Invoice</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Net Invoice</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Payment</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Discount</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Adjustment</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Outstanding</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Overdue</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Credit Exposure</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Oldest Due</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Last Payment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <sc-for list="{{ customers }}" as="row" hint-placeholder-count="6">
+                    <tr onClick="{{ row.drill }}" style="border-bottom:1px solid #f1f5f9;cursor:pointer" style-hover="background:#f8fafc">
+                      <td style="padding:8px 12px;color:#0f172a;font-weight:500;white-space:nowrap">{{ row.name }}</td>
+                      <td style="padding:8px 12px;color:#64748b;white-space:nowrap">{{ row.code }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.count }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.totalInvoice }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.netInvoice }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.payment }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.discount }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.adjustment }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">{{ row.outstanding }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:{{ row.overdueColor }}">{{ row.overdue }}</td>
+                      <td style="padding:8px 12px">
+                        <div style="display:flex;align-items:center;gap:8px">
+                          <div style="width:64px;height:8px;border-radius:4px;background:#f1f5f9"><div style="height:8px;border-radius:4px;background:#2563eb;width:{{ row.sharePct }}"></div></div>
+                          <span style="font-size:12px;font-variant-numeric:tabular-nums;color:#64748b">{{ row.shareLabel }}</span>
+                        </div>
+                      </td>
+                      <td style="padding:8px 12px;font-variant-numeric:tabular-nums;color:{{ row.oldestDueColor }};white-space:nowrap">{{ row.oldestDue }}</td>
+                      <td style="padding:8px 12px;font-variant-numeric:tabular-nums;color:#334155;white-space:nowrap">{{ row.lastPayment }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+            <p style="margin:0;font-size:12px;font-style:italic;color:#64748b">Credit Exposure is shown as each customer's share of total portfolio outstanding — the Customer Master carries no credit limit, so a limit-based exposure would have to be invented.</p>
+          </sc-if>
+
+          <sc-if value="{{ isInvoiceView }}" hint-placeholder-val="{{ false }}">
+            <div style="width:100%;overflow-x:auto;border-radius:8px;border:1px solid #e2e8f0">
+              <table style="width:100%;min-width:2100px;border-collapse:collapse;font-size:14px">
+                <thead>
+                  <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0">
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Company</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Invoice No</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Plant</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Customer</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Invoice Date</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Credit Days</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Invoice Value</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Return</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Net Invoice</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Payment</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Discount</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Adjustment</th>
+                    <th style="padding:8px 12px;text-align:right;font-weight:500;color:#475569;white-space:nowrap">Balance</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Due Date</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Payment Mode</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Last Payment</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Clearing Date</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Clearing Doc</th>
+                    <th style="padding:8px 12px;text-align:left;font-weight:500;color:#475569;white-space:nowrap">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <sc-for list="{{ invoices }}" as="row" hint-placeholder-count="10">
+                    <tr onClick="{{ row.open }}" style="border-bottom:1px solid #f1f5f9;cursor:pointer" style-hover="background:#f8fafc">
+                      <td style="padding:8px 12px;color:#64748b;white-space:nowrap">{{ row.company }}</td>
+                      <td style="padding:8px 12px;color:#0f172a;font-weight:500;white-space:nowrap">
+                        <span style="display:inline-flex;align-items:center;gap:6px">{{ row.invoiceNo }}
+                          <sc-if value="{{ row.flagged }}" hint-placeholder-val="{{ false }}">
+                            <span title="Balance disagrees with the source figures" style="color:#d97706">
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"></path><path d="M12 9v4M12 17h.01"></path></svg>
+                            </span>
+                          </sc-if>
+                        </span>
+                      </td>
+                      <td style="padding:8px 12px;color:#334155;white-space:nowrap">{{ row.plant }}</td>
+                      <td style="padding:8px 12px;color:#334155;white-space:nowrap">{{ row.customer }}</td>
+                      <td style="padding:8px 12px;font-variant-numeric:tabular-nums;color:#334155;white-space:nowrap">{{ row.invoiceDate }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155;white-space:nowrap">{{ row.creditDays }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.invoiceValue }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.returnAmount }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155;background:#f8fafc">{{ row.netInvoice }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.payment }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.discount }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;color:#334155">{{ row.adjustment }}</td>
+                      <td style="padding:8px 12px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a;background:#f8fafc">{{ row.balance }}</td>
+                      <td style="padding:8px 12px;white-space:nowrap;background:#f8fafc">
+                        <span style="display:block;font-variant-numeric:tabular-nums;color:#334155">{{ row.dueDate }}</span>
+                        <span style="display:block;font-size:11px;color:{{ row.dueNoteColor }}">{{ row.dueNote }}</span>
+                      </td>
+                      <td style="padding:8px 12px;color:#334155;white-space:nowrap">{{ row.mode }}</td>
+                      <td style="padding:8px 12px;font-variant-numeric:tabular-nums;color:#334155;white-space:nowrap">{{ row.lastPayment }}</td>
+                      <td style="padding:8px 12px;font-variant-numeric:tabular-nums;color:#334155;white-space:nowrap">{{ row.clearingDate }}</td>
+                      <td style="padding:8px 12px;color:#64748b;white-space:nowrap">{{ row.clearingDoc }}</td>
+                      <td style="padding:8px 12px;white-space:nowrap;background:#f8fafc">
+                        <span style="display:inline-flex;align-items:center;border-radius:9999px;padding:2px 8px;font-size:12px;font-weight:500;background:{{ row.badgeBg }};color:{{ row.badgeFg }}">{{ row.status }}</span>
+                      </td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+            <p style="margin:0;font-size:12px;font-style:italic;color:#64748b">{{ qualityNote }}</p>
+          </sc-if>
+
+          <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:#64748b">
+            <span>{{ rangeLabel }}</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <select style="border-radius:6px;border:1px solid #cbd5e1;background:#fff;padding:4px 8px"><option>25</option><option>50</option><option>100</option></select>
+              <button type="button" style="border:0;background:transparent;padding:4px;color:#94a3b8;cursor:not-allowed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m15 18-6-6 6-6"></path></svg></button>
+              <span style="font-variant-numeric:tabular-nums">Page 1 of 1</span>
+              <button type="button" style="border:0;background:transparent;padding:4px;color:#94a3b8;cursor:not-allowed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 18 6-6-6-6"></path></svg></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer style="margin-top:16px;border-top:1px solid #e2e8f0;padding-top:16px;text-align:center;font-size:12px;color:#94a3b8">
+        Naafco Agro Ltd. · Business Intelligence
+      </footer>
+    </main>
+  </div>
+
+  <sc-if value="{{ drawerOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:50;display:flex;justify-content:flex-end;background:rgba(15,23,42,0.5);animation:fade-in 150ms ease-out">
+      <div style="display:flex;height:100%;width:560px;max-width:100%;flex-direction:column;border-left:1px solid #e2e8f0;background:#fff;box-shadow:-8px 0 24px rgba(15,23,42,0.12)">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:12px 16px">
+          <div style="min-width:0">
+            <h2 style="margin:0;font-size:14px;font-weight:600;color:#334155">{{ detail.invoiceNo }}</h2>
+            <p style="margin:2px 0 0;font-size:12px;color:#64748b">{{ detail.subtitle }}</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="display:inline-flex;align-items:center;border-radius:9999px;padding:2px 8px;font-size:12px;font-weight:500;background:{{ detail.badgeBg }};color:{{ detail.badgeFg }}">{{ detail.status }}</span>
+            <button type="button" onClick="{{ closeDrawer }}" style="border:0;background:transparent;border-radius:8px;padding:4px 8px;color:#475569;cursor:pointer" style-hover="background:#f1f5f9">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+            </button>
+          </div>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:20px">
+          <div>
+            <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Invoice Information</h3>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;font-size:14px">
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Company</span><span style="color:#0f172a">{{ detail.company }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Plant</span><span style="color:#0f172a">{{ detail.plant }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Customer</span><span style="color:#0f172a">{{ detail.customer }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Customer Code</span><span style="color:#0f172a">{{ detail.customerCode }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Invoice Date</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">{{ detail.invoiceDate }}</span></div>
+            </div>
+          </div>
+
+          <div>
+            <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Credit Terms</h3>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;font-size:14px">
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Credit Days</span><span style="color:#0f172a">{{ detail.creditDays }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Due Date</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">{{ detail.dueDate }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Payment Mode</span><span style="color:#0f172a">{{ detail.mode }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Aging</span><span style="color:{{ detail.dueNoteColor }}">{{ detail.dueNote }}</span></div>
+            </div>
+          </div>
+
+          <div>
+            <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Financial Summary</h3>
+            <div style="border-radius:8px;border:1px solid #e2e8f0;overflow:hidden;font-size:14px">
+              <div style="display:flex;justify-content:space-between;padding:8px 12px"><span style="color:#475569">Invoice Value</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">{{ detail.invoiceValue }}</span></div>
+              <div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid #f1f5f9"><span style="color:#475569">Return Amount</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">− {{ detail.returnAmount }}</span></div>
+              <div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid #e2e8f0;background:#f8fafc"><span style="font-weight:500;color:#334155">Net Invoice Amount</span><span style="font-weight:600;font-variant-numeric:tabular-nums;color:#0f172a">{{ detail.netInvoice }}</span></div>
+              <div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid #f1f5f9"><span style="color:#475569">Payment Amount</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">− {{ detail.payment }}</span></div>
+              <div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid #f1f5f9"><span style="color:#475569">Discount</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">− {{ detail.discount }}</span></div>
+              <div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid #f1f5f9"><span style="color:#475569">Adjustment Amount</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">− {{ detail.adjustment }}</span></div>
+              <div style="display:flex;justify-content:space-between;padding:10px 12px;border-top:1px solid #e2e8f0;background:#f8fafc"><span style="font-weight:600;color:#334155">Balance Amount</span><span style="font-weight:600;font-variant-numeric:tabular-nums;color:{{ detail.balanceColor }}">{{ detail.balance }}</span></div>
+            </div>
+          </div>
+
+          <div>
+            <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Payment / Clearing</h3>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;font-size:14px">
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Last Payment Date</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">{{ detail.lastPayment }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Clearing Date</span><span style="font-variant-numeric:tabular-nums;color:#0f172a">{{ detail.clearingDate }}</span></div>
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#64748b">Clearing Document</span><span style="color:#0f172a">{{ detail.clearingDoc }}</span></div>
+            </div>
+          </div>
+
+          <div>
+            <h3 style="margin:0 0 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Timeline</h3>
+            <div style="display:flex;flex-direction:column;gap:0">
+              <sc-for list="{{ detail.timeline }}" as="step" hint-placeholder-count="4">
+                <div style="display:flex;gap:12px">
+                  <div style="display:flex;flex-direction:column;align-items:center;width:16px">
+                    <span style="height:10px;width:10px;border-radius:9999px;margin-top:5px;background:{{ step.dot }}"></span>
+                    <span style="flex:1;width:2px;background:{{ step.line }}"></span>
+                  </div>
+                  <div style="padding-bottom:16px">
+                    <p style="margin:0;font-size:14px;font-weight:500;color:{{ step.titleColor }}">{{ step.title }}</p>
+                    <p style="margin:2px 0 0;font-size:12px;font-variant-numeric:tabular-nums;color:#64748b">{{ step.detail }}</p>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <p style="margin:0;font-size:12px;font-style:italic;color:#64748b">The source stores one aggregated Payment Amount and one Last Payment Date, so the timeline shows a single payment event — individual transactions appear only once the backend supplies them.</p>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #e2e8f0;padding:12px 16px">
+          <button type="button" onClick="{{ closeDrawer }}" style="border-radius:8px;border:1px solid #cbd5e1;background:#fff;padding:8px 12px;font-size:14px;font-weight:500;color:#334155;cursor:pointer" style-hover="background:#f1f5f9">Close</button>
+          <button type="button" style="border-radius:8px;border:0;background:#2563eb;padding:8px 12px;font-size:14px;font-weight:500;color:#fff;cursor:pointer" style-hover="background:#1d4ed8">Open customer</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;defaultView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;customer&quot;,&quot;invoice&quot;],&quot;default&quot;:&quot;customer&quot;,&quot;tsType&quot;:&quot;'customer' | 'invoice'&quot;,&quot;section&quot;:&quot;Behaviour&quot;},&quot;dueSoonDays&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:7,&quot;min&quot;:1,&quot;max&quot;:30,&quot;unit&quot;:&quot;days&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Behaviour&quot;},&quot;showDataQualityFlags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behaviour&quot;}}">
+const TODAY = '2026-08-29';
+
+const RAW = [
+  ['1000','INV-26-0412','Gazipur','Rahman Traders','C-1042','2026-03-12',90,4850000,0,1200000,50000,0,'Credit','2026-05-28',null,null],
+  ['1000','INV-26-0518','Gazipur','Rahman Traders','C-1042','2026-05-04',45,1920000,120000,400000,0,0,'Credit','2026-06-05',null,null],
+  ['1000','INV-26-0631','Bogura','Meghna Agro','C-2087','2026-06-02',30,2400000,0,0,0,0,'Credit',null,null,null],
+  ['1000','INV-26-0702','Bogura','Meghna Agro','C-2087','2026-07-15',45,1150000,0,0,0,0,'Credit',null,null,null],
+  ['1000','INV-26-0733','Khulna','Padma Distribution','C-3310','2026-07-20',30,860000,0,500000,0,0,'Credit','2026-08-11',null,null],
+  ['1000','INV-26-0745','Khulna','Padma Distribution','C-3310','2026-08-01',30,1480000,0,0,0,0,'Credit',null,null,null],
+  ['1000','INV-26-0751','Gazipur','Shetu Enterprise','C-4125','2026-08-05',45,3250000,150000,1000000,60000,0,'Credit','2026-08-06',null,null],
+  ['1000','INV-26-0760','Gazipur','Shetu Enterprise','C-4125','2026-06-25',150,5600000,0,2000000,0,0,'Credit','2026-07-18',null,null],
+  ['2000','INV-26-0402','Sylhet','Jamuna Krishi','C-5063','2026-02-18',30,980000,0,0,0,0,'Credit',null,null,null],
+  ['2000','INV-26-0655','Sylhet','Jamuna Krishi','C-5063','2026-06-10',90,1240000,0,240000,0,0,'Credit','2026-08-10',null,null],
+  ['1000','INV-26-0688','Bogura','Titas Seeds','C-6201','2026-06-28',45,2150000,50000,900000,0,100000,'Credit','2026-07-30',null,null],
+  ['1000','INV-26-0509','Khulna','Titas Seeds','C-6201','2026-04-30',90,1760000,0,1760000,0,0,'Credit','2026-07-24','2026-07-24','CLR-88214'],
+  ['1000','INV-26-0771','Gazipur','Rahman Traders','C-1042','2026-08-18',30,640000,0,640000,0,0,'Cash','2026-08-20','2026-08-20','CLR-88510'],
+  ['2000','INV-26-0355','Sylhet','Padma Distribution','C-3310','2026-01-22',180,3900000,200000,1500000,100000,0,'Credit','2026-07-30',null,null],
+  ['1000','INV-26-0779','Bogura','Shetu Enterprise','C-4125','2026-08-25',30,2750000,0,0,0,0,'Credit',null,null,null],
+  ['2000','INV-26-0690','Khulna','Jamuna Krishi','C-5063','2026-06-30',45,1100000,0,900000,50000,250000,'Credit','2026-08-12',null,null]
+];
+
+const BADGE = {
+  'Not Yet Due': ['#f1f5f9', '#334155'],
+  'Due Soon': ['#fef3c7', '#92400e'],
+  'Over Due': ['#fee2e2', '#991b1b'],
+  'Cleared': ['#d1fae5', '#065f46']
+};
+
+function toDate(iso) { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d); }
+function iso(ms) { return new Date(ms).toISOString().slice(0, 10); }
+function addDays(isoDate, days) { return iso(toDate(isoDate) + days * 86400000); }
+function dayDiff(a, b) { return Math.round((toDate(a) - toDate(b)) / 86400000); }
+
+function fmt(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  const magnitude = Math.abs(value);
+  if (magnitude >= 10000000) return '৳' + (value / 10000000).toFixed(2) + ' Cr';
+  if (magnitude >= 100000) return '৳' + (value / 100000).toFixed(2) + ' L';
+  if (magnitude >= 1000) return '৳' + (value / 1000).toFixed(1) + ' K';
+  return '৳' + value.toFixed(0);
+}
+
+class Component extends DCLogic {
+  state = { view: null, filtersOpen: false, openId: null, drillCode: null };
+
+  invoices() {
+    return RAW.map((r) => {
+      const [company, invoiceNo, plant, customer, code, invoiceDate, days,
+        value, ret, pay, disc, adj, mode, lastPay, clearDate, clearDoc] = r;
+      const net = value - ret;
+      const balance = net - pay - disc - adj;
+      const due = addDays(invoiceDate, days);
+      const late = dayDiff(TODAY, due);
+      const cleared = balance <= 0;
+      const soonDays = this.props.dueSoonDays ?? 7;
+      let status = 'Not Yet Due';
+      if (cleared) status = 'Cleared';
+      else if (late > 0) status = 'Over Due';
+      else if (-late <= soonDays) status = 'Due Soon';
+      let dueNote = '';
+      if (cleared) dueNote = 'Settled';
+      else if (late > 0) dueNote = 'Overdue by ' + late + ' days';
+      else if (late === 0) dueNote = 'Due today';
+      else dueNote = 'Due in ' + -late + ' days';
+      return {
+        company, invoiceNo, plant, customer, code, invoiceDate, days,
+        value, ret, pay, disc, adj, mode, lastPay, clearDate, clearDoc,
+        net, balance, due, late, status, dueNote,
+        flagged: balance < 0,
+        open: balance > 0
+      };
+    });
+  }
+
+  rowVals(inv) {
+    const badge = BADGE[inv.status === 'Due Soon' ? 'Due Soon' : inv.status];
+    return {
+      company: inv.company,
+      invoiceNo: inv.invoiceNo,
+      plant: inv.plant,
+      customer: inv.customer,
+      invoiceDate: inv.invoiceDate,
+      creditDays: inv.days + ' Days',
+      invoiceValue: fmt(inv.value),
+      returnAmount: inv.ret ? fmt(inv.ret) : '—',
+      netInvoice: fmt(inv.net),
+      payment: inv.pay ? fmt(inv.pay) : '—',
+      discount: inv.disc ? fmt(inv.disc) : '—',
+      adjustment: inv.adj ? fmt(inv.adj) : '—',
+      balance: fmt(inv.balance),
+      dueDate: inv.due,
+      dueNote: inv.dueNote,
+      dueNoteColor: inv.status === 'Over Due' ? '#dc2626'
+        : inv.status === 'Due Soon' ? '#b45309' : '#94a3b8',
+      mode: inv.mode,
+      lastPayment: inv.lastPay ?? '—',
+      clearingDate: inv.clearDate ?? '—',
+      clearingDoc: inv.clearDoc ?? '—',
+      status: inv.status,
+      badgeBg: badge[0],
+      badgeFg: badge[1],
+      flagged: inv.flagged && (this.props.showDataQualityFlags ?? true),
+      open: () => this.setState({ openId: inv.invoiceNo })
+    };
+  }
+
+  customerRows(all) {
+    const byCode = new Map();
+    all.forEach((inv) => {
+      let row = byCode.get(inv.code);
+      if (!row) {
+        row = { code: inv.code, name: inv.customer, count: 0, value: 0, ret: 0,
+          pay: 0, disc: 0, adj: 0, outstanding: 0, overdue: 0,
+          oldestDue: null, lastPay: null };
+        byCode.set(inv.code, row);
+      }
+      row.count += 1;
+      row.value += inv.value;
+      row.ret += inv.ret;
+      row.pay += inv.pay;
+      row.disc += inv.disc;
+      row.adj += inv.adj;
+      if (inv.balance > 0) {
+        row.outstanding += inv.balance;
+        if (inv.status === 'Over Due') row.overdue += inv.balance;
+        if (!row.oldestDue || inv.due < row.oldestDue) row.oldestDue = inv.due;
+      }
+      if (inv.lastPay && (!row.lastPay || inv.lastPay > row.lastPay)) row.lastPay = inv.lastPay;
+    });
+    const rows = [...byCode.values()].sort((a, b) => b.outstanding - a.outstanding);
+    const total = rows.reduce((sum, row) => sum + row.outstanding, 0) || 1;
+    return rows.map((row) => {
+      const share = (row.outstanding / total) * 100;
+      return {
+        name: row.name,
+        code: row.code,
+        count: row.count,
+        totalInvoice: fmt(row.value),
+        netInvoice: fmt(row.value - row.ret),
+        payment: row.pay ? fmt(row.pay) : '—',
+        discount: row.disc ? fmt(row.disc) : '—',
+        adjustment: row.adj ? fmt(row.adj) : '—',
+        outstanding: fmt(row.outstanding),
+        overdue: row.overdue ? fmt(row.overdue) : '—',
+        overdueColor: row.overdue ? '#dc2626' : '#94a3b8',
+        sharePct: share.toFixed(0) + '%',
+        shareLabel: share.toFixed(1) + '%',
+        oldestDue: row.oldestDue ?? '—',
+        oldestDueColor: row.oldestDue && row.oldestDue < TODAY ? '#dc2626' : '#334155',
+        lastPayment: row.lastPay ?? '—',
+        drill: () => this.setState({ view: 'invoice', drillCode: row.code })
+      };
+    });
+  }
+
+  detailVals(all) {
+    const inv = all.find((row) => row.invoiceNo === this.state.openId);
+    if (!inv) return {};
+    const badge = BADGE[inv.status];
+    const paid = inv.pay > 0;
+    const grey = '#cbd5e1';
+    const timeline = [
+      { title: 'Invoice created', detail: inv.invoiceDate + ' · ' + fmt(inv.value),
+        dot: '#2563eb', line: '#e2e8f0', titleColor: '#0f172a' },
+      { title: inv.late > 0 ? 'Due date passed' : 'Due date',
+        detail: inv.due + ' · ' + inv.days + ' days credit · ' + inv.dueNote,
+        dot: inv.late > 0 ? '#dc2626' : '#94a3b8', line: '#e2e8f0',
+        titleColor: inv.late > 0 ? '#dc2626' : '#0f172a' },
+      { title: paid ? 'Payment received' : 'No payment recorded',
+        detail: paid ? inv.lastPay + ' · ' + fmt(inv.pay) : 'Payment Amount is ৳0',
+        dot: paid ? '#059669' : grey, line: '#e2e8f0',
+        titleColor: paid ? '#0f172a' : '#94a3b8' },
+      { title: inv.clearDoc ? 'Cleared' : 'Not cleared',
+        detail: inv.clearDoc ? inv.clearDate + ' · ' + inv.clearDoc
+          : 'Balance ' + fmt(inv.balance) + ' still open',
+        dot: inv.clearDoc ? '#059669' : grey, line: 'transparent',
+        titleColor: inv.clearDoc ? '#0f172a' : '#94a3b8' }
+    ];
+    return {
+      invoiceNo: inv.invoiceNo,
+      subtitle: inv.customer + ' · ' + inv.code + ' · ' + inv.plant,
+      status: inv.status,
+      badgeBg: badge[0],
+      badgeFg: badge[1],
+      company: inv.company,
+      plant: inv.plant,
+      customer: inv.customer,
+      customerCode: inv.code,
+      invoiceDate: inv.invoiceDate,
+      creditDays: inv.days + ' Days',
+      dueDate: inv.due,
+      mode: inv.mode,
+      dueNote: inv.dueNote,
+      dueNoteColor: inv.status === 'Over Due' ? '#dc2626'
+        : inv.status === 'Due Soon' ? '#b45309' : '#334155',
+      invoiceValue: fmt(inv.value),
+      returnAmount: fmt(inv.ret),
+      netInvoice: fmt(inv.net),
+      payment: fmt(inv.pay),
+      discount: fmt(inv.disc),
+      adjustment: fmt(inv.adj),
+      balance: fmt(inv.balance),
+      balanceColor: inv.balance < 0 ? '#d97706' : inv.balance > 0 ? '#0f172a' : '#059669',
+      lastPayment: inv.lastPay ?? '—',
+      clearingDate: inv.clearDate ?? '—',
+      clearingDoc: inv.clearDoc ?? '—',
+      timeline
+    };
+  }
+
+  renderVals() {
+    const all = this.invoices();
+    const view = this.state.view ?? (this.props.defaultView ?? 'customer');
+    const isCustomerView = view === 'customer';
+    const drill = this.state.drillCode;
+    const shown = drill ? all.filter((inv) => inv.code === drill) : all;
+    const soonDays = this.props.dueSoonDays ?? 7;
+    const soon = all.filter((inv) => inv.status === 'Due Soon');
+    const soonTotal = soon.reduce((sum, inv) => sum + inv.balance, 0);
+    const flagged = all.filter((inv) => inv.flagged);
+    const customers = this.customerRows(all);
+    const drillName = drill ? (all.find((inv) => inv.code === drill) || {}).customer : '';
+    const active = '#fff';
+
+    return {
+      isCustomerView,
+      isInvoiceView: !isCustomerView,
+      tableTitle: isCustomerView ? 'Customer Credit Exposure' : 'Invoice Credit Control',
+      customerTabBg: isCustomerView ? active : 'transparent',
+      customerTabFg: isCustomerView ? '#1d4ed8' : '#475569',
+      invoiceTabBg: isCustomerView ? 'transparent' : active,
+      invoiceTabFg: isCustomerView ? '#475569' : '#1d4ed8',
+      showCustomerView: () => this.setState({ view: 'customer', drillCode: null }),
+      showInvoiceView: () => this.setState({ view: 'invoice' }),
+      toggleFilters: () => this.setState((s) => ({ filtersOpen: !s.filtersOpen })),
+      filtersOpen: this.state.filtersOpen,
+      chipsVisible: !this.state.filtersOpen,
+      customers,
+      invoices: shown.map((inv) => this.rowVals(inv)),
+      drillActive: Boolean(drill) && !isCustomerView,
+      drillLabel: 'Customer: ' + drillName,
+      clearDrill: () => this.setState({ drillCode: null }),
+      rangeLabel: isCustomerView
+        ? 'Showing ' + customers.length + ' of ' + customers.length + ' customers'
+        : 'Showing ' + shown.length + ' of ' + all.length + ' invoices',
+      dueSoonAmount: fmt(soonTotal),
+      dueSoonHint: soon.length + (soon.length === 1 ? ' invoice' : ' invoices')
+        + ' · next ' + soonDays + ' days',
+      qualityNote: flagged.length
+        ? flagged.length + ' invoice flagged: Balance Amount is negative ('
+          + fmt(flagged[0].balance) + ') because Adjustment exceeds the open amount. '
+          + 'Shown as a data-quality exception, not corrected or hidden.'
+        : 'No data-quality exceptions in this result.',
+      drawerOpen: Boolean(this.state.openId),
+      closeDrawer: () => this.setState({ openId: null }),
+      detail: this.detailVals(all)
+    };
+  }
+}
+</script>
+</body>
+</html>

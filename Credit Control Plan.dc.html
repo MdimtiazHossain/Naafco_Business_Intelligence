@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: Inter, system-ui, sans-serif; background: #f8fafc; color: #0f172a; -webkit-font-smoothing: antialiased; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { color: #1d4ed8; }
+</style>
+</helmet>
+
+<div style="min-height:100vh;background:#f8fafc;padding:40px 24px 80px">
+  <div style="max-width:920px;margin:0 auto;display:flex;flex-direction:column;gap:24px">
+
+    <header>
+      <p style="margin:0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:#2563eb">Naafco Business Intelligence · Pre-implementation review</p>
+      <h1 style="margin:8px 0 0;font-size:30px;font-weight:600;letter-spacing:-0.01em;color:#0f172a">Credit Control module</h1>
+      <p style="margin:8px 0 0;font-size:15px;line-height:1.6;color:#475569;text-wrap:pretty">Inspection of the existing frontend and warehouse, the components the module should reuse, and what has to be built. Nothing is coded in the application yet — the mockup beside this document is a design artefact, not a patch.</p>
+      <p style="margin:12px 0 0;font-size:13px;color:#64748b">Source read: <span style="font-family:'JetBrains Mono',monospace">MdimtiazHossain/Naafco_Business_Intelligence@main</span> · 2026-08-29</p>
+    </header>
+
+    <section style="border-radius:12px;border:1px solid #fcd34d;background:#fffbeb;padding:16px 20px">
+      <h2 style="margin:0;font-size:14px;font-weight:600;color:#92400e">One finding to settle before anything is built</h2>
+      <p style="margin:8px 0 0;font-size:14px;line-height:1.6;color:#78350f;text-wrap:pretty">This platform <strong>had</strong> a receivables surface and deliberately removed it. Migration <span style="font-family:'JetBrains Mono',monospace">0020_remove_receivables_and_warehouse</span> dropped <span style="font-family:'JetBrains Mono',monospace">fact_outstanding</span>, <span style="font-family:'JetBrains Mono',monospace">fact_collection</span>, <span style="font-family:'JetBrains Mono',monospace">vw_customer_outstanding</span> and <span style="font-family:'JetBrains Mono',monospace">vw_outstanding_aging</span> because no source extract was ever produced; <span style="font-family:'JetBrains Mono',monospace">CLAUDE.md</span> now states "there is no receivables reporting, no aging, no overdue", the AI prompt refuses those questions, and the <span style="font-family:'JetBrains Mono',monospace">HIGH_OVERDUE</span> alert was deleted.</p>
+      <p style="margin:8px 0 0;font-size:14px;line-height:1.6;color:#78350f;text-wrap:pretty">Credit Control reinstates that capability with a source that does exist. That is a policy reversal, not just a new page: <span style="font-family:'JetBrains Mono',monospace">ai/prompts.py</span>, <span style="font-family:'JetBrains Mono',monospace">ai/tools.py</span>, <span style="font-family:'JetBrains Mono',monospace">ai/schemas.py</span> and <span style="font-family:'JetBrains Mono',monospace">CLAUDE.md</span> must be updated in the same change, or the assistant will keep telling users the company does not track overdue while the sidebar shows a page that does. The upside is that 0020's <span style="font-family:'JetBrains Mono',monospace">downgrade()</span> is the schema blueprint — <span style="font-family:'JetBrains Mono',monospace">days_overdue</span>, <span style="font-family:'JetBrains Mono',monospace">aging_bucket</span> and their indexes already existed in this shape.</p>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">1 · Current design system</h2>
+      <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);overflow:hidden">
+        <div style="display:grid;grid-template-columns:200px 1fr;gap:0;font-size:14px">
+          <div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Stack</div>
+          <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#334155">React 19 + TypeScript, Vite, Tailwind (<span style="font-family:'JetBrains Mono',monospace">darkMode: 'class'</span>), react-router, @tanstack/react-query, Recharts, lucide-react. FastAPI + SQLAlchemy + Alembic behind it.</div>
+          <div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Colour</div>
+          <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#334155">Brand blue scale (<span style="font-family:'JetBrains Mono',monospace">brand-600 #2563eb</span>) on slate neutrals. Semantics already in use: red-600 danger, amber warning, emerald success, plus <span style="font-family:'JetBrains Mono',monospace">severity.*</span> and <span style="font-family:'JetBrains Mono',monospace">AGING_COLORS</span> in <span style="font-family:'JetBrains Mono',monospace">charts/Charts.tsx</span>.</div>
+          <div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Type</div>
+          <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#334155">Inter + Noto Sans Bengali. Page title <span style="font-family:'JetBrains Mono',monospace">text-xl</span>, card title <span style="font-family:'JetBrains Mono',monospace">text-sm font-semibold</span>, KPI figure <span style="font-family:'JetBrains Mono',monospace">text-2xl tabular-nums</span>, tables <span style="font-family:'JetBrains Mono',monospace">text-sm</span>, labels <span style="font-family:'JetBrains Mono',monospace">text-xs uppercase</span>.</div>
+          <div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Primitives</div>
+          <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#334155"><span style="font-family:'JetBrains Mono',monospace">.card .card-header .card-title .btn-primary .btn-secondary .btn-ghost .btn-danger .input .label .badge .table-wrap .skeleton</span> — declared once in <span style="font-family:'JetBrains Mono',monospace">index.css</span>. Cards <span style="font-family:'JetBrains Mono',monospace">rounded-xl</span>, controls <span style="font-family:'JetBrains Mono',monospace">rounded-lg</span>, shadow-sm only.</div>
+          <div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Layout</div>
+          <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#334155">Sticky 56px header publishing <span style="font-family:'JetBrains Mono',monospace">--app-header-height</span>; 240px sidebar collapsing to a 64px rail and to a drawer below <span style="font-family:'JetBrains Mono',monospace">lg</span>; main <span style="font-family:'JetBrains Mono',monospace">p-3 sm:p-4 lg:p-6</span> with <span style="font-family:'JetBrains Mono',monospace">space-y-4</span> sections. Z-order: header 40, filter bar 30, table toolbar 20, table head 10.</div>
+          <div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Money &amp; dates</div>
+          <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#334155"><span style="font-family:'JetBrains Mono',monospace">formatAmount</span> is already BDT: ৳ with Cr / L / K compaction and Indian grouping. <span style="font-family:'JetBrains Mono',monospace">formatDate</span> renders <span style="font-family:'JetBrains Mono',monospace">29 Aug 2026</span>.</div>
+          <div style="padding:12px 16px;background:#f8fafc;font-weight:500;color:#475569">Rules held</div>
+          <div style="padding:12px 16px;color:#334155">The frontend never derives a business figure — every number is computed server-side and only formatted here. Every report renders one of four states. Filters live in the URL. Both languages carry every string.</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">2 · Reusable components</h2>
+      <p style="margin:0 0 12px;font-size:14px;line-height:1.6;color:#475569;text-wrap:pretty">The module needs almost no new UI. Nine of eleven surfaces already exist; two need a small, additive change.</p>
+      <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);overflow:hidden;font-size:14px">
+        <div style="display:grid;grid-template-columns:1.1fr 1.4fr 90px">
+          <div style="padding:10px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Component</div>
+          <div style="padding:10px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Used for</div>
+          <div style="padding:10px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Change</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">PageHeader / Section / ResultNotes</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">Title, resolved period, each panel, backend notes</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#059669">none</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">StatCard</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">All six KPI cards; <span style="font-family:'JetBrains Mono',monospace">tone="danger"</span> for Overdue, <span style="font-family:'JetBrains Mono',monospace">"warning"</span> for Due Soon, <span style="font-family:'JetBrains Mono',monospace">hint</span> for the counts</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#059669">none</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">GlobalFilterBar + FilterContext</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">Period, Company inline, collapsible grid, chips, clear-all — driven by a new <span style="font-family:'JetBrains Mono',monospace">CREDIT_FILTERS</span> set exactly as <span style="font-family:'JetBrains Mono',monospace">STOCK_FILTERS</span> does it</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#b45309">additive</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">DataTable</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">Both tables. Already has sticky head, horizontal scroll, sort, search, column show/hide + drag-reorder + resize persisted by <span style="font-family:'JetBrains Mono',monospace">tableId</span>, <span style="font-family:'JetBrains Mono',monospace">serverMode</span> paging, <span style="font-family:'JetBrains Mono',monospace">onRowClick</span>, <span style="font-family:'JetBrains Mono',monospace">rangeLabel</span></div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#059669">none</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">Charts.tsx</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155"><span style="font-family:'JetBrains Mono',monospace">CategoryBarChart</span> aging, <span style="font-family:'JetBrains Mono',monospace">colorByIndex=false</span> to pick up <span style="font-family:'JetBrains Mono',monospace">AGING_COLORS</span>; <span style="font-family:'JetBrains Mono',monospace">DonutChart</span> status; horizontal bar for top overdue; <span style="font-family:'JetBrains Mono',monospace">TrendChart</span> outstanding</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#b45309">2 colours</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">States.tsx</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155"><span style="font-family:'JetBrains Mono',monospace">QueryState</span> covers loading / error / 403 / empty; <span style="font-family:'JetBrains Mono',monospace">KpiSkeleton count={6}</span> for the card strip</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#059669">none</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">ExportButtons</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">Excel / CSV / PDF, filters and period travel with the request</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#059669">none</div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">Modal.tsx</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">The invoice detail panel — Escape, focus trap, scroll lock and overlay are already correct</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#b45309">add <span style="font-family:'JetBrains Mono',monospace">placement</span></div>
+
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">format.ts</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">Currency, dates, right-alignment, <span style="font-family:'JetBrains Mono',monospace">statusClass</span>; <span style="font-family:'JetBrains Mono',monospace">formatCell</span> already handles <span style="font-family:'JetBrains Mono',monospace">days_overdue</span></div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#b45309">3 statuses</div>
+
+          <div style="padding:10px 16px;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">SearchableSelect · useDebounced · apiClient</div>
+          <div style="padding:10px 16px;color:#334155">Customer dropdown over thousands of rows with server-side narrowing, 300 ms debounce, typed service layer</div>
+          <div style="padding:10px 16px;color:#059669">none</div>
+        </div>
+      </div>
+      <p style="margin:12px 0 0;font-size:14px;line-height:1.6;color:#475569;text-wrap:pretty">New code is one page (<span style="font-family:'JetBrains Mono',monospace">pages/CreditControlPage.tsx</span>), one panel (<span style="font-family:'JetBrains Mono',monospace">components/InvoiceDetailPanel.tsx</span>), one service (<span style="font-family:'JetBrains Mono',monospace">creditService</span>), one filter set and the translations. No new icon library — <span style="font-family:'JetBrains Mono',monospace">ReceiptText</span> from lucide-react.</p>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">3 · Where it goes</h2>
+      <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:16px;font-size:14px;line-height:1.7;color:#334155">
+        <p style="margin:0"><strong>Nav position:</strong> <span style="font-family:'JetBrains Mono',monospace">MAIN_NAV</span> in <span style="font-family:'JetBrains Mono',monospace">layouts/AppLayout.tsx</span>, immediately after Customers and before Map — the customer-money entry belongs beside the customer entry, and the operational reports stay grouped above the data-admin block.</p>
+        <p style="margin:8px 0 0"><strong>Route:</strong> <span style="font-family:'JetBrains Mono',monospace">/credit-control</span>, lazily loaded and wrapped in <span style="font-family:'JetBrains Mono',monospace">&lt;Guarded section="credit_control"&gt;</span> like every other report.</p>
+        <p style="margin:8px 0 0"><strong>Permission:</strong> a new <span style="font-family:'JetBrains Mono',monospace">SectionKey</span> <span style="font-family:'JetBrains Mono',monospace">'credit_control'</span> in <span style="font-family:'JetBrains Mono',monospace">types/api.ts</span> and in the backend section registry, seeded for MANAGEMENT and FINANCE roles only. Credit exposure is more sensitive than sales volume and should not ride on the <span style="font-family:'JetBrains Mono',monospace">customers</span> grant.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">4 · Data model recommendation</h2>
+      <p style="margin:0 0 12px;font-size:14px;line-height:1.6;color:#475569;text-wrap:pretty">Migration <span style="font-family:'JetBrains Mono',monospace">0026_credit_control</span>, following the platform's own conventions: staging keeps the source shape as TEXT, the fact holds typed values, nothing is truncated, new columns carry server defaults.</p>
+      <div style="border-radius:12px;border:1px solid #e2e8f0;background:#0f172a;padding:16px 20px;overflow-x:auto">
+        <pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.75;color:#e2e8f0">stg_credit_invoice          every business column TEXT + StagingMixin
+                            (staging_id, source_file, source_row_number,
+                             batch_id, loaded_at, status, error_code)
+
+fact_credit_invoice
+  ── source columns ─────────────────────────────────────────────
+  company_code       str(10)   indexed
+  invoice_no         str(32)   indexed, unique with company_code
+  plant_code         str(10)   indexed   → dim_plant
+  customer_code      str(20)   indexed   → dim_customer (name lives there)
+  invoice_date_id    int       indexed   → dim_date
+  credit_days        int                 CHECK IN (30,45,90,150,180,190,250)
+  invoice_value      numeric(18,2)       CHECK &gt;= 0
+  return_amount      numeric(18,2)       CHECK &gt;= 0
+  payment_amount     numeric(18,2)       CHECK &gt;= 0
+  discount_amount    numeric(18,2)       CHECK &gt;= 0
+  adjustment_amount  numeric(18,2)       CHECK &gt;= 0
+  payment_mode       str(8)              CHECK IN ('CASH','CREDIT')
+  last_payment_date_id  int   nullable   → dim_date
+  clearing_date_id      int   nullable   → dim_date
+  clearing_document  str(32)  nullable   indexed (searchable)
+  ── derived, written by the ETL, never by a user ───────────────
+  net_invoice_amount numeric(18,2)   invoice_value − return_amount
+  balance_amount     numeric(18,2)   net − payment − discount − adjustment
+  due_date_id        int   indexed   invoice_date + credit_days
+  days_overdue       int   indexed   max(as_on − due_date, 0)
+  aging_bucket       str(16) indexed  NOT_YET_DUE | 1-30 | 31-60 | 61-90
+                                      | 91-120 | 121-180 | 181-365 | 365+
+  credit_status      str(16) indexed  NOT_YET_DUE | OVER_DUE | CLEARED
+  data_quality_flag  str(32) nullable BALANCE_NEGATIVE | DUE_DATE_MISMATCH
+                                      | BALANCE_MISMATCH
+  source_system, source_file, batch_id, loaded_at
+
+views   vw_credit_invoice_detail    row-level, joined to customer/plant names
+        vw_customer_credit_exposure per-customer totals, oldest due, last payment
+        vw_credit_aging             bucket × count × outstanding</pre>
+      </div>
+      <ul style="margin:12px 0 0;padding-left:20px;font-size:14px;line-height:1.7;color:#334155">
+        <li><strong>Status and aging are computed in one place</strong> — a single SQL expression used by the fact refresh and by every view, so no endpoint can define "overdue" differently.</li>
+        <li><strong>Balance is not floored.</strong> An over-adjusted row keeps its negative figure and gets <span style="font-family:'JetBrains Mono',monospace">data_quality_flag = BALANCE_NEGATIVE</span>; it counts as Cleared for status, is excluded from aging, and is listed on the Data Quality page. Source data is never overwritten.</li>
+        <li><strong>Due Date is recomputed, not trusted.</strong> If the file carries one and it disagrees with <span style="font-family:'JetBrains Mono',monospace">invoice_date + credit_days</span>, the derived value wins and the row is flagged.</li>
+        <li><strong>Credit days:</strong> a CHECK against the seven values, not a new master table, unless configurable terms per customer are actually wanted — say so and it becomes <span style="font-family:'JetBrains Mono',monospace">dim_credit_term</span>.</li>
+        <li><strong>No duplicate customers.</strong> Customer View groups <span style="font-family:'JetBrains Mono',monospace">dim_customer</span> rows; the module creates no customer record and displays Customer Name with the code as secondary text.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">5 · API requirements</h2>
+      <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);overflow:hidden;font-size:14px">
+        <div style="display:grid;grid-template-columns:1fr 1.25fr">
+          <div style="padding:10px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Endpoint</div>
+          <div style="padding:10px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:500;color:#475569">Returns</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">GET /api/reports/credit-control</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">One page bundle like <span style="font-family:'JetBrains Mono',monospace">/api/dashboard</span>: six KPIs, aging buckets, status split, top overdue customers, outstanding trend, resolved period, result notes. All aggregated in SQL.</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">GET …/credit-control/invoices</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">Server-paged rows + <span style="font-family:'JetBrains Mono',monospace">total</span>, <span style="font-family:'JetBrains Mono',monospace">total_pages</span>. Params: filters, <span style="font-family:'JetBrains Mono',monospace">search</span>, <span style="font-family:'JetBrains Mono',monospace">sort_by</span>, <span style="font-family:'JetBrains Mono',monospace">sort_dir</span>, <span style="font-family:'JetBrains Mono',monospace">page</span>, <span style="font-family:'JetBrains Mono',monospace">page_size</span>, <span style="font-family:'JetBrains Mono',monospace">as_on_date</span>.</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">GET …/credit-control/customers</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">Customer View rows, server-paged and server-sorted on the same filter set.</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">GET …/credit-control/invoices/{no}</div>
+          <div style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#334155">One invoice for the detail panel, including the flag and whatever payment events exist.</div>
+          <div style="padding:10px 16px;font-family:'JetBrains Mono',monospace;font-size:13px;color:#0f172a">POST /api/export</div>
+          <div style="padding:10px 16px;color:#334155">Existing endpoint, unchanged — <span style="font-family:'JetBrains Mono',monospace">ExportButtons</span> already sends report name, period, filters and rows.</div>
+        </div>
+      </div>
+      <ul style="margin:12px 0 0;padding-left:20px;font-size:14px;line-height:1.7;color:#334155">
+        <li><span style="font-family:'JetBrains Mono',monospace">as_on_date</span> is a first-class parameter: overdue is a function of a date, and "what did we look like at month end" is a question the finance team will ask. Defaults to today.</li>
+        <li>Due-soon horizon is a config setting (<span style="font-family:'JetBrains Mono',monospace">app/config.py</span>, like the stock expiry horizon) with a per-request override — the Stock page's <span style="font-family:'JetBrains Mono',monospace">expiring_within_days</span> selector is the pattern.</li>
+        <li>Credit Days, Payment Mode and Status are <span style="font-family:'JetBrains Mono',monospace">STATIC_OPTIONS</span> in <span style="font-family:'JetBrains Mono',monospace">FilterContext</span> — fixed sets, so no options request. Customer and Plant use the existing <span style="font-family:'JetBrains Mono',monospace">/api/master-data/options/{level}</span>, which already truncates and permission-scopes.</li>
+        <li>Every endpoint applies the caller's data scope, the same way the sales and stock reports do.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">6 · UI wireframe</h2>
+      <div style="border-radius:12px;border:1px solid #e2e8f0;background:#0f172a;padding:16px 20px;overflow-x:auto">
+        <pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.65;color:#e2e8f0">┌─ header (sticky, 56px) ──────────────────────────────────────────────────────┐
+│ BI  Naafco Agro        [ global search ]        upload  bell  user ▾         │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ sidebar 240 ─┐┌─ main ──────────────────────────────────────────────────────┐
+│ Dashboard    ││ Credit Control                        [Excel] [CSV] [PDF]   │
+│ AI Assistant ││ As on 2026-08-29 · FY 2026-27 · 16 invoices in scope        │
+│ Sales        ││ Net Invoice, Balance, Due Date, Status are calculated       │
+│ Stock        ││                                                             │
+│ Target       ││┌─ GlobalFilterBar (sticky, z-30) ──────────────────────────┐│
+│ Performance  │││ Period ▾   Company ▾   As on [date]   clear all [Filters 2]││
+│ Materials    │││ chips: Company: 1000 ×   Credit Days: 90 ×                ││
+│ Customers    │││ ▾ expanded: Plant · Customer · Invoice No · Invoice Date  ││
+│▸Credit Ctrl  │││   Due Date · Credit Days · Payment Mode · Status · Aging   ││
+│ Map          ││└───────────────────────────────────────────────────────────┘│
+│ Alerts       ││┌────────┬────────┬────────┬────────┬────────┬────────┐      │
+│ Data Quality │││ TOTAL  │  NET   │ TOTAL  │ TOTAL  │OVERDUE │  DUE   │      │
+│ ──────────── │││INVOICE │INVOICE │PAYMENT │OUTSTND │ AMOUNT │  SOON  │      │
+│ Data Upload  │││3.60 Cr │3.55 Cr │1.10 Cr │2.40 Cr │1.19 Cr●│26.30 L●│      │
+│ Data Mgmt    │││16 inv  │−5.20 L │31.1%   │13 open │7 · 50% │2 · 7 d │      │
+│              ││└────────┴────────┴────────┴────────┴────────┴────────┘      │
+│              ││┌─ Credit Aging — outstanding by bucket ────────────────────┐│
+│              │││ █                                                         ││
+│              │││ █           ▄     ▄                                       ││
+│              │││ █     ▁     █     █           ▁                           ││
+│              │││ NYD  1-30 31-60 61-90 91-120 121-180 181-365  365+        ││
+│              │││1.20Cr 14.6L 45.0L 50.0L    ৳0   9.8L      ৳0    ৳0        ││
+│              │││ 6 inv  2     2     2        0     1        0     0        ││
+│              ││└───────────────────────────────────────────────────────────┘│
+│              ││┌─ Credit Status ─────────┐┌─ Top Overdue Customers ───────┐ │
+│              │││      ╭─────╮  ▪ NotYet  ││ Rahman Traders  ████████ 50.0L│ │
+│              │││      │ 16  │  ▪ OverDue ││ Padma Distrib.  ████ 24.6L    │ │
+│              │││      ╰─────╯  ▪ Cleared ││ Meghna Agro     ████ 24.0L    │ │
+│              ││└─────────────────────────┘└───────────────────────────────┘ │
+│              ││┌─ Outstanding Trend (Mar → Aug) ───────────────────────────┐│
+│              │││                                          ╭────────────────││
+│              ││└───────────────────────────────────────────────────────────┘│
+│              ││┌─ Customer Credit Exposure   [Customer View|Invoice View] ─┐│
+│              │││ [search…]                                      [Columns] ││
+│              │││ Customer │Code│Inv│Total│Net│Pay│Disc│Adj│OUTSTND│Overdue ││
+│              │││ Rahman   │1042│ 3 │74.1L│…  │…  │…   │…  │50.00L │50.00L  ││
+│              │││ …row click → Invoice View filtered to that customer       ││
+│              │││ Showing 6 of 6 customers                    ‹ 1 of 1 ›    ││
+│              ││└───────────────────────────────────────────────────────────┘│
+└──────────────┘└─────────────────────────────────────────────────────────────┘
+
+Invoice View (same section, toggled) — sticky head, horizontal scroll:
+Company│InvNo│Plant│Customer│InvDate│CrDays│InvValue│Return│NET│Payment│
+Discount│Adjust│BALANCE│DueDate ⟨Overdue by 80 days⟩│Mode│LastPay│
+ClearDate│ClearDoc│STATUS ⟨badge⟩
+note: 1 invoice flagged — Balance negative (৳-1.00 L), shown not hidden
+
+Invoice detail panel (right sheet, Modal behaviour):
+┌ INV-26-0412 · Rahman Traders · C-1042 · Gazipur      [Over Due] ✕ ┐
+│ Invoice Information   company · plant · customer · code · date    │
+│ Credit Terms          90 Days · 2026-06-10 · Credit · +80 days    │
+│ Financial Summary     value − return = NET − pay − disc − adj      │
+│                                              = BALANCE 36.00 L    │
+│ Payment / Clearing    last payment · clearing date · clearing doc  │
+│ Timeline              created → due (passed) → payment → clearing  │
+└                                        [Close] [Open customer]    ┘</pre>
+      </div>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">7 · Implementation plan</h2>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:14px 16px">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#0f172a">Step 1 · Decide the reversal</p>
+          <p style="margin:4px 0 0;font-size:14px;line-height:1.6;color:#475569">Confirm receivables reporting returns. Update <span style="font-family:'JetBrains Mono',monospace">CLAUDE.md</span>, <span style="font-family:'JetBrains Mono',monospace">README</span>, <span style="font-family:'JetBrains Mono',monospace">ai/prompts.py</span>, <span style="font-family:'JetBrains Mono',monospace">ai/schemas.py</span>, <span style="font-family:'JetBrains Mono',monospace">ai/tools.py</span>. No UI work until this is agreed.</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:14px 16px">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#0f172a">Step 2 · Warehouse</p>
+          <p style="margin:4px 0 0;font-size:14px;line-height:1.6;color:#475569">Migration 0026: staging, fact, indexes, three views. One shared status/aging SQL expression. Tests for the calculation rules and each data-quality flag.</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:14px 16px">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#0f172a">Step 3 · ETL</p>
+          <p style="margin:4px 0 0;font-size:14px;line-height:1.6;color:#475569">A <span style="font-family:'JetBrains Mono',monospace">DatasetSpec</span> for Credit Invoice in <span style="font-family:'JetBrains Mono',monospace">etl/datasets.py</span> with column aliases, validation rules and the derivations. The upload centre and the batch/rejection machinery then work unchanged.</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:14px 16px">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#0f172a">Step 4 · API + permissions</p>
+          <p style="margin:4px 0 0;font-size:14px;line-height:1.6;color:#475569">Four endpoints, the <span style="font-family:'JetBrains Mono',monospace">credit_control</span> section, role seeding, config setting for the due-soon horizon.</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:14px 16px">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#0f172a">Step 5 · Frontend</p>
+          <p style="margin:4px 0 0;font-size:14px;line-height:1.6;color:#475569">Nav item, route, <span style="font-family:'JetBrains Mono',monospace">CREDIT_FILTERS</span>, the page assembled from existing components, the detail panel, <span style="font-family:'JetBrains Mono',monospace">creditService</span>, en + bn translations, the two additive changes to <span style="font-family:'JetBrains Mono',monospace">Charts.tsx</span> and <span style="font-family:'JetBrains Mono',monospace">format.ts</span>.</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:14px 16px">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#0f172a">Step 6 · Assistant, alerts, dashboard</p>
+          <p style="margin:4px 0 0;font-size:14px;line-height:1.6;color:#475569">Reinstate the outstanding tools and the <span style="font-family:'JetBrains Mono',monospace">HIGH_OVERDUE</span> alert; optionally one Overdue card on the executive dashboard.</p>
+        </div>
+        <div style="border-radius:12px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 1px 2px 0 rgba(15,23,42,0.05);padding:14px 16px">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#0f172a">Step 7 · Verification</p>
+          <p style="margin:4px 0 0;font-size:14px;line-height:1.6;color:#475569">Backend tests for the rules; frontend tests beside <span style="font-family:'JetBrains Mono',monospace">stockFilters.test.tsx</span> for the filter set, the status badges and the drill-down; a volume test at the real row count before release.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 style="margin:0 0 12px;font-size:20px;font-weight:600;color:#0f172a">8 · Decisions I need from you</h2>
+      <ol style="margin:0;padding-left:20px;font-size:14px;line-height:1.8;color:#334155">
+        <li><strong>Aging buckets.</strong> The platform's existing convention is six (<span style="font-family:'JetBrains Mono',monospace">CURRENT · 1-30 · 31-60 · 61-90 · 91-180 · 180+</span>) and <span style="font-family:'JetBrains Mono',monospace">AGING_COLORS</span> is built for them. Your brief asks for eight. The mockup uses your eight and adds two colours — confirm, or keep the six the rest of the system knows.</li>
+        <li><strong>Date format.</strong> You picked <span style="font-family:'JetBrains Mono',monospace">2026-08-15</span>; the app's <span style="font-family:'JetBrains Mono',monospace">formatDate</span> renders <span style="font-family:'JetBrains Mono',monospace">15 Aug 2026</span> everywhere else. The mockup shows ISO. Change it app-wide, or accept Credit Control looking different?</li>
+        <li><strong>Credit exposure.</strong> No credit limit exists in the Customer Master, so exposure is shown as a share of portfolio outstanding. If you want limit-vs-used exposure, the limit has to be added to the master first.</li>
+        <li><strong>Negative adjustments.</strong> Are credit notes ever posted as a negative Adjustment Amount? If yes the <span style="font-family:'JetBrains Mono',monospace">&gt;= 0</span> check has to go and only <span style="font-family:'JetBrains Mono',monospace">BALANCE_NEGATIVE</span> stays as a flag.</li>
+        <li><strong>Payment history.</strong> Does the source hold individual payment transactions, or only the aggregate plus Last Payment Date? The timeline shows one payment event until told otherwise.</li>
+        <li><strong>Row count.</strong> Rough invoice volume, so pagination and index choices are sized against reality rather than a guess.</li>
+      </ol>
+    </section>
+
+    <p style="margin:8px 0 0;font-size:13px;color:#94a3b8">No application code has been changed. Say the word and I will start at step 1.</p>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
