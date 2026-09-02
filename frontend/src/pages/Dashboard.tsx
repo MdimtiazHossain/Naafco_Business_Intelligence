@@ -181,7 +181,7 @@ export default function Dashboard() {
                 { key: 'target_volume', header: t('dashboard.targetVol') },
                 { key: 'volume', header: t('dashboard.salesVol') },
                 { key: 'target_amount', header: t('dashboard.targetBdt') },
-                { key: 'net_sales', header: t('sales.netSales') },
+                { key: 'net_sales', header: t('dashboard.salesBdt') },
                 { key: 'volume_achievement_percent', header: t('dashboard.volAch') },
                 { key: 'achievement_percent', header: t('dashboard.bdtAch') },
                 { key: 'volume_shortfall', header: t('dashboard.volShortfall') },

@@ -158,7 +158,7 @@ describe('Dashboard brand ranking', () => {
     // requirement — plan, then actual, for volume and then for value.
     expect(headers).toEqual([
       'Rank', 'Material Brand', 'Target Volume', 'Sales Volume', 'Target BDT',
-      'Net Sales', 'Vol Ach%', 'BDT Ach%', 'Vol SF/SP', 'BDT SF/SP',
+      'Sales BDT', 'Vol Ach%', 'BDT Ach%', 'Vol SF/SP', 'BDT SF/SP',
     ]);
     expect(screen.getByText('Alpha')).toBeInTheDocument();
   });
