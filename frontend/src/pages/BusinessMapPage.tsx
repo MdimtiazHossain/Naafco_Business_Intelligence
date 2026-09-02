@@ -200,6 +200,13 @@ const SALES_LEVELS: readonly { key: MapLayer; labelKey: string }[] = [
   { key: 'unit', labelKey: 'map.layerUnit' },
   { key: 'territory', labelKey: 'map.layerTerritory' },
   { key: 'customer', labelKey: 'map.layerCustomer' },
+  // Last, after customer, because that is the order the backend states in
+  // `hierarchy.BUSINESS_TYPES` — both are business types attached to the
+  // org chain rather than levels of it, so neither belongs among the nine
+  // above. The count beside it comes from the server, so a deployment
+  // whose sales data carries no sales force sees `Sales Force (0)` and
+  // knows why the layer draws nothing.
+  { key: 'sales_force', labelKey: 'map.layerSalesForce' },
 ];
 
 function parseSalesLevel(raw: string | null): MapLayer {

@@ -321,15 +321,32 @@ export default function MarkerLibraryPage() {
                           <Power size={14} />
                         </button>
                       )}
-                      <button
-                        type="button"
-                        className="btn-ghost tap px-2 py-1 text-red-600"
-                        title={t('common.delete')}
-                        disabled={design.is_system_default}
-                        onClick={() => remove(design)}
+                      {/* The reason lives on the wrapper, not on the button.
+                          A disabled control receives no pointer events, so its
+                          own `title` never surfaces — the explanation would be
+                          written and never read. `aria-label` stays on the
+                          button either way, because a control whose only name
+                          was its tooltip would have no name at all once the
+                          tooltip moved off it. */}
+                      <span
+                        className="inline-flex"
+                        title={
+                          design.is_system_default
+                            ? t('marker.deleteSystemDefault')
+                            : undefined
+                        }
                       >
-                        <Trash2 size={14} />
-                      </button>
+                        <button
+                          type="button"
+                          className="btn-ghost tap px-2 py-1 text-red-600"
+                          aria-label={t('common.delete')}
+                          title={design.is_system_default ? undefined : t('common.delete')}
+                          disabled={design.is_system_default}
+                          onClick={() => remove(design)}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </span>
                     </div>
                   );
                 },
