@@ -107,6 +107,8 @@ import type {
   TargetManagementOptions,
   TargetPeriod,
   TargetPlan,
+  TargetPlanDeletable,
+  TargetPlanDeleted,
   TargetPlanStatus,
   TargetVersion,
   TransactionsResponse,
@@ -588,6 +590,24 @@ export const targetManagementService = {
       { method: 'POST', body: { upload_token: uploadToken, sheet_name: sheetName ?? null } },
     ),
 
+  planDeletable: (planId: number) =>
+    request<TargetPlanDeletable>(
+      `/api/target-management/plans/${planId}/deletable`,
+    ),
+
+  /**
+   * Remove a draft plan that was never allocated, approved or locked.
+   *
+   * A typed country target does not block it — figures entered and never
+   * allocated are a draft target, not a record. Everything the plan
+   * actually became is refused by the backend, by name.
+   */
+  deletePlan: (planId: number) =>
+    request<TargetPlanDeleted>(
+      `/api/target-management/plans/${planId}`,
+      { method: 'DELETE' },
+    ),
+
   availableMaterials: (versionId: number) =>
     request<{ materials: TargetAvailableMaterial[] }>(
       `/api/target-management/versions/${versionId}/available-materials`,
@@ -675,10 +695,24 @@ export const masterDataService = {
 };
 
 export const chatService = {
-  send: (message: string, conversationId?: string) =>
+  /**
+   * Ask a question, with what the reader has selected on screen.
+   *
+   * `context` is the same filter object every report page sends, under the same
+   * names, so the assistant narrows by the bar exactly as a report does. The
+   * server treats it as filters and nothing more: it can make an answer
+   * narrower, never wider, and it passes the same permission check the
+   * question's own entities do.
+   */
+  send: (message: string, conversationId?: string,
+         context?: Record<string, string | undefined>) =>
     request<ChatMessageResponse>('/api/chat', {
       method: 'POST',
-      body: { message, conversation_id: conversationId ?? null },
+      body: {
+        message,
+        conversation_id: conversationId ?? null,
+        context: context ?? null,
+      },
     }),
   conversations: () =>
     request<{ conversations: Conversation[] }>('/api/chat/conversations'),

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 from decimal import Decimal
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .queries import STOCK_UNIT
 from .schemas import Intent, ResolvedDateRange, ToolResult
@@ -100,6 +100,26 @@ def format_percent(value: Any, *, signed: bool = False, decimals: int = 1) -> st
         return "n/a"
     number = float(value)
     return f"{number:+.{decimals}f}%" if signed else f"{number:.{decimals}f}%"
+
+
+def _target_figure(values: Mapping[str, Any], key: str) -> str:
+    """A target amount, or ``n/a`` where no target was ever set.
+
+    A target is a sum, and the sum of nothing is 0.0 — so an answer for a period
+    and scope with no target row read "**Target:** ৳0" beside an achievement of
+    n/a and a note saying no target is loaded. The three disagreed, and the one
+    that looked most like a measurement was the wrong one: nobody set a target
+    of nothing, and a reader who takes it at face value believes the sales team
+    was asked for zero and beat it.
+
+    ``achievement_percent`` is the signal rather than the figure itself, because
+    it is ``None`` exactly when the target denominator was zero — the same test
+    the note beneath it already applies. The gap goes with it: target minus
+    actual with no target is the whole of the sales, reported as a surplus.
+    """
+    if values.get("achievement_percent") is None:
+        return "n/a"
+    return format_amount(values.get(key))
 
 
 def format_days(value: Any) -> str:
@@ -393,7 +413,8 @@ class ResponseFormatter:
     def format(self, intent: Intent, results: Sequence[ToolResult],
                date_range: ResolvedDateRange | None = None,
                filters: dict[str, Any] | None = None,
-               assumptions: Sequence[str] = ()) -> str:
+               assumptions: Sequence[str] = (),
+               entity_labels: Mapping[str, str] | None = None) -> str:
         if not results:
             return "No data found for the selected period and filters."
 
@@ -424,7 +445,8 @@ class ResponseFormatter:
             for note in dict.fromkeys(notes):
                 parts.append(f"_{note}_")
 
-        footer = self._footer(date_range, filters, assumptions)
+        footer = self._footer(date_range, filters, assumptions,
+                              entity_labels)
         if footer:
             parts.append("")
             parts.append(footer)
@@ -473,7 +495,7 @@ class ResponseFormatter:
                 )
             if extra.tool in ("get_sales_achievement", "get_sales_target"):
                 lines.append(
-                    f"**Target:** {format_amount(extra.values.get('target'))}   "
+                    f"**Target:** {_target_figure(extra.values, 'target')}   "
                     f"**Achievement:** "
                     f"{format_percent(extra.values.get('achievement_percent'))}"
                 )
@@ -491,10 +513,10 @@ class ResponseFormatter:
     def _achievement(self, result: ToolResult) -> str:
         values = result.values
         lines = [
-            f"**Target:** {format_amount(values.get('target'))}",
+            f"**Target:** {_target_figure(values, 'target')}",
             f"**Actual:** {format_amount(values.get('actual'))}",
             f"**Achievement:** {format_percent(values.get('achievement_percent'))}",
-            f"**Gap:** {format_amount(values.get('gap'))}",
+            f"**Gap:** {_target_figure(values, 'gap')}",
         ]
         if values.get("below_percent") is not None:
             lines.append(
@@ -598,10 +620,32 @@ class ResponseFormatter:
         columns = TABLE_COLUMNS.get(result.tool)
         if columns is None:
             columns = tuple(k for k in result.rows[0] if k in COLUMN_FORMATS)[:6]
+        # A share is only ever present because the reader asked for one, and a
+        # tool with a fixed column list would otherwise compute it and show
+        # nothing. Appended rather than substituted: the contribution sits
+        # beside the figure it is a proportion of, which is what makes it
+        # readable as a share rather than as another measure.
+        if "share_percent" in result.rows[0] and "share_percent" not in columns:
+            columns = (*columns, "share_percent")
         return render_table(result.rows, columns, tool=result.tool)
 
     def _footer(self, date_range: ResolvedDateRange | None,
-                filters: dict[str, Any] | None, assumptions: Sequence[str]) -> str:
+                filters: dict[str, Any] | None, assumptions: Sequence[str],
+                entity_labels: Mapping[str, str] | None = None) -> str:
+        """The period, what narrowed the answer, and what was assumed.
+
+        A filter is named, not coded. The line used to read
+        "territory: 1A1NBOGA00030" directly above an assumption calling the
+        same place Adamdighi — the answer knew the name and showed the
+        reader a code.
+
+        Anything with no name behind it still shows its code rather than
+        being dropped: a filter narrowed the figure and the reader has to
+        see that it did, even where only the master data could say what it
+        was. That is the case for a code injected by the reader's own data
+        scope, which no entity in the question ever named.
+        """
+        labels = entity_labels or {}
         lines: list[str] = []
         if date_range is not None:
             lines.append(f"📅 **Period:** {date_range.label} "
@@ -609,14 +653,24 @@ class ResponseFormatter:
         applied = {k: v for k, v in (filters or {}).items() if v}
         if applied:
             rendered = ", ".join(
-                f"{k.replace('_codes', '').replace('_', ' ')}: "
-                f"{', '.join(v) if isinstance(v, list) else v}"
-                for k, v in applied.items()
+                f"{_filter_heading(key)}: {_filter_values(value, labels)}"
+                for key, value in applied.items()
             )
             lines.append(f"🔎 **Filters:** {rendered}")
         for assumption in assumptions:
             lines.append(f"ℹ️ {assumption}")
         return "\n".join(lines)
+
+
+def _filter_heading(key: str) -> str:
+    """``territory_codes`` -> ``Territory``."""
+    return key.replace("_codes", "").replace("_", " ").title()
+
+
+def _filter_values(value: Any, labels: Mapping[str, str]) -> str:
+    """Each code under its master-data name, falling back to the code itself."""
+    values = value if isinstance(value, list) else [value]
+    return ", ".join(labels.get(str(item), str(item)) for item in values)
 
 
 def format_error(message: str) -> str:

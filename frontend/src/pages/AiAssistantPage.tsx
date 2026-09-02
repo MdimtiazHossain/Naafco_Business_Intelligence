@@ -14,6 +14,7 @@ import { AnswerFeedback } from '../components/AnswerFeedback';
 import { PageHeader } from '../components/PageHeader';
 import { ExportButtons } from '../components/ExportButtons';
 import { useT } from '../contexts/I18nContext';
+import { useFilters } from '../contexts/FilterContext';
 import { chatService } from '../services';
 import { formatDateTime } from '../utils/format';
 import type { ChatMessageResponse, FeedbackRating } from '../types/api';
@@ -52,6 +53,7 @@ const SUGGESTIONS = [
 export default function AiAssistantPage() {
   const t = useT();
   const queryClient = useQueryClient();
+  const { query: filterQuery } = useFilters();
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
@@ -63,7 +65,12 @@ export default function AiAssistantPage() {
   });
 
   const ask = useMutation({
-    mutationFn: (message: string) => chatService.send(message, conversationId),
+    mutationFn: (message: string) =>
+      // The bar travels with the question. Without it the assistant was the
+      // one screen in the application that could not see what the reader had
+      // selected — a dashboard filtered to one company, and a question asked
+      // beside it answered for all of them.
+      chatService.send(message, conversationId, filterQuery),
     onSuccess: (response) => {
       setConversationId(response.conversation_id);
       setTurns((previous) => [

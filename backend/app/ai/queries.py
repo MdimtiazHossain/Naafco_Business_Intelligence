@@ -134,6 +134,12 @@ def _filter_column(table: Table, field_name: str) -> str | None:
 GROUP_COLUMNS: dict[GroupBy, tuple[str, str]] = {
     GroupBy.DATE: ("full_date", "full_date"),
     GroupBy.MONTH: ("month", "month_name"),
+    # The *financial* quarter, which is what ``dim_date`` stores and what the
+    # target sheets mean. The calendar ``quarter`` column beside it numbers the
+    # same three months differently — January is calendar Q1 and financial Q3 —
+    # and two numbering schemes for one word is how a report and the people
+    # reading it come to disagree.
+    GroupBy.QUARTER: ("financial_quarter", "financial_quarter"),
     GroupBy.COMPANY: ("company_code", "company_name"),
     GroupBy.BUSINESS_UNIT: ("bu_code", "bu_name"),
     GroupBy.SALES_LINE: ("sales_line_code", "sales_line_name"),
@@ -260,6 +266,31 @@ def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: normalize_value(value) for key, value in row.items()} for row in rows]
 
 
+#: Time groupings, and the column naming the year each period belongs to.
+#:
+#: A month number is 1-12 and a financial quarter is 1-4, so neither identifies
+#: a period on its own. A breakdown spanning two financial years reported a
+#: single row called "January" holding both Januarys added together — one bar,
+#: two years, and nothing on screen saying so. The year is part of the key here
+#: and part of the label, so the rows are distinct and the reader can tell them
+#: apart. Every other grouping is keyed on a business code that is already
+#: unique, which is why this map holds only the periods.
+PERIOD_YEAR_COLUMN: dict[GroupBy, str] = {
+    GroupBy.MONTH: "financial_year",
+    GroupBy.QUARTER: "financial_year",
+}
+
+#: How a period reads once its year is part of its name.
+#:
+#: A quarter is written the way the label of a resolved quarter period is
+#: written, so "FY 2024-25 Q3" means the same thing on a breakdown row as it
+#: does above the answer.
+def _period_label(group_by: GroupBy, part: Any, label: Any, year: Any) -> str:
+    if group_by is GroupBy.QUARTER:
+        return f"{year} Q{part}"
+    return f"{label} {year}"
+
+
 def _rows(result) -> list[dict[str, Any]]:
     return normalize_rows([dict(row._mapping) for row in result])
 
@@ -283,6 +314,16 @@ class MeasureSet:
     sums: tuple[str, ...]
     default_sort: str
     counts: tuple[tuple[str, str], ...] = ()
+    #: Sums whose absence means "never stated", not "zero".
+    #:
+    #: A ``SUM`` is NULL when every row it covered was NULL, and for most
+    #: measures that cannot happen — a sale states its net sales. Volume can:
+    #: a transaction line may carry no Total Volume, and reporting that as 0
+    #: asserts a measurement nobody made. ``queries.volume_total`` and
+    #: ``reporting.service._volume`` both already refuse to, each with the same
+    #: reasoning written out; naming the column here is what stops the *bundled*
+    #: total contradicting them, and contradicting the report layer with it.
+    nullable_sums: tuple[str, ...] = ()
 
     def expressions(self, table: Table) -> list:
         expressions = [
@@ -318,6 +359,7 @@ SALES_MEASURES = MeasureSet(
     sums=("quantity", "volume", "discount", "net_sales", "cost"),
     default_sort="net_sales",
     counts=(("transaction_count", "*"), ("invoice_count", "invoice_no")),
+    nullable_sums=("volume",),
 )
 
 #: The four stock categories, summed independently, plus the total the view
@@ -347,6 +389,11 @@ TARGET_MEASURES = MeasureSet(
     sums=("target_amount", "target_quantity", "target_volume"),
     default_sort="target_amount",
     counts=(("target_count", "*"),),
+    # Only ``target_amount`` is required of a target row. A NULL quantity or
+    # volume means no target was set for that measure — never a target of zero —
+    # which is the same distinction ``fact_target`` itself draws by leaving the
+    # columns nullable, and it must survive being summed.
+    nullable_sums=("target_quantity", "target_volume"),
 )
 
 
@@ -375,7 +422,15 @@ def aggregate_totals(session: Session, measures: MeasureSet, filters: ScopeFilte
     row = session.execute(statement).one()
     totals = {key: _f(value) if not key.endswith("count") else (value or 0)
               for key, value in row._mapping.items()}
-    return {k: (v if v is not None else 0.0) for k, v in totals.items()}
+    # A measure declared ``nullable`` keeps its None while rows are in scope:
+    # the lines exist and none of them stated the figure, which is not the same
+    # as a total of zero. With no rows in scope there is nothing to have left
+    # unstated, so it falls back with everything else — and every ``_empty``
+    # guard downstream tests falsiness, which None satisfies either way.
+    in_scope = any(value for key, value in totals.items() if key.endswith("count"))
+    nullable = set(measures.nullable_sums) if in_scope else set()
+    return {k: (v if v is not None or k in nullable else 0.0)
+            for k, v in totals.items()}
 
 
 def aggregate_by(session: Session, measures: MeasureSet, filters: ScopeFilters,
@@ -404,7 +459,18 @@ def aggregate_by(session: Session, measures: MeasureSet, filters: ScopeFilters,
 
     code = table.c[code_column].label("code")
     label = table.c[label_column].label("label") if label_column in table.c else code
-    statement = select(code, label, *measures.expressions(table)).select_from(table)
+
+    # A period is identified by its year as well as its number: see
+    # PERIOD_YEAR_COLUMN. The year is selected and grouped on here, then folded
+    # into the code and the label below, so nothing downstream has to know that
+    # this grouping has two columns behind it.
+    year_column = PERIOD_YEAR_COLUMN.get(group_by)
+    if year_column and year_column not in table.c:
+        year_column = None
+    selected = [code, label, *measures.expressions(table)]
+    if year_column:
+        selected.insert(0, table.c[year_column].label("period_year"))
+    statement = select(*selected).select_from(table)
 
     conditions = filter_conditions(table, filters, date_from, date_to, date_column)
     conditions.extend(extra_conditions or ())
@@ -414,6 +480,8 @@ def aggregate_by(session: Session, measures: MeasureSet, filters: ScopeFilters,
     statement = statement.group_by(table.c[code_column])
     if label_column in table.c and label_column != code_column:
         statement = statement.group_by(table.c[label_column])
+    if year_column:
+        statement = statement.group_by(table.c[year_column])
 
     order_field = sort_field or measures.default_sort
     order = desc(func.sum(table.c[order_field])) if direction == "desc" else asc(
@@ -424,7 +492,15 @@ def aggregate_by(session: Session, measures: MeasureSet, filters: ScopeFilters,
 
     rows = _rows(session.execute(statement))
     truncated = len(rows) > bounded
-    return [_label_unassigned(row) for row in rows[:bounded]], truncated
+    kept = [_label_unassigned(row) for row in rows[:bounded]]
+    if year_column:
+        for row in kept:
+            year = row.pop("period_year", None)
+            if year is None or row["code"] == "(unassigned)":
+                continue
+            row["label"] = _period_label(group_by, row["code"], row["label"], year)
+            row["code"] = f"{year}|{row['code']}"
+    return kept, truncated
 
 
 # ---------------------------------------------------------------------------
@@ -630,12 +706,27 @@ def compare_totals(current: dict[str, Any], previous: dict[str, Any],
 
 def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date,
                      date_to: dt.date, group_by: GroupBy = GroupBy.REGION,
-                     limit: int = 20) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                     limit: int = 20, below_percent: float | None = None,
+                     gap_only: bool = False,
+                     ) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
     """Target and actual side by side, grouped by one dimension.
 
     Both sides are aggregated over the same window and joined in Python on the
     group code, so a group with a target but no sales (and the reverse) still
     appears — which is exactly the case a "who missed target" question is about.
+
+    ``below_percent`` and ``gap_only`` narrow the rows **here**, before the
+    limit, and they are the reason this function owns the narrowing at all. The
+    caller used to filter the list it got back, which had already been cut to
+    the top ``limit`` performers — so "which territories are below 80%?" tested
+    the threshold against the best ones and answered "none" while dozens were
+    short. Selecting the tail and then keeping the head is not a truncated
+    answer, it is the opposite answer, and it renders identically.
+
+    Returns ``(rows, totals, matched)``. ``totals`` covers the whole scope
+    whatever the narrowing, because the headline answers "how did we do" and the
+    table answers "who"; ``matched`` is how many groups met the condition, so a
+    capped list can say that more exist.
     """
     code_column, _ = GROUP_COLUMNS[group_by]
 
@@ -693,11 +784,7 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         entry["target_volume"] = target_volume.get(str(code))
         entry["actual_volume"] = actual_volume.get(str(code))
 
-    rows = sorted(
-        combined.values(),
-        key=lambda r: (r["achievement_percent"] is None, r["achievement_percent"] or 0),
-        reverse=True,
-    )
+    rows = list(combined.values())
     totals_target = sum(r["target_amount"] for r in rows)
     totals_actual = sum(r["actual_sales"] for r in rows)
     target_quantity = sum(r["target_quantity"] for r in rows)
@@ -716,7 +803,37 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         "group_by": group_by.value,
         "group_column": code_column,
     }
-    return rows[: max(1, min(limit, MAX_ROWS))], totals
+
+    # Narrow first. A group with no target has no achievement, so it satisfies
+    # no threshold — "below 80%" is a statement about a ratio, and there is no
+    # ratio to test. It is excluded rather than counted as 0%, which would be
+    # this layer inventing the target the row is missing.
+    if below_percent is not None:
+        rows = [r for r in rows
+                if r["achievement_percent"] is not None
+                and r["achievement_percent"] < below_percent]
+    if gap_only:
+        rows = [r for r in rows if r["gap"] > 0]
+
+    # Then order, and only then cut. A question with a threshold or a gap is
+    # asking who fell short, so the worst come first — the head of a
+    # best-first list is exactly the rows such a question is not about.
+    #
+    # An unmeasurable achievement sorts **last** in both directions. It used to
+    # sort first, so "top 1 territory achievement" returned the one territory
+    # with no target at all: neither the best nor the worst performer, and
+    # presented as the best.
+    if gap_only:
+        rows.sort(key=lambda r: r["gap"], reverse=True)
+    elif below_percent is not None:
+        rows.sort(key=lambda r: (r["achievement_percent"] is None,
+                                 r["achievement_percent"] or 0))
+    else:
+        rows.sort(key=lambda r: (r["achievement_percent"] is not None,
+                                 r["achievement_percent"] or 0), reverse=True)
+
+    matched = len(rows)
+    return rows[: max(1, min(limit, MAX_ROWS))], totals, matched
 
 
 # ---------------------------------------------------------------------------

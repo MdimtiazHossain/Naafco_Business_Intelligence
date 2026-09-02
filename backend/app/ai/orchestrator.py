@@ -29,18 +29,25 @@ from typing import Any, Sequence
 from sqlalchemy.orm import Session
 
 from ..etl.mapping import MasterDataIndex
-from .date_resolver import DateResolver
+from .date_resolver import MONTH_NAMES, DateResolver
 from .entity_resolver import EntityResolver
 from .exceptions import (
     AgentError,
     AmbiguousEntityError,
+    DateResolutionError,
     NoDataError,
     PermissionDeniedError,
     UnsupportedQuestionError,
     ValidationFailedError,
 )
-from . import lexicon
-from .intent import IntentPrediction, detect_intent
+from . import lexicon, masters
+from .intent import (
+    GROUP_BY_KEYWORDS,
+    METRIC_KEYWORDS,
+    MODIFIERS,
+    IntentPrediction,
+    detect_intent,
+)
 from .mining import normalize_phrase
 from .llm import LLMClient, NullLLMClient
 from .permission_filter import PermissionFilter, UserContext
@@ -55,10 +62,13 @@ from .prompts import (
 )
 from .response_formatter import ResponseFormatter
 from .schemas import (
+    CHAT_CONTEXT_LEVELS,
     ChartSpec,
+    ChatContext,
     DateRangeType,
     EntityType,
     GroupBy,
+    ORG_ENTITY_TYPES,
     Intent,
     ResolvedDateRange,
     ResolvedEntity,
@@ -67,7 +77,7 @@ from .schemas import (
     ToolResult,
 )
 from .tools import REGISTRY, ToolContext, ToolInvocation, execute_tool, tools_for_intent
-from .validators import validate_tool_result
+from .validators import numbers_in, response_grounded_in, validate_tool_result
 
 logger = logging.getLogger("app.ai.orchestrator")
 
@@ -105,7 +115,55 @@ TOOL_BY_INTENT: dict[Intent, str] = {
     Intent.BUSINESS_SUMMARY: "get_business_summary",
     Intent.BUSINESS_ALERT: "get_business_alerts",
     Intent.ROOT_CAUSE_ANALYSIS: "get_root_cause_analysis",
+    # Receivables. The three tools existed, were tested and were documented as
+    # answerable, but no intent named one — so every credit question reached
+    # `_select_tool`, found nothing here, and was refused as unsupported. The
+    # tools were never the missing part; this line was.
+    Intent.CREDIT_SUMMARY: "get_credit_summary",
+    Intent.CREDIT_AGING: "get_credit_aging",
+    Intent.CREDIT_OVERDUE: "get_overdue_customers",
 }
+
+#: The organisational chain, outermost first, as entity types.
+#:
+#: Derived from the levels the warehouse is built on rather than restated, so
+#: this cannot drift from the hierarchy the ETL and the filter bar agree on.
+ORG_ORDER: tuple[EntityType, ...] = tuple(
+    CHAT_CONTEXT_LEVELS[name] for name in
+    ("company_code", "bu_code", "sales_line_code", "zone_code", "region_code",
+     "area_code", "unit_code", "territory_code", "sub_territory_code")
+)
+
+#: Rows a ranked answer shows when nobody said how many.
+#:
+#: A conversation carries a limit forward only while it *differs* from this, so
+#: the platform's own default is never repeated back to a reader as though it
+#: were their decision. A reader who does say "top 20" loses nothing: the
+#: fallback is the number they asked for.
+DEFAULT_LIMIT = 20
+
+#: Where an entity type sits when two of them are compared, coarsest first.
+#:
+#: An axis is a chain of narrowings over one thing, so two entities on the same
+#: axis can contradict each other and two on different axes never can: a region
+#: and a territory are rival answers to "where", while a territory and a
+#: material are two halves of one question.
+#:
+#: Customer and sales force share the rank below the organisational levels.
+#: They are two different things a territory holds — a shop and a person — so
+#: neither displaces the other, while a level above displaces both.
+_ORG_AXIS: dict[EntityType, int] = {
+    **{entity_type: rank for rank, entity_type in enumerate(ORG_ENTITY_TYPES)},
+    EntityType.CUSTOMER: len(ORG_ENTITY_TYPES),
+    EntityType.SALES_FORCE: len(ORG_ENTITY_TYPES),
+}
+
+#: The item axis. One entry today, because revision 0022 left one item master;
+#: a material group or brand entity would join it here rather than anywhere else.
+_ITEM_AXIS: dict[EntityType, int] = {EntityType.MATERIAL: 0}
+
+ENTITY_AXES: tuple[dict[EntityType, int], ...] = (_ORG_AXIS, _ITEM_AXIS)
+
 
 #: Intents whose answer is more useful with a companion figure alongside.
 COMPANION_TOOLS: dict[Intent, tuple[str, ...]] = {
@@ -254,21 +312,27 @@ class Orchestrator:
         self.user = user
         self.llm = llm or NullLLMClient()
         self.today = today or dt.date.today()
-        self.master_index = MasterDataIndex(session)
+        # Both master indexes are cached on a generation counter rather than
+        # rebuilt here: an Orchestrator is constructed per question, and reading
+        # every dimension again each time was twenty-eight of the forty-three
+        # statements one answer cost. See ``ai.masters``.
+        self.master_index = masters.master_index(session)
         self.permissions = PermissionFilter(session, user, self.master_index)
         # Loaded once per question and handed to both readers, so the classifier
         # and the entity resolver are always looking at the same approved
         # vocabulary. Cached on a generation counter, so this is a dictionary
         # lookup on all but the first question after a reviewer's change.
         self.lexicon = lexicon.load(session)
-        self.entities = EntityResolver(session, lexicon=self.lexicon)
+        self.entities = EntityResolver(session, index=masters.entity_index(session),
+                                       lexicon=self.lexicon)
         self.dates = DateResolver(today=self.today)
         self.formatter = ResponseFormatter()
 
     # -- pipeline -----------------------------------------------------------
 
     def answer(self, message: str, context: ConversationContext | None = None,
-               history: Sequence[dict[str, str]] = ()) -> AgentAnswer:
+               history: Sequence[dict[str, str]] = (),
+               page: ChatContext | None = None) -> AgentAnswer:
         started = time.perf_counter()
         context = context or ConversationContext()
 
@@ -285,7 +349,7 @@ class Orchestrator:
             ), started)
 
         try:
-            query = self.build_query(cleaned or message, prediction, context)
+            query = self.build_query(cleaned or message, prediction, context, page)
             answer = self._execute(query, cleaned or message, history)
         except AgentError as exc:
             return self._finish(AgentAnswer(
@@ -334,17 +398,185 @@ class Orchestrator:
         """
         return set()
 
+    @staticmethod
+    def _axis_of(entity_type: EntityType) -> dict[EntityType, int] | None:
+        """The axis an entity type is compared on, or None if it stands alone."""
+        for axis in ENTITY_AXES:
+            if entity_type in axis:
+                return axis
+        return None
+
+    @classmethod
+    def _carry_entities(cls, named: Sequence[ResolvedEntity],
+                        earlier: Sequence[ResolvedEntity],
+                        ) -> tuple[list[ResolvedEntity], list[ResolvedEntity]]:
+        """Which earlier filters a follow-up leaves standing, and which it ends.
+
+        A follow-up that names something used to discard **every** earlier
+        filter, which turned "A M Traders এর টা দেখাও" after a territory
+        question into that customer's national figure — a reader asking to
+        narrow, answered wider, with nothing on screen saying so.
+
+        The rule is the one the filter bar already follows: an earlier filter
+        ends where the follow-up names its own type, or names something *above*
+        it on the same axis. Naming a region after a territory is stepping out,
+        so the territory goes; naming a customer inside that territory is
+        drilling in, so the territory stays. A material and a territory are
+        never rivals and both stand.
+
+        Both halves are returned because both have to be said out loud: a filter
+        that silently vanished and one that silently persisted mislead a reader
+        in opposite directions.
+        """
+        kept: list[ResolvedEntity] = []
+        ended: list[ResolvedEntity] = []
+        for old in earlier:
+            axis = cls._axis_of(old.entity_type)
+            displaced = any(
+                new.entity_type is old.entity_type
+                or (axis is not None and new.entity_type in axis
+                    and axis[old.entity_type] > axis[new.entity_type])
+                for new in named
+            )
+            (ended if displaced else kept).append(old)
+        return kept, ended
+
+    def _page_entities(self, page: "ChatContext | None",
+                       already: Sequence[ResolvedEntity]) -> list[ResolvedEntity]:
+        """The bar's selections, for levels the question did not name itself.
+
+        Each is looked up in the master index rather than trusted as typed, so a
+        code the browser sent that names nothing is dropped instead of becoming
+        a filter that silently matches no rows. They are ordinary entities from
+        here on, and pass the same permission check the question's own do.
+        """
+        if page is None:
+            return []
+        taken = {entity.entity_type for entity in already}
+
+        # How deep into the organisation the question itself went. A bar
+        # selection *below* that level is superseded: a reader looking at one
+        # territory who then asks about another region has moved, and ANDing the
+        # two would answer with an empty table for a question that has an
+        # answer. Levels above stay — a company and a region inside it are two
+        # things the reader has both expressed.
+        named = [ORG_ORDER.index(e.entity_type) for e in already
+                 if e.entity_type in ORG_ORDER]
+        deepest_named = max(named) if named else None
+
+        inherited: list[ResolvedEntity] = []
+        for field_name, entity_type in CHAT_CONTEXT_LEVELS.items():
+            code = getattr(page, field_name, None)
+            if not code or entity_type in taken:
+                continue
+            if (deepest_named is not None and entity_type in ORG_ORDER
+                    and ORG_ORDER.index(entity_type) > deepest_named):
+                continue
+            entry = next(
+                (e for e in self.entities.index.by_code.get(code.casefold(), [])
+                 if e.entity_type is entity_type),
+                None,
+            )
+            if entry is None:
+                continue
+            inherited.append(ResolvedEntity(
+                entity_type=entry.entity_type, code=entry.code,
+                label=entry.label, term=code, match="code",
+            ))
+        return inherited
+
+    def _page_period(self, page: "ChatContext | None") -> ResolvedDateRange | None:
+        """The bar's period, resolved the way the dashboard resolves it.
+
+        Consulted last — after the question's own words and after the period the
+        conversation was already using — so it fills a gap and never overrules
+        something the reader said.
+        """
+        if page is None:
+            return None
+        if page.date_from and page.date_to:
+            return self.dates.custom_range(page.date_from, page.date_to)
+        if not page.period:
+            return None
+        try:
+            return self.dates.of_type(DateRangeType(page.period.upper()))
+        except (ValueError, KeyError, DateResolutionError):
+            # A period name this resolver does not know is not worth failing a
+            # question over: the ordinary fallback still applies, and it says so.
+            return None
+
+    @staticmethod
+    def _known_words() -> set[str]:
+        """Every word the question layer already accounts for.
+
+        Built from the tables that define them — the metric families, the
+        modifiers, the grouping nouns and the month names — rather than typed
+        out again here. A second list would fall behind the first, and the
+        symptom would be the assistant reporting "sales" as a master record it
+        could not find.
+        """
+        words: set[str] = set()
+        for group in METRIC_KEYWORDS.values():
+            words.update(w.casefold() for w in group)
+        for group in MODIFIERS.values():
+            words.update(w.casefold() for w in group)
+        for _, group in GROUP_BY_KEYWORDS:
+            words.update(w.casefold() for w in group)
+        words.update(MONTH_NAMES)
+        # Multi-word phrases contribute their parts too, because the check that
+        # reads this compares one token at a time.
+        for phrase in list(words):
+            words.update(phrase.split())
+        return words
+
     def build_query(self, message: str, prediction: IntentPrediction,
-                    context: ConversationContext) -> StructuredQuery:
+                    context: ConversationContext,
+                    page: "ChatContext | None" = None) -> StructuredQuery:
         """Assemble and validate the structured query for a message."""
         assumptions: list[str] = []
 
-        entities = self.entities.resolve_message(
+        named = self.entities.resolve_message(
             message, exclude_types=self._excluded_entity_types(prediction, context))
-        inherited_entities = False
-        if not entities and context.entities:
-            entities = list(context.entities)
-            inherited_entities = True
+        carried, ended = self._carry_entities(named, context.entities)
+        entities = named + carried
+
+        # A word that reads like a master name and matched nothing has to be
+        # said out loud. Without this the question is answered for everything —
+        # a national total where a territory was asked for — and the two answers
+        # look identical on screen. Naming the word is not a guess: it reports
+        # what was read, and leaves the reader to correct it.
+        unmatched = [
+            term for term in self.entities.unmatched_terms(
+                message, named, known_words=self._known_words())
+            if not self.dates.is_period_word(term)
+        ]
+        if unmatched:
+            # A near miss is offered, never taken. Every name here is a record
+            # that exists, so the reader can correct one keystroke instead of
+            # rewriting the question — and choosing one of them for them would
+            # be this system deciding which territory was meant.
+            suggestions = [
+                f"'{term}' (did you mean {near[0].label}?)" if (near := self.entities.suggest(term))
+                else f"'{term}'"
+                for term in unmatched
+            ]
+            assumptions.append(
+                "No master record matches " + ", ".join(suggestions)
+                + ", so nothing was filtered by it."
+            )
+
+        # What the reader has on screen narrows the answer too, for the levels
+        # the question did not name itself. The question wins its own level —
+        # "Khulna sales" with the bar on Dhaka is a question about Khulna — and
+        # the rest is inherited and said out loud, because a filter nobody can
+        # see is the same problem as a filter that silently vanished.
+        inherited_filters = self._page_entities(page, entities)
+        if inherited_filters:
+            entities = entities + inherited_filters
+            assumptions.append(
+                "Also filtered by what is selected on screen: "
+                + ", ".join(e.label for e in inherited_filters) + "."
+            )
 
         intent = prediction.intent
         if intent is Intent.UNKNOWN and context.intent:
@@ -367,38 +599,108 @@ class Orchestrator:
             # resolve_with_comparison keeps "compared to last month" meaning
             # *this* month measured against last month.
             date_range = self.dates.resolve_with_comparison(message)
-        elif context.date_range is not None:
-            date_range = context.date_range
-            assumptions.append(f"Using the same period as before: {date_range.label}.")
-        else:
-            date_range = self.dates.of_type(DateRangeType.THIS_MONTH)
-            assumptions.append(
-                "No period was given, so this covers the current month."
+            # Read on its own, "February দেখাও" means the most recent February.
+            # Asked after a question about January of FY 2024-25 it means that
+            # year's February, and answering with a February thirteen months
+            # away — while labelling it only "February" — is the silent kind of
+            # wrong this platform exists to refuse. The anchoring is stated,
+            # because a period that moved is a period the reader must see move.
+            anchored = (
+                self.dates.anchor_month(message, context.date_range)
+                if context.date_range is not None else None
             )
+            if anchored is not None and anchored.date_from != date_range.date_from:
+                if anchored.date_from <= self.dates.today:
+                    assumptions.append(
+                        f"Read as {anchored.label}, the same financial year as "
+                        f"your previous question ({context.date_range.label})."
+                    )
+                    date_range = anchored
+                else:
+                    # The year under discussion has not reached that month.
+                    # Anchoring anyway would answer with an empty future period,
+                    # which trades one wrong figure for another — so the month is
+                    # read on its own and the reader is told the answer has left
+                    # the year they were asking about. Either way the period
+                    # never moves without being named.
+                    assumptions.append(
+                        f"{anchored.label} has not begun, so this covers "
+                        f"{date_range.label} — outside the financial year your "
+                        f"previous question covered ({context.date_range.label})."
+                    )
+        else:
+            # "No period was given" and "a period was given and not understood"
+            # are different sentences, and the resolver already knows which one
+            # this is. Saying the first when the second is true is the mistake
+            # that makes a wrong answer look like a right one.
+            unread = self.dates.unread_period_terms(message)
+            page_range = self._page_period(page)
+            if context.date_range is not None:
+                date_range = context.date_range
+                assumptions.append(
+                    f"Using the same period as before: {date_range.label}.")
+            elif page_range is not None:
+                date_range = page_range
+                assumptions.append(
+                    f"Using the period selected on screen: {date_range.label}.")
+            else:
+                date_range = self.dates.of_type(DateRangeType.THIS_MONTH)
+                assumptions.append(
+                    "No period was given, so this covers the current month."
+                    if not unread else
+                    "This covers the current month."
+                )
+            if unread:
+                assumptions.insert(
+                    len(assumptions) - 1,
+                    "I could not read "
+                    + ", ".join(f"'{term}'" for term in unread)
+                    + " as a period."
+                )
 
-        if inherited_entities and entities:
+        if carried:
             assumptions.append(
                 "Keeping your earlier filter: "
-                + ", ".join(e.label for e in entities) + "."
+                + ", ".join(e.label for e in carried) + "."
             )
-        elif entities:
-            # A partial name match narrows the whole answer on the strength of a
-            # word fragment, which is the weakest evidence this resolver acts on.
-            # Say so. The figure is right for the filter that was applied, and
-            # wrong for the question if the fragment was never meant as a name —
-            # and only the reader can tell the two apart.
-            guessed = [e for e in entities if e.match == "partial_name"]
-            if guessed:
-                assumptions.append(
-                    "Read "
-                    + ", ".join(f"'{e.term}' as {e.label}" for e in guessed)
-                    + ". Say the full name if you meant something else."
-                )
+        # A filter that ended is disclosed as loudly as one that persisted. The
+        # two mislead in opposite directions, and a reader who asked for a
+        # region cannot otherwise tell whether the territory they named three
+        # turns ago is still narrowing the figure in front of them.
+        if ended:
+            assumptions.append(
+                "Your earlier filter no longer applies: "
+                + ", ".join(e.label for e in ended) + "."
+            )
+        # A partial name match narrows the whole answer on the strength of a
+        # word fragment, which is the weakest evidence this resolver acts on.
+        # Say so. The figure is right for the filter that was applied, and
+        # wrong for the question if the fragment was never meant as a name —
+        # and only the reader can tell the two apart. It reads what this message
+        # named: a carried filter was disclosed on the turn that first read it.
+        guessed = [e for e in named if e.match == "partial_name"]
+        if guessed:
+            assumptions.append(
+                "Read "
+                + ", ".join(f"'{e.term}' as {e.label}" for e in guessed)
+                + ". Say the full name if you meant something else."
+            )
 
         group_by = prediction.group_by or (
             context.group_by if intent == context.intent else []
         )
-        limit = prediction.limit or context.limit or 20
+        # A limit hides rows, so it is inherited only by a question of the same
+        # kind — the rule the grouping above already follows. "Top 5 brands"
+        # qualified that question; the "total sales কত" after it is not a top
+        # five of anything, and a five-row cap on it truncates an answer nobody
+        # asked to have truncated.
+        inherited_limit = (
+            context.limit
+            if prediction.limit is None and intent == context.intent else None
+        )
+        limit = prediction.limit or inherited_limit or DEFAULT_LIMIT
+        if inherited_limit:
+            assumptions.append(f"Still showing only the top {inherited_limit}.")
 
         query = StructuredQuery(
             intent=intent,
@@ -442,6 +744,12 @@ class Orchestrator:
         if tool_name in _GROUPED_TOOLS:
             arguments["group_by"] = self._group_for(tool_name, query).value
             arguments["limit"] = query.limit
+            # "contribution" / "share" asks for the same rows with each one's
+            # proportion of the whole beside it, so it is a way of reporting an
+            # answer rather than a different answer. The tool reads the total in
+            # its own query; nothing here computes a share.
+            if prediction and prediction.has("share"):
+                arguments["include_share"] = True
         if tool_name in _ACHIEVEMENT_TOOLS:
             arguments["group_by"] = self._group_for(tool_name, query).value
             arguments["limit"] = query.limit
@@ -530,6 +838,11 @@ class Orchestrator:
         answer_text = self.formatter.format(
             query.intent, results, query.date_range,
             results[0].filters if results else {}, query.assumptions,
+            # The names behind the codes the answer was filtered by. Only the
+            # question's own entities can be named; a code the reader's data
+            # scope injected has no entity behind it and keeps its code, which
+            # is honest — it narrowed the figure either way.
+            entity_labels={e.code: e.label for e in query.entities},
         )
         answer_text = self._maybe_polish(answer_text, message, results, history)
 
@@ -544,7 +857,7 @@ class Orchestrator:
                 date_range=query.date_range,
                 entities=query.entities,
                 group_by=query.group_by,
-                limit=query.limit,
+                limit=query.limit if query.limit != DEFAULT_LIMIT else None,
             ),
             language=query.language,
         )
@@ -656,9 +969,19 @@ class Orchestrator:
             ])
         except Exception:  # noqa: BLE001
             return text
-        if response.text and response.text.strip():
-            return response.text.strip()
-        return text
+        rephrased = (response.text or "").strip()
+        if not rephrased:
+            return text
+        # The one check that makes the docstring above true. A model asked to
+        # reuse figures verbatim usually does; when it does not — a rounded
+        # crore, a total it worked out itself — the sentence reads as fluently
+        # as the right one and there is nothing on screen to tell them apart.
+        # Any number the deterministic answer does not contain sends the whole
+        # rephrasing back, because a part-invented answer is not repairable.
+        if not response_grounded_in(rephrased, numbers_in(text)):
+            logger.warning("Discarded a rephrasing that quoted an unsourced figure.")
+            return text
+        return rephrased
 
 
 __all__ = [

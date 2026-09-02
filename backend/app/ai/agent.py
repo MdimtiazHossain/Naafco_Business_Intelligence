@@ -161,13 +161,14 @@ class BusinessIntelligenceAgent:
 
     # -- public API ---------------------------------------------------------
 
-    def chat(self, message: str, conversation_id: str | None = None) -> ChatResponse:
+    def chat(self, message: str, conversation_id: str | None = None,
+             page: ChatContext | None = None) -> ChatResponse:
         """Answer one question in the context of a conversation."""
         state = self._load_conversation(conversation_id)
         orchestrator = Orchestrator(self.session, self.user, self.llm, self.today)
 
         try:
-            answer = orchestrator.answer(message, state.context, state.history)
+            answer = orchestrator.answer(message, state.context, state.history, page)
         except AgentError as exc:
             answer = AgentAnswer(answer=exc.user_message, intent=Intent.UNKNOWN,
                                  error_code=exc.code, error_details=exc.details)

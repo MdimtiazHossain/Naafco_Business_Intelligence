@@ -82,6 +82,12 @@ MODIFIERS: dict[str, tuple[str, ...]] = {
                  "expire হতে", "expire হবে"),
     "expiry": ("expired", "expiry", "expiration", "shelf life", "মেয়াদ",
                "মেয়াদোত্তীর্ণ"),
+    # A share of the period's total. Listed as a modifier rather than a metric
+    # because it changes how an answer is *reported*, never what was measured:
+    # the rows are the same rows, with each one's proportion of the whole beside
+    # it. There is no "contribution" figure in the warehouse to select.
+    "share": ("contribution", "share", "percent of total", "percentage of total",
+              "share of total", "অবদান", "শেয়ার", "অংশ"),
     "gap": ("gap", "shortfall", "ঘাটতি", "গ্যাপ"),
     "why": ("why", "reason", "cause", "root cause", "কেন", "কারণ"),
     "summary": ("summary", "overview", "snapshot", "management summary", "dashboard",
@@ -185,6 +191,11 @@ GROUP_BY_KEYWORDS: tuple[tuple[GroupBy, tuple[str, ...]], ...] = (
     (GroupBy.PLANT, ("plant", "plants", "প্ল্যান্ট")),
     (GroupBy.COMPANY, ("company", "companies")),
     (GroupBy.MONTH, ("month", "monthly", "মাস")),
+    # Listed after the month so "month" cannot be re-matched out of a phrase
+    # naming a quarter, and before the day for the same reason. A quarter noun
+    # still only becomes a breakdown when it carries a grouping marker, so
+    # "this quarter এর sales" stays a period and "quarter wise" is the report.
+    (GroupBy.QUARTER, ("quarter", "quarterly", "qtr", "ত্রৈমাসিক")),
     (GroupBy.DATE, ("day", "daily", "দিন")),
 )
 

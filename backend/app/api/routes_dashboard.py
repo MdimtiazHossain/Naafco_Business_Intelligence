@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from ..ai import queries as q
 from ..ai.date_resolver import DateResolver
 from ..ai.permission_filter import PermissionFilter, UserContext
+from ..ai.exceptions import DateResolutionError
 from ..ai.schemas import DateRangeType, GroupBy, ScopeFilters
 from ..ai.tools import ToolContext, execute_tool
 from ..auth import audit
@@ -132,7 +133,11 @@ def resolve_range(period: str | None, date_from: dt.date | None,
     if period:
         try:
             return resolver.of_type(DateRangeType(period.upper()))
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, DateResolutionError):
+            # `DateResolutionError` covers a range type that exists but cannot be
+            # resolved from a name alone — MONTH needs to be told *which* month,
+            # so it is never offered as a preset and is refused here like any
+            # other unusable value rather than reaching the client as a 500.
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 f"Unknown period '{period}'.") from None
     return resolver.of_type(DateRangeType.THIS_MONTH)

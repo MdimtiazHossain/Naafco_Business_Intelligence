@@ -96,12 +96,24 @@ class DateRangeType(str, Enum):
     LAST_MONTH = "LAST_MONTH"
     THIS_QUARTER = "THIS_QUARTER"
     LAST_QUARTER = "LAST_QUARTER"
+    #: A quarter the reader named — "Q3", "3rd quarter", "ত্রৈমাসিক ৩".
+    #:
+    #: Always a *financial* quarter, because every other quarter in this
+    #: platform is: ``dim_date.financial_quarter`` is what the warehouse stores
+    #: and FY 2024-25 Q1 is July to September. A calendar Q1 would be a fifth
+    #: definition of the same word, disagreeing with the target sheets, the
+    #: reporting views and the people who write them.
+    QUARTER = "QUARTER"
     THIS_YEAR = "THIS_YEAR"
     LAST_YEAR = "LAST_YEAR"
     MTD = "MTD"
     QTD = "QTD"
     YTD = "YTD"
     LAST_N_DAYS = "LAST_N_DAYS"
+    #: One named calendar month — "January", "জানুয়ারি", "January FY 2024-25".
+    #: Deliberately not in the date filter's option list: a preset cannot name
+    #: a month, so this type is only ever produced by resolving text.
+    MONTH = "MONTH"
     FINANCIAL_YEAR = "FINANCIAL_YEAR"
     CUSTOM = "CUSTOM"
 
@@ -111,6 +123,10 @@ class GroupBy(str, Enum):
 
     DATE = "date"
     MONTH = "month"
+    #: The financial quarter, labelled with its year: two consecutive Q1s are
+    #: two different quarters, and a breakdown that merged them would report one
+    #: bar holding two years of sales.
+    QUARTER = "quarter"
     COMPANY = "company"
     BUSINESS_UNIT = "business_unit"
     SALES_LINE = "sales_line"
@@ -343,6 +359,14 @@ class GroupedToolInput(BaseToolInput):
     group_by: GroupBy = GroupBy.REGION
     limit: int = DEFAULT_TABLE_LIMIT
     sort_direction: Literal["asc", "desc"] = "desc"
+    #: Report each group's share of the period's total beside its figures.
+    #:
+    #: Off by default because it costs a second aggregate: the denominator is
+    #: the total for the whole window and filters, never the sum of the rows
+    #: returned. Summing the rows would make the top five's shares add to 100%
+    #: however small a part of the business they are — a wrong number that
+    #: looks exactly like a right one.
+    include_share: bool = False
 
     @field_validator("limit")
     @classmethod
@@ -525,9 +549,67 @@ class ToolResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ChatContext(BaseModel):
+    """The global filter bar as it stood when the question was asked.
+
+    The assistant used to be the one screen in the application with no idea what
+    the reader had selected: a dashboard filtered to one company, and a question
+    asked beside it answered for all of them. What arrives here is what every
+    report page already sends, under the same names, so there is no second
+    vocabulary for the same bar.
+
+    Nothing here can widen an answer. Each value becomes an ordinary filter and
+    passes the same permission gate a question's own entities do, so a crafted
+    request narrows a report exactly as a crafted query string does — and never
+    reaches a row the caller could not already read.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    company_code: str | None = None
+    bu_code: str | None = None
+    sales_line_code: str | None = None
+    zone_code: str | None = None
+    region_code: str | None = None
+    area_code: str | None = None
+    unit_code: str | None = None
+    territory_code: str | None = None
+    sub_territory_code: str | None = None
+    customer_code: str | None = None
+    sales_force_code: str | None = None
+    material_code: str | None = None
+    #: The bar's period, used only when the question names none of its own.
+    period: str | None = None
+    date_from: dt.date | None = None
+    date_to: dt.date | None = None
+
+
+#: Bar parameter -> the entity type it names. Mirrors the names
+#: ``routes_dashboard.scope_filters`` accepts, which is the contract the browser
+#: already speaks; `bu_code` is why this cannot simply be derived from
+#: ``EntityType``.
+CHAT_CONTEXT_LEVELS: dict[str, EntityType] = {
+    "company_code": EntityType.COMPANY,
+    "bu_code": EntityType.BUSINESS_UNIT,
+    "sales_line_code": EntityType.SALES_LINE,
+    "zone_code": EntityType.ZONE,
+    "region_code": EntityType.REGION,
+    "area_code": EntityType.AREA,
+    "unit_code": EntityType.UNIT,
+    "territory_code": EntityType.TERRITORY,
+    "sub_territory_code": EntityType.SUB_TERRITORY,
+    "customer_code": EntityType.CUSTOMER,
+    "sales_force_code": EntityType.SALES_FORCE,
+    "material_code": EntityType.MATERIAL,
+}
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     conversation_id: str | None = None
+    #: What the reader has selected on screen. Optional: a client that sends
+    #: nothing behaves exactly as it did before this existed.
+    context: ChatContext | None = None
 
 
 class ChatResponse(BaseModel):

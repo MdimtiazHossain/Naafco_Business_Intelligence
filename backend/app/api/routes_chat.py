@@ -50,7 +50,8 @@ def chat(
     """Ask a business question in English, Bangla or a mix of both."""
     agent = BusinessIntelligenceAgent(session, user, llm=build_llm_client())
     try:
-        response = agent.chat(request.message, request.conversation_id)
+        response = agent.chat(request.message, request.conversation_id,
+                              request.context)
         # Audited like any other report access: who asked what, and which tools
         # ran. The question is business text; no credential can reach here.
         audit.record(

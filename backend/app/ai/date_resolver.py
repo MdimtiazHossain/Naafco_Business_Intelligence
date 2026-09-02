@@ -76,13 +76,185 @@ PERIOD_PATTERNS: tuple[PeriodPattern, ...] = (
     PeriodPattern(DateRangeType.YTD, (r"\bytd\b", r"\byear to date\b")),
 )
 
+#: Ordinal words that name a quarter, in either language.
+#:
+#: Written out rather than derived: there is no table of Bangla ordinals to
+#: derive them from, and four of them is a shorter list than the code that
+#: would build it.
+QUARTER_ORDINAL_WORDS: dict[str, int] = {
+    "first": 1, "প্রথম": 1, "prothom": 1,
+    "second": 2, "দ্বিতীয়": 2, "dwitiyo": 2, "ditiyo": 2,
+    "third": 3, "তৃতীয়": 3, "tritiyo": 3,
+    "fourth": 4, "চতুর্থ": 4, "choturtho": 4, "chaturtha": 4,
+}
+
+#: A quarter the reader named, in the shapes people write it.
+#:
+#: Every alternative demands either the letter, the word, or an ordinal
+#: *suffix*, so "last 3 quarters" — three quarters ending now, not the third
+#: quarter — does not match. A bare number beside the word is the one form
+#: deliberately left unread: "3 quarter" is as likely to be a count as a name,
+#: and this resolver reports what it cannot read rather than choosing.
+QUARTER_RE = re.compile(
+    r"\bq\s*([1-4])\b"
+    r"|\bquarter\s*-?\s*([1-4])\b"
+    r"|\b([1-4])\s*(?:st|nd|rd|th)\s*(?:quarter|ত্রৈমাসিক)"
+    r"|ত্রৈমাসিক\s*([1-4])"
+    r"|\b(" + "|".join(QUARTER_ORDINAL_WORDS) + r")\s*(?:quarter|ত্রৈমাসিক)",
+    re.IGNORECASE,
+)
+
+#: The year written beside a named quarter — "Q3 2025", "2025 Q3".
+#:
+#: Read as the year the *financial* year began, the reading "FY 24-25" already
+#: gets, because every quarter in this platform is a financial quarter. The
+#: label says which year it landed in, so the reading is visible rather than
+#: assumed.
+QUARTER_YEAR_RE = re.compile(
+    r"(?:q\s*[1-4]|quarter\s*-?\s*[1-4]|[1-4]\s*(?:st|nd|rd|th)\s*quarter)"
+    r"[\s,]*((?:19|20)\d{2})"
+    r"|((?:19|20)\d{2})[\s,]*(?:q\s*[1-4]|quarter\s*-?\s*[1-4])",
+    re.IGNORECASE,
+)
+
+#: The word on its own, for the check that reports unmatched master-data terms.
+#:
+#: Without it every quarter question reported "no master record matches
+#: 'quarter'" — noise that teaches a reader to ignore the one line that tells
+#: them a filter did not apply.
+QUARTER_WORD_RE = re.compile(
+    r"\bquarters?\b|ত্রৈমাসিক|\bqtr\b|\b(?:" + "|".join(QUARTER_ORDINAL_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
 #: "last 30 days", "গত ৩০ দিন", "past 7 days".
 LAST_N_DAYS_RE = re.compile(
     r"(?:last|past|previous|গত|বিগত)\s*(\d{1,4})\s*(?:days?|দিন)", re.IGNORECASE
 )
-#: "FY 2026-27", "FY2026", "অর্থবছর 2026-27".
+#: Calendar months by name, in both languages.
+#:
+#: The English half is derived from ``calendar`` rather than typed out, the same
+#: way ``etl.period`` derives its own table — a hand-written list of twelve names
+#: is a list that can lose one. The Bangla half has to be written down: these are
+#: the Gregorian months as Bangladeshi business writes them, not the Bengali
+#: calendar's own months, and Python knows nothing about either.
+MONTH_NAMES: dict[str, int] = {
+    **{calendar.month_name[m].lower(): m for m in range(1, 13)},
+    **{calendar.month_abbr[m].lower(): m for m in range(1, 13)},
+    "জানুয়ারি": 1, "জানুয়ারী": 1,
+    "ফেব্রুয়ারি": 2, "ফেব্রুয়ারী": 2,
+    "মার্চ": 3,
+    "এপ্রিল": 4,
+    "মে": 5,
+    "জুন": 6,
+    "জুলাই": 7,
+    "আগস্ট": 8, "আগষ্ট": 8, "অগাস্ট": 8,
+    "সেপ্টেম্বর": 9, "সেপ্টেম্বার": 9,
+    "অক্টোবর": 10,
+    "নভেম্বর": 11,
+    "ডিসেম্বর": 12,
+}
+
+#: Month names that are ordinary words first and months second.
+#:
+#: English "may" is a modal verb, "mar" is a verb, and Bangla "মে" is a
+#: postposition, so each can appear in a question that names no month at all.
+#: They resolve when the sentence puts a year or the word "month" *beside* them
+#: — "May 2025", "মে মাসের" — and are ignored when they stand alone. Reading a
+#: stray "may" as a period would be the same class of mistake this whole change
+#: exists to remove.
+#:
+#: "March" and "August" are not here: they are ordinary words too, but in a
+#: question about a business they are overwhelmingly months, and requiring a
+#: qualifier would refuse "March sales". The rule below — a month word loses to
+#: a period the reader actually stated — is what covers "march ahead this
+#: month" without costing that.
+AMBIGUOUS_MONTH_WORDS = frozenset({"may", "mar", "মে"})
+
+#: Every spelling of a month, longest first so "september" wins over "sep".
+_MONTH_ALTERNATION = "|".join(
+    sorted((re.escape(name) for name in MONTH_NAMES), key=len, reverse=True)
+)
+
+MONTH_RE = re.compile(
+    r"(?<![\wঀ-৿])(" + _MONTH_ALTERNATION + r")(?![\wঀ-৿])",
+    re.IGNORECASE,
+)
+
+#: A month with the year it belongs to, written in either order.
+#:
+#: Adjacency is the whole point. "August stock above 2000 units" names a
+#: quantity, and reading that 2000 as the month's year dated the question
+#: twenty-six years into the past while looking exactly like a right answer.
+MONTH_YEAR_RE = re.compile(
+    r"(?:(?:" + _MONTH_ALTERNATION + r")[\s,]*(?P<year_after>(?:19|20)\d{2})"
+    r"|(?P<year_before>(?:19|20)\d{2})[\s,]*(?:" + _MONTH_ALTERNATION + r"))",
+    re.IGNORECASE,
+)
+
+#: Words that show a period is being written about at all.
+MONTH_CUE_RE = re.compile(r"\bmonth\b|মাস", re.IGNORECASE)
+
+#: The word "month" written *beside* a month name — "May month", "মে মাসের".
+#:
+#: Adjacency for the same reason the year needs it: "the sales team should march
+#: ahead this month" contains both a month name and the word "month", and they
+#: have nothing to do with each other. "ত্রৈমাসিক" (quarterly) contains "মাস"
+#: too, which is why the negative lookbehind is here and not in the wide cue
+#: above — that one only asks whether a word is part of how a period is written.
+MONTH_PROMOTION_RE = re.compile(
+    r"(?:" + _MONTH_ALTERNATION + r")[\s,-]*(?:\bmonths?\b|(?<!ত্রৈ)মাস\S*)"
+    r"|(?:\bmonths?\b|(?<!ত্রৈ)মাস\S*)[\s,-]*(?:" + _MONTH_ALTERNATION + r")",
+    re.IGNORECASE,
+)
+
+#: "FY 2026-27", "FY2026", "অর্থবছর 2026-27", "FY 26-27", "24-25 অর্থবছরের".
+#:
+#: Two orders, because the two languages put the marker on opposite sides:
+#: English writes "FY 2024-25" and Bangla writes "২৪-২৫ অর্থবছরের". The start
+#: year may be two digits — which is how a planner actually writes it — so
+#: ``_start_year`` widens 24 to 2024 rather than the regex pretending 24 is a
+#: year in its own right.
+#: The words that mark a financial year, in both languages. Declared once so
+#: the pattern that reads a year and the test for "is this word a period at
+#: all" cannot disagree about what a marker is.
+FY_MARKERS = r"fy|f\.y\.|financial\s+year|fiscal\s+year|অর্থবছর\S*"
+
 FINANCIAL_YEAR_RE = re.compile(
-    r"(?:fy|f\.y\.|financial year|fiscal year|অর্থবছর)\s*:?\s*(\d{4})(?:\s*[-/]\s*(\d{2,4}))?",
+    rf"(?:{FY_MARKERS})\s*:?\s*"
+    r"(\d{4}|\d{2})(?:\s*[-/]\s*(\d{4}|\d{2}))?"
+    r"|(\d{4}|\d{2})\s*[-/]\s*(\d{4}|\d{2})\s*"
+    rf"(?:{FY_MARKERS})",
+    re.IGNORECASE,
+)
+
+#: The marker on its own — "অর্থবছরের" with no digits beside it is still a
+#: period word, and must not be reported as a master record nobody has.
+FY_MARKER_RE = re.compile(rf"(?:{FY_MARKERS})", re.IGNORECASE)
+
+#: A year pair with no marker word at all — "2024-25 sales".
+#:
+#: The opening year must be written in full. Two digits are not enough evidence
+#: on their own: "top 10-11 products", "rank 15-16 territories" and "pack of
+#: 24-25 pieces" are all consecutive pairs, and reading them as financial years
+#: silently replaced the period the reader had actually written in the same
+#: sentence. Written "24-25", a financial year still resolves — it just has to
+#: say so, which every question that means one already does ("FY 24-25",
+#: "24-25 অর্থবছরের").
+#:
+#: Consecutive is still required on top of that, so "2026-08" stays August and
+#: "2025-01-31" stays a day rather than the front of a year.
+BARE_YEAR_PAIR_RE = re.compile(r"(?<!\d)(\d{4})\s*[-/]\s*(\d{2})(?!\d)")
+
+#: The two-digit form, rescued by the month standing next to it.
+#:
+#: "January 24-25" is how the question in the specification is actually written,
+#: and the month is what tells the pair apart from "top 10-11 products": a rank
+#: range does not sit beside a month name. Adjacency again, for the third time
+#: in this module and for the same reason each time.
+MONTH_YEAR_PAIR_RE = re.compile(
+    r"(?:" + _MONTH_ALTERNATION + r")[\s,]*(?<!\d)(\d{2})\s*[-/]\s*(\d{2})(?!\d)"
+    r"|(?<!\d)(\d{2})\s*[-/]\s*(\d{2})(?!\d)[\s,]*(?:" + _MONTH_ALTERNATION + r")",
     re.IGNORECASE,
 )
 #: "2026-08-01 to 2026-08-31", "01/08/2026 - 31/08/2026".
@@ -137,7 +309,321 @@ class DateResolver:
         return value - dt.timedelta(days=value.weekday())
 
     def _quarter_start(self, value: dt.date) -> dt.date:
-        return dt.date(value.year, 3 * ((value.month - 1) // 3) + 1, 1)
+        """The first day of the *financial* quarter holding ``value``.
+
+        Read from the configured calendar rather than from the calendar year, so
+        "this quarter" and "Q3" cannot name two different three-month spans. The
+        two agree exactly while the financial year starts on a quarter boundary,
+        which is the only reason the calendar version survived this long.
+        """
+        return self._add_months(self.fy.year_start(value),
+                                3 * (self.fy.quarter(value) - 1))
+
+    # -- month and financial year -------------------------------------------
+
+    @staticmethod
+    def _start_year(digits: str) -> int:
+        """Widen a two-digit financial year to a four-digit one.
+
+        "24-25" is how the year is written on a target sheet and said out loud.
+        There is no ambiguity to resolve — this warehouse holds no nineteen-
+        hundreds — so two digits are read as this century rather than refused.
+        """
+        value = int(digits)
+        return value if value >= 1000 else 2000 + value
+
+    @staticmethod
+    def _in_range(year: int | None) -> int | None:
+        """Reject a year no business calendar here could mean.
+
+        "9999-00" satisfies the consecutive-year test by wrapping at a hundred,
+        and `dt.date(9999, 7, 1)` then fails deep inside `financial_year` with a
+        bare ValueError the agent has no handler for. One bound at the point
+        every year in this module is widened covers all of them.
+        """
+        return year if year is not None and 1900 <= year <= 2999 else None
+
+    def _financial_year_start(self, lowered: str) -> int | None:
+        """The starting year of a financial year named in the text, if any."""
+        match = FINANCIAL_YEAR_RE.search(lowered)
+        if match:
+            return self._in_range(self._start_year(match.group(1) or match.group(3)))
+
+        beside_month = MONTH_YEAR_PAIR_RE.search(lowered)
+        pair = BARE_YEAR_PAIR_RE.search(lowered)
+        if beside_month:
+            groups = [g for g in beside_month.groups() if g]
+            opening, following = groups[0], groups[1]
+        elif pair:
+            opening, following = pair.group(1), pair.group(2)
+        else:
+            return None
+
+        first = self._start_year(opening)
+        # Consecutive years, or it is not a financial year: "2026-08" is a
+        # month and "2025-01" is the front of a date. Comparing the last two
+        # digits keeps "2024-25" and "January 24-25" reading the same way.
+        if int(following) == (first + 1) % 100:
+            return self._in_range(first)
+        return None
+
+    def _detect_month(self, lowered: str) -> int | None:
+        """The calendar month named in the text, if one unambiguously is."""
+        for match in MONTH_RE.finditer(lowered):
+            word = match.group(1).lower()
+            if word in AMBIGUOUS_MONTH_WORDS and not self._month_is_qualified(lowered):
+                # "may" with nothing to qualify it is a modal verb, and a stray
+                # "মে" is a postposition. Neither is a period.
+                continue
+            return MONTH_NAMES[word]
+        return None
+
+    def _month_is_qualified(self, lowered: str) -> bool:
+        """Whether the sentence gives an ambiguous month word a period's job.
+
+        The word "month" in either language does it, and so does any year the
+        month could belong to — "May 2025" and "May FY 2024-25" are periods
+        however ordinary the word "may" is on its own.
+        """
+        return bool(
+            MONTH_PROMOTION_RE.search(lowered)
+            or self._calendar_year(lowered) is not None
+            or self._financial_year_start(lowered) is not None
+        )
+
+    @staticmethod
+    def _calendar_year(lowered: str) -> int | None:
+        """The year written beside a month — "January 2025", "2025 January".
+
+        Beside, not anywhere: "August stock above 2000 units" names a quantity,
+        and reading it as the year 2000 dated a question twenty-six years into
+        the past while looking exactly like a correct answer. A year on its own
+        elsewhere in the sentence is already reported as something this resolver
+        could not read.
+        """
+        match = MONTH_YEAR_RE.search(lowered)
+        if not match:
+            return None
+        return int(match.group("year_after") or match.group("year_before"))
+
+    def month_of(self, year: int, month: int) -> ResolvedDateRange:
+        """One whole calendar month, from its first day to its last."""
+        start = dt.date(year, month, 1)
+        return self._build(DateRangeType.MONTH, start, self._month_end(start),
+                           start.strftime("%B %Y"))
+
+    def month_in_financial_year(self, month: int, start_year: int) -> ResolvedDateRange:
+        """The instance of ``month`` that falls inside a financial year.
+
+        This is the whole reason the two are resolved together. Under a July
+        start, January of FY 2024-25 is January **2025** — a reader who takes it
+        for January 2024 is a year out, and so is every figure they quote.
+        """
+        year = start_year if month >= self.fy.start_month else start_year + 1
+        return self.month_of(year, month)
+
+    def most_recent_month(self, month: int) -> ResolvedDateRange:
+        """The latest occurrence of ``month`` that has already begun.
+
+        A bare "January sales" means the January that has happened, not the one
+        eleven months away. The label carries the year, so the assumption is on
+        screen rather than hidden in the range.
+        """
+        year = self.today.year if month <= self.today.month else self.today.year - 1
+        return self.month_of(year, month)
+
+    def _detect_quarter(self, lowered: str) -> int | None:
+        """The quarter number the text names, if it names one."""
+        match = QUARTER_RE.search(lowered)
+        if not match:
+            return None
+        for group in match.groups():
+            if not group:
+                continue
+            if group.isdigit():
+                return int(group)
+            return QUARTER_ORDINAL_WORDS[group.lower()]
+        return None
+
+    @staticmethod
+    def _quarter_year(lowered: str) -> int | None:
+        """The four-digit year written beside a quarter, read as an FY start."""
+        match = QUARTER_YEAR_RE.search(lowered)
+        if not match:
+            return None
+        return int(next(group for group in match.groups() if group))
+
+    def quarter_in_financial_year(self, quarter: int,
+                                  start_year: int) -> ResolvedDateRange:
+        """Quarter ``1``-``4`` of the financial year beginning in ``start_year``.
+
+        Financial, never calendar. FY 2024-25 Q1 is July to September under a
+        July start, which is what the target sheets say, what ``dim_date``
+        stores and what the people who write both mean by "Q1". A calendar Q1
+        here would be a second definition of one word.
+        """
+        start = self.fy.year_start(dt.date(start_year, self.fy.start_month, 1))
+        first_month = self._add_months(start, 3 * (quarter - 1))
+        end = self._add_months(first_month, 3) - dt.timedelta(days=1)
+        return self._build(DateRangeType.QUARTER, first_month, end,
+                           f"{self.fy.label(first_month)} Q{quarter}")
+
+    def most_recent_quarter(self, quarter: int) -> ResolvedDateRange:
+        """The latest occurrence of that quarter which has already begun.
+
+        A bare "Q1 sales" means the Q1 that has happened, in the same way a bare
+        month does. The label carries the financial year, so the reading is on
+        screen rather than hidden inside the range.
+        """
+        start_year = self.fy.start_year_of(self.today)
+        candidate = self.quarter_in_financial_year(quarter, start_year)
+        if candidate.date_from > self.today:
+            return self.quarter_in_financial_year(quarter, start_year - 1)
+        return candidate
+
+    @staticmethod
+    def _add_months(day: dt.date, months: int) -> dt.date:
+        """The first of the month ``months`` after ``day``'s month."""
+        index = (day.year * 12 + day.month - 1) + months
+        return dt.date(index // 12, index % 12 + 1, 1)
+
+    def name_range(self, start: dt.date, end: dt.date) -> str:
+        """What to call a range that was computed rather than asked for.
+
+        A comparison period is derived from the one the reader named, so it
+        arrives as two dates and used to be printed as two dates: "vs 2025-01-01
+        to 2025-01-31", directly beneath a period line reading "January 2025".
+        The answer named one period in words and the other in ISO, and the one
+        the reader had to interpret was the one they had not written.
+
+        Only shapes this resolver could itself have produced get a name — a
+        whole month, a financial quarter, a financial year, a single day.
+        Anything else keeps its dates, because inventing a name for an arbitrary
+        span would be less precise than the span.
+        """
+        if start == end:
+            return start.strftime("%d %b %Y")
+
+        first_of_month = start.day == 1
+        month_end = end == self._month_end(end) and end.month == start.month and \
+            end.year == start.year
+        if first_of_month and month_end:
+            return start.strftime("%B %Y")
+
+        if first_of_month:
+            year = self.fy.start_year_of(start)
+            quarter = self.fy.quarter(start)
+            if (start, end) == self._quarter_bounds(year, quarter):
+                return f"{self.fy.label(start)} Q{quarter}"
+            if start == self.fy.year_start(start) and end == self.fy.year_end(start):
+                return self.fy.label(start)
+
+        return f"{start.strftime('%d %b %Y')} – {end.strftime('%d %b %Y')}"
+
+    def _quarter_bounds(self, start_year: int, quarter: int) -> tuple[dt.date, dt.date]:
+        """First and last day of a financial quarter, without building a range."""
+        first = self._add_months(
+            self.fy.year_start(dt.date(start_year, self.fy.start_month, 1)),
+            3 * (quarter - 1),
+        )
+        return first, self._add_months(first, 3) - dt.timedelta(days=1)
+
+    @staticmethod
+    def _month_end(day: dt.date) -> dt.date:
+        return day.replace(day=calendar.monthrange(day.year, day.month)[1])
+
+    def financial_year_of(self, period: ResolvedDateRange) -> int | None:
+        """The financial year a resolved range sits inside, or None.
+
+        None means the range straddles a year end, and a range that belongs to
+        two financial years cannot anchor a month to one of them.
+        """
+        start = self.fy.start_year_of(period.date_from)
+        if start != self.fy.start_year_of(period.date_to):
+            return None
+        return start
+
+    def anchor_month(self, text: str, previous: ResolvedDateRange
+                     ) -> ResolvedDateRange | None:
+        """A bare month in a follow-up, placed in the year already under discussion.
+
+        "February দেখাও" after a question about January of FY 2024-25 means
+        February of that same financial year. Read on its own the phrase means
+        the most recent February, which in August 2026 is thirteen months away
+        from the figure the reader was just given — and the two answers are
+        indistinguishable on screen, which is what makes the silent version of
+        this the worst kind of wrong.
+
+        Returns None when there is nothing to anchor: the question dates its own
+        month, no month was named, or the previous range spans two financial
+        years and so names none. The caller discloses the anchoring, because a
+        period that moved without being mentioned is the defect this fixes.
+        """
+        if self.detect(text) is not DateRangeType.MONTH:
+            return None
+        lowered = normalize_digits(text).lower()
+        month = self._detect_month(lowered)
+        if month is None:
+            return None
+        # A month the reader dated themselves is not bare, and is theirs.
+        if (self._calendar_year(lowered) is not None
+                or self._financial_year_start(lowered) is not None):
+            return None
+        start_year = self.financial_year_of(previous)
+        if start_year is None:
+            return None
+        return self.month_in_financial_year(month, start_year)
+
+    #: Period-shaped text this resolver still cannot read.
+    #:
+    #: A bare year and the day-first date formats nobody here parses. They are
+    #: listed so a question can be told what was not understood rather than
+    #: quietly answered for some other period — "I could not read '17.03.25'" is
+    #: a sentence a reader can act on, and "this covers the current month" alone
+    #: is not.
+    #:
+    #: Named quarters left this list when ``QUARTER_RE`` learned to read them. A
+    #: pattern in both places would report a period as unreadable in the same
+    #: breath as answering for it.
+    UNREAD_PERIOD_RE = re.compile(
+        r"(?<![\d-])(?:19|20)\d{2}(?![\d-])"
+        r"|\b\d{1,2}[-.]\d{1,2}[-.]\d{2,4}\b",
+        re.IGNORECASE,
+    )
+
+    def is_period_word(self, token: str) -> bool:
+        """Whether a single word is part of how a period is written.
+
+        Read by the caller that reports words it could not match against the
+        master data: "অর্থবছরের" and "January" are periods, not missing
+        territories, and naming them as missing records would be noise the
+        reader has to learn to ignore.
+        """
+        lowered = normalize_digits(token).lower()
+        if lowered in MONTH_NAMES or FY_MARKER_RE.search(lowered):
+            return True
+        if MONTH_CUE_RE.search(lowered) or self.UNREAD_PERIOD_RE.search(lowered):
+            return True
+        if QUARTER_WORD_RE.search(lowered) or QUARTER_RE.search(lowered):
+            return True
+        return any(
+            re.search(expression, lowered, re.IGNORECASE)
+            for pattern in PERIOD_PATTERNS for expression in pattern.patterns
+        )
+
+    def unread_period_terms(self, text: str) -> list[str]:
+        """Period-shaped words in the text that resolved to nothing.
+
+        Called only when nothing else resolved, so a match here means the reader
+        named a period this resolver does not understand. Reporting it is the
+        difference between an answer that is wrong and an answer that says which
+        part of the question it could not read.
+        """
+        lowered = normalize_digits(text).lower()
+        if self.detect(text) is not None:
+            return []
+        return list(dict.fromkeys(m.group(0).strip()
+                                  for m in self.UNREAD_PERIOD_RE.finditer(lowered)))
 
     # -- resolution ---------------------------------------------------------
 
@@ -146,10 +632,38 @@ class DateResolver:
         lowered = normalize_digits(text).lower()
         if EXPLICIT_RANGE_RE.search(lowered) or SINGLE_DATE_RE.search(lowered):
             return DateRangeType.CUSTOM
-        if FINANCIAL_YEAR_RE.search(lowered):
+
+        relative = self._relative_period(lowered)
+        month = self._detect_month(lowered)
+        if month is not None:
+            # A named month is the narrower statement, so it wins over the
+            # financial year it sits inside and over the bare word "মাসের",
+            # which is the ordinary Bangla genitive of "month".
+            #
+            # It does not win over a period the reader actually stated. "The
+            # sales team should march ahead this month" holds both, and the one
+            # that was meant as a period is the one written as one — a month
+            # name with no year and no "month" beside it is a word in a sentence
+            # before it is a date.
+            if relative is None or self._month_is_qualified(lowered):
+                return DateRangeType.MONTH
+
+        # A named quarter beats the financial year it sits inside, for the
+        # reason a month does: "Q3 FY 24-25" asked for one quarter, and
+        # answering with all four was a period silently multiplied by four with
+        # nothing on screen saying so.
+        if self._detect_quarter(lowered) is not None:
+            return DateRangeType.QUARTER
+
+        if self._financial_year_start(lowered) is not None:
             return DateRangeType.FINANCIAL_YEAR
         if LAST_N_DAYS_RE.search(lowered):
             return DateRangeType.LAST_N_DAYS
+        return relative
+
+    @staticmethod
+    def _relative_period(lowered: str) -> DateRangeType | None:
+        """The phrase-table period named in the text, if any."""
         for pattern in PERIOD_PATTERNS:
             for expression in pattern.patterns:
                 if re.search(expression, lowered, re.IGNORECASE):
@@ -175,9 +689,34 @@ class DateResolver:
                 return self._build(DateRangeType.CUSTOM, start, end,
                                    f"{start.isoformat()} to {end.isoformat()}")
 
-        financial = FINANCIAL_YEAR_RE.search(lowered)
-        if financial:
-            return self.financial_year(int(financial.group(1)))
+        # `detect` owns the decision about which of the two a month-and-period
+        # sentence means, so it is asked rather than re-implemented here. The
+        # two disagreeing would be a question answered for one period and
+        # labelled with another.
+        detected_type = self.detect(text)
+        financial_start = self._financial_year_start(lowered)
+
+        if detected_type is DateRangeType.MONTH:
+            month = self._detect_month(lowered)
+            if month is not None:
+                if financial_start is not None:
+                    return self.month_in_financial_year(month, financial_start)
+                year = self._calendar_year(lowered)
+                if year is not None:
+                    return self.month_of(year, month)
+                return self.most_recent_month(month)
+
+        if detected_type is DateRangeType.QUARTER:
+            quarter = self._detect_quarter(lowered)
+            if quarter is not None:
+                start_year = (financial_start if financial_start is not None
+                              else self._quarter_year(lowered))
+                if start_year is not None:
+                    return self.quarter_in_financial_year(quarter, start_year)
+                return self.most_recent_quarter(quarter)
+
+        if detected_type is DateRangeType.FINANCIAL_YEAR and financial_start is not None:
+            return self.financial_year(financial_start)
 
         last_n = LAST_N_DAYS_RE.search(lowered)
         if last_n:
@@ -270,6 +809,14 @@ class DateResolver:
             start = today - dt.timedelta(days=29)
             return self._build(range_type, start, today, "Last 30 days")
 
+        if range_type is DateRangeType.MONTH:
+            # A month has no meaning without a year, and `of_type` is handed
+            # neither. It is reached only by a caller naming MONTH as a preset,
+            # which the date filter never offers.
+            raise DateResolutionError(
+                "A month has to be named with its year — say 'January 2025' or "
+                "'January FY 2024-25'.")
+
         raise DateResolutionError(f"Unsupported range type {range_type}")
 
     def resolve_with_comparison(self, text: str,
@@ -341,7 +888,7 @@ class DateResolver:
                                                         previous_start.month)[1])
             return previous_start, previous_start.replace(day=day_span), "Previous month"
 
-        if range_type is DateRangeType.LAST_MONTH:
+        if range_type in (DateRangeType.LAST_MONTH, DateRangeType.MONTH):
             previous_end = start - dt.timedelta(days=1)
             return self._month_start(previous_end), previous_end, "Month before"
 
@@ -378,5 +925,6 @@ __all__ = [
     "resolve_period",
     "normalize_digits",
     "PERIOD_PATTERNS",
+    "MONTH_NAMES",
     "BANGLA_DIGITS",
 ]

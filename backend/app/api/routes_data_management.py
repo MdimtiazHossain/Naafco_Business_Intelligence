@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from ..ai import masters
 from ..ai.permission_filter import UserContext
 from ..ai.schemas import ScopeFilters
 from ..auth import audit
@@ -403,6 +404,11 @@ def create_master_record(
         result = service.create_master(session, user, entity, body.values,
                                        ip_address=audit.client_ip(request))
         session.commit()
+        # The masters just changed, so every cached index of them is stale.
+        # After the commit, never before: bumping first would let a
+        # concurrent question load the uncommitted state and file it under
+        # the new generation, which is the window the counter closes.
+        masters.invalidate()
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         raise _handle(exc, f"{entity_key} create") from exc
@@ -425,6 +431,11 @@ def update_master_record(
                                        reason=body.reason,
                                        ip_address=audit.client_ip(request))
         session.commit()
+        # The masters just changed, so every cached index of them is stale.
+        # After the commit, never before: bumping first would let a
+        # concurrent question load the uncommitted state and file it under
+        # the new generation, which is the window the counter closes.
+        masters.invalidate()
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         raise _handle(exc, f"{entity_key} update") from exc
@@ -447,6 +458,11 @@ def set_master_status(
         result = service.set_status(session, user, entity, code, body.status,
                                     ip_address=audit.client_ip(request))
         session.commit()
+        # The masters just changed, so every cached index of them is stale.
+        # After the commit, never before: bumping first would let a
+        # concurrent question load the uncommitted state and file it under
+        # the new generation, which is the window the counter closes.
+        masters.invalidate()
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         raise _handle(exc, f"{entity_key} status") from exc
@@ -470,6 +486,11 @@ def delete_master_record(
                                        reason=reason,
                                        ip_address=audit.client_ip(request))
         session.commit()
+        # The masters just changed, so every cached index of them is stale.
+        # After the commit, never before: bumping first would let a
+        # concurrent question load the uncommitted state and file it under
+        # the new generation, which is the window the counter closes.
+        masters.invalidate()
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         raise _handle(exc, f"{entity_key} delete") from exc
@@ -492,6 +513,11 @@ def restore_master_record(
         result = service.restore_master(session, user, entity, code,
                                         ip_address=audit.client_ip(request))
         session.commit()
+        # The masters just changed, so every cached index of them is stale.
+        # After the commit, never before: bumping first would let a
+        # concurrent question load the uncommitted state and file it under
+        # the new generation, which is the window the counter closes.
+        masters.invalidate()
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         raise _handle(exc, f"{entity_key} restore") from exc

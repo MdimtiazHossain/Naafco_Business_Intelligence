@@ -16,6 +16,7 @@ clarifying question.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -196,6 +197,74 @@ class EntityResolver:
         #: redirect a name the master already knows.
         self.lexicon = lexicon if lexicon is not None else LEXICON_EMPTY
 
+    # -- naming a level ------------------------------------------------------
+
+    @staticmethod
+    def type_words() -> dict[str, EntityType]:
+        """The nouns that name a level — "territory", "টেরিটরি", "region".
+
+        Derived from the grouping vocabulary the intent layer already keeps, so
+        the two cannot disagree about what a territory is called. Imported
+        inside the function on purpose: `intent` reads the date resolver and the
+        lexicon, and a module-level import here would tie the master-data layer
+        to the question layer for the sake of a dozen nouns.
+        """
+        from .intent import GROUP_BY_KEYWORDS
+
+        words: dict[str, EntityType] = {}
+        for group, keywords in GROUP_BY_KEYWORDS:
+            entity_type = getattr(EntityType, group.name, None)
+            if entity_type is None:
+                continue                      # a grouping with no master behind it
+            for keyword in keywords:
+                words[keyword.casefold()] = entity_type
+        return words
+
+    def _adjacent_type(self, tokens: Sequence[str], start: int, size: int,
+                       ) -> EntityType | None:
+        """The level a neighbouring word names, if one does.
+
+        "Adamdighi Territory" says which Adamdighi is meant, and the master data
+        holds two. Reading the noun beside the name is what turns a question the
+        assistant has to hand back into one it can answer — and it is the user's
+        own word, not a guess between two records.
+        """
+        words = self.type_words()
+        neighbours: list[str] = []
+        for index in (start - 1, start + size):
+            if 0 <= index < len(tokens):
+                neighbours.append(tokens[index])
+        # Two-word levels — "sub territory", "sales line", "সাব টেরিটরি" — are two
+        # tokens, so the pair either side is tried as well as each single word.
+        if start + size + 1 < len(tokens):
+            neighbours.append(" ".join(tokens[start + size:start + size + 2]))
+        if start - 2 >= 0:
+            neighbours.append(" ".join(tokens[start - 2:start]))
+
+        # Longest first: beside "sub territory Adamdighi" the single word
+        # "territory" also sits next to the name, and it names a different level.
+        for neighbour in sorted(neighbours, key=len, reverse=True):
+            # "Territory-এর" is one token: the postposition travels with the
+            # noun, so each part is tried.
+            for part in [neighbour, *re.split(r"[-–—]", neighbour)]:
+                found = words.get(part.casefold())
+                if found is not None:
+                    return found
+        return None
+
+    def suggest(self, term: str, limit: int = 3) -> list[MasterEntry]:
+        """Master records whose name is close to a term that matched nothing.
+
+        A suggestion, never a substitution: every name returned is a record that
+        exists, and the reader chooses. Resolving "Adomdighi" to "Adamdighi"
+        automatically would be this system inventing which territory was meant,
+        which is the one thing it may not do — but saying nothing at all leaves
+        a reader staring at a national total wondering where their filter went.
+        """
+        matches = difflib.get_close_matches(
+            term.casefold(), list(self.index.by_name), n=limit, cutoff=0.75)
+        return [self.index.by_name[name][0] for name in matches]
+
     # -- single-term resolution ---------------------------------------------
 
     def resolve_term(self, term: str,
@@ -300,6 +369,49 @@ class EntityResolver:
 
     # -- whole-message resolution -------------------------------------------
 
+    def unmatched_terms(self, message: str,
+                        resolved: "Sequence[ResolvedEntity]" = (), *,
+                        known_words: Collection[str] = (),
+                        limit: int = 3) -> list[str]:
+        """Words that read like a master name and matched nothing.
+
+        ``resolve_message`` answers "what is in this question"; this answers the
+        other half, "what looked like a name and was not found". Without it a
+        question naming a territory nobody has ever loaded is answered for the
+        whole country, and the two answers are typographically identical — the
+        reader has no way to tell that their filter was dropped.
+
+        Nothing here resolves anything or guesses at a near spelling. It reports
+        a word, and the caller turns that into a sentence the reader can act on.
+        """
+        already = {
+            token.casefold()
+            for entity in resolved
+            for token in TOKEN_RE.findall(entity.term)
+        }
+        ignore = {word.casefold() for word in known_words}
+        found: list[str] = []
+        for token in TOKEN_RE.findall(message):
+            folded = token.casefold()
+            # A token can carry a Bangla postposition or a hyphen — "Territory-এর"
+            # is one token to TOKEN_RE — so a word is known if any part of it is.
+            # Without this the type noun in "Adomdighi Territory-এর" would be
+            # reported as a missing master record.
+            parts = {part.casefold() for part in re.split(r"[-–—]", token) if part}
+            if (len(token) < 4 or folded in already or folded in ignore
+                    or parts & ignore or parts & already
+                    or folded in STOPWORDS or parts & STOPWORDS
+                    or any(c.isdigit() for c in token)):
+                continue
+            if folded in {f.casefold() for f in found}:
+                continue
+            if self.candidates(token):
+                continue          # it resolves; it is simply not what was asked
+            found.append(token)
+            if len(found) >= limit:
+                break
+        return found
+
     def resolve_message(self, message: str, *, max_entities: int = 6,
                         raise_on_ambiguous: bool = True,
                         exclude_types: Collection[EntityType] = (),
@@ -336,6 +448,15 @@ class EntityResolver:
                               if c.entity_type not in excluded]
                 if not candidates:
                     continue
+                if len(candidates) > 1:
+                    # The reader may have said which level they meant. One
+                    # surviving candidate is an answer; anything else falls
+                    # through to the clarification it always asked for.
+                    hinted = self._adjacent_type(tokens, start, size)
+                    if hinted is not None:
+                        narrowed = [c for c in candidates if c.entity_type is hinted]
+                        if len(narrowed) == 1:
+                            candidates = narrowed
                 if len(candidates) > 1:
                     if raise_on_ambiguous and self._is_confusable(phrase, candidates):
                         raise AmbiguousEntityError(phrase, [

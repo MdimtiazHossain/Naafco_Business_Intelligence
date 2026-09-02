@@ -180,11 +180,21 @@ class PermissionFilter:
             if level is None:
                 continue    # product / customer / material: not scope-bearing
             if not self._is_within_scope(level, entity.code):
+                # The refusal echoes what the reader *typed*, never what the
+                # master data calls it. Naming the record turned every refusal
+                # into a lookup: a reader with no access to REG002 could type
+                # the code and be told back "Khulna", and walk the whole
+                # organisational master one refusal at a time. Echoing their own
+                # words discloses nothing they did not already have, and is just
+                # as actionable — they know which word was refused.
+                #
+                # ``details`` keeps the label: it feeds the audit trail and the
+                # learning signals, and never reaches the client.
                 raise PermissionDeniedError(
                     f"user {self.user.username} denied {level}={entity.code}",
                     user_message=(
                         f"You don't have permission to access "
-                        f"{entity.label} ({entity.entity_type.value.replace('_', ' ')}) "
+                        f"'{entity.term}' ({entity.entity_type.value.replace('_', ' ')}) "
                         f"data. Your access covers {self.user.describe_scope()}."
                     ),
                     details={"entity": entity.label, "entity_type": entity.entity_type.value},

@@ -331,6 +331,28 @@ describe('AiResponse', () => {
     wrap(<AiResponse response={answer('**Target:** ৳1 Cr\n| Name | Actual |\n|---|---:|\n| Dhaka | ৳21 L |')} />);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
+
+  it('shows an assumption once, not twice', () => {
+    // The backend writes every assumption into the answer text, because that
+    // text is the whole answer on WhatsApp, on the CLI and in a conversation
+    // reloaded from history. Repeating the same sentence underneath printed it
+    // twice — once at body size and again in 11px grey — and the quiet copy is
+    // what taught people to stop reading the line that says a period or a
+    // filter was assumed.
+    const sentence = 'Keeping your earlier filter: Adamdighi.';
+    const response = {
+      ...answer('**Net Sales:** ৳19.60 L\nℹ️ ' + sentence),
+      assumptions: [sentence],
+    };
+    wrap(<AiResponse response={response} />);
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+  });
+
+  it('still shows the sources, which the answer text does not carry', () => {
+    const response = { ...answer('**Net Sales:** ৳19.60 L'), sources: ['vw_sales_detail'] };
+    wrap(<AiResponse response={response} />);
+    expect(screen.getByText(/vw_sales_detail/)).toBeInTheDocument();
+  });
 });
 
 describe('AnswerText replaying history', () => {

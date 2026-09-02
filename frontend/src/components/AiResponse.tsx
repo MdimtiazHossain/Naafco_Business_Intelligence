@@ -140,6 +140,23 @@ function renderLine(trimmed: string, index: number): ReactNode {
       </p>
     );
   }
+  // An assumption the backend had to make: a period it inherited, a filter it
+  // kept or ended, a top-N still in force. These change how the figure above
+  // should be read, so they stay at body size and gain an icon rather than
+  // being shrunk into the footnote grey they used to be repeated in. Matched on
+  // the information character alone, because the emoji arrives both with and
+  // without its variation selector.
+  if (trimmed.startsWith('ℹ')) {
+    return (
+      <p
+        key={index}
+        className="flex items-start gap-1.5 text-slate-600 dark:text-slate-300"
+      >
+        <Info size={14} className="mt-0.5 shrink-0" />
+        <span>{inline(trimmed.replace(/^ℹ️?\s*/, ''))}</span>
+      </p>
+    );
+  }
   return <p key={index}>{inline(trimmed)}</p>;
 }
 
@@ -229,20 +246,23 @@ export function AiResponse({ response }: { response: ChatMessageResponse }) {
         </div>
       )}
 
-      {(response.assumptions.length > 0 || response.sources.length > 0) && (
+      {/*
+        Assumptions are deliberately absent here. The backend already writes
+        every one of them into the answer text as an `i` line, and that text is
+        the whole answer on WhatsApp, on the CLI and in a conversation reloaded
+        from history — so it has to carry them, and repeating them underneath
+        printed each one twice: once at body size and once again in 11px grey.
+        The duplicate was the quieter copy, which is what taught people to stop
+        reading the line that says a filter or a period was assumed.
+
+        Sources are not in that text, so they stay.
+      */}
+      {response.sources.length > 0 && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
-          {response.assumptions.map((assumption) => (
-            <span key={assumption} className="inline-flex items-center gap-1">
-              <Info size={11} />
-              {assumption}
-            </span>
-          ))}
-          {response.sources.length > 0 && (
-            <span className="inline-flex items-center gap-1">
-              <Database size={11} />
-              {t('ai.sources')}: {response.sources.join(', ')}
-            </span>
-          )}
+          <span className="inline-flex items-center gap-1">
+            <Database size={11} />
+            {t('ai.sources')}: {response.sources.join(', ')}
+          </span>
         </div>
       )}
     </div>

@@ -594,3 +594,164 @@ def test_export_of_no_rows_says_so_rather_than_failing() -> None:
     assert to_csv([]) is not None
     assert to_xlsx([]) is not None
     assert to_pdf([]).startswith(b"%PDF")
+
+
+# --------------------------------------------------------------------------
+# Who missed target: the narrowing happens before the limit
+# --------------------------------------------------------------------------
+
+
+def _achievements(ctx: ToolContext, **arguments) -> list[tuple[str, float | None]]:
+    result = run(ctx, "get_target_achievement", group_by="territory", **arguments)
+    return [(row["label"], row["achievement_percent"]) for row in result.rows]
+
+
+def test_an_unmeasurable_achievement_never_ranks_as_the_best(ctx: ToolContext) -> None:
+    """A group with no target is neither the best performer nor the worst.
+
+    Achievement is a ratio, and a group with no target has none — the sort used
+    to put those rows first, so "top 1 territory achievement" answered with the
+    one territory nobody had set a target for, presented as the leader.
+    """
+    ranked = _achievements(ctx, limit=1)
+    assert ranked, "expected at least one territory"
+    assert ranked[0][1] is not None, ranked
+
+    everything = _achievements(ctx, limit=500)
+    unmeasurable = [row for row in everything if row[1] is None]
+    if unmeasurable:
+        assert everything[-len(unmeasurable):] == unmeasurable, everything
+
+
+def test_a_threshold_is_tested_against_every_group_not_the_top_few(
+    ctx: ToolContext,
+) -> None:
+    """"Which territories are below 80%?" asked of all of them, not the best.
+
+    The filter used to run over a list already cut to the top ``limit``
+    performers, so the threshold was tested against exactly the groups it was
+    not about. With a limit of 1 the answer was reliably empty while groups were
+    short — an inverted answer that renders identically to a correct one.
+    """
+    everyone = run(ctx, "get_target_achievement", group_by="territory", limit=500,
+                   below_percent=80.0)
+    assert everyone.rows, "fixture must have a territory below 80%"
+
+    capped = run(ctx, "get_target_achievement", group_by="territory", limit=1,
+                 below_percent=80.0)
+    assert len(capped.rows) == 1
+    assert capped.truncated is (len(everyone.rows) > 1)
+
+    # The worst comes first, because that is who the question is about.
+    below = [row["achievement_percent"] for row in everyone.rows]
+    assert below == sorted(below), below
+    assert capped.rows[0]["achievement_percent"] == below[0]
+    assert all(value < 80.0 for value in below)
+
+
+def test_a_gap_question_shows_the_biggest_shortfall_first(ctx: ToolContext) -> None:
+    """A capped gap list must not hide the largest gap.
+
+    ``get_target_gap`` with a limit of one returned nothing at all while two
+    groups were short, and with a limit of two returned the *least* short of
+    them. Both are the opposite of what the tool's own description promises.
+    """
+    everyone = run(ctx, "get_target_gap", group_by="territory", limit=500)
+    assert everyone.rows, "fixture must have a territory short of target"
+
+    gaps = [row["gap"] for row in everyone.rows]
+    assert gaps == sorted(gaps, reverse=True), gaps
+    assert all(gap > 0 for gap in gaps)
+
+    capped = run(ctx, "get_target_gap", group_by="territory", limit=1)
+    assert len(capped.rows) == 1
+    assert capped.rows[0]["gap"] == gaps[0]
+
+
+def test_a_condition_that_matches_nothing_says_so(ctx: ToolContext) -> None:
+    """An empty table under a live headline must be explained, not left blank.
+
+    The totals are still on screen, so a table that is simply missing reads as a
+    rendering fault. "No territory is below 1% of target" is the finding.
+    """
+    result = run(ctx, "get_target_achievement", group_by="territory", limit=20,
+                 filters={"territory_codes": ["TR001"]}, below_percent=50.0)
+    assert not result.rows, [row["achievement_percent"] for row in result.rows]
+    assert any("below 50% of target" in note for note in result.notes), result.notes
+
+
+def test_the_headline_covers_the_whole_scope_not_the_narrowed_list(
+    ctx: ToolContext,
+) -> None:
+    """Filtering changes who is listed, never what the period achieved.
+
+    The headline answers "how did we do" and the table answers "who". Recomputing
+    the total over the under-performers would report the business as doing worse
+    than it did, under the same label.
+    """
+    everyone = run(ctx, "get_target_achievement", group_by="territory", limit=500)
+    narrowed = run(ctx, "get_target_achievement", group_by="territory", limit=500,
+                   below_percent=80.0)
+    assert narrowed.values["target"] == everyone.values["target"]
+    assert narrowed.values["actual"] == everyone.values["actual"]
+
+
+# --------------------------------------------------------------------------
+# The tool boundary, checked over the whole registry
+# --------------------------------------------------------------------------
+
+
+def test_no_tool_accepts_an_argument_it_did_not_declare() -> None:
+    """Every input model, not just the base one.
+
+    ``BaseToolInput`` forbidding extras was already pinned, but a tool declares
+    its own model and one written without ``extra="forbid"`` would accept
+    anything the caller invented — a ``sql`` field, an ``order_by``, a raw
+    ``where``. Derived from the registry so a tool added tomorrow is covered on
+    the day it is registered rather than the day somebody remembers to add it
+    here.
+    """
+    for name, spec in REGISTRY.items():
+        assert spec.input_model.model_config.get("extra") == "forbid", name
+
+
+def test_no_tool_can_be_asked_for_more_rows_than_the_ceiling() -> None:
+    """A limit is clamped, never honoured, however it arrives.
+
+    ``/api/reports/*`` refuses an oversized limit with a 422; the tool path
+    takes its limit from a validated query and clamps it instead, because the
+    caller here is the planner rather than a person and a refusal would turn a
+    plausible question into an error. Either way no caller reaches an unbounded
+    read.
+    """
+    from app.ai.schemas import MAX_LIMIT
+
+    bounded = [name for name, spec in REGISTRY.items()
+               if "limit" in spec.input_model.model_fields]
+    assert bounded, "expected some tools to take a limit"
+
+    for name in bounded:
+        model = REGISTRY[name].input_model
+        instance = model.model_validate({
+            "date_from": "2026-08-01", "date_to": "2026-08-31",
+            "limit": 1_000_000,
+        })
+        assert instance.limit <= MAX_LIMIT, name
+        assert model.model_validate({
+            "date_from": "2026-08-01", "date_to": "2026-08-31", "limit": 0,
+        }).limit >= 1, name
+
+
+def test_every_tool_demands_the_dates_it_reports_on() -> None:
+    """A window is mandatory, so no tool can read the whole table by omission.
+
+    The stock tools are the deliberate exception the schema itself encodes: a
+    material stock position carries no posting date, so a date window would
+    filter on a column that does not exist.
+    """
+    for name, spec in REGISTRY.items():
+        fields = spec.input_model.model_fields
+        if "date_from" not in fields:
+            continue
+        assert fields["date_from"].is_required(), name
+        assert fields["date_to"].is_required(), name

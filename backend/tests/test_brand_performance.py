@@ -579,7 +579,7 @@ def test_target_versus_actual_compares_quantity_as_well_as_value(brand_engine):
                       "Target Qty": 200, "Target Volume": 400}),
     ])
     with Session(brand_engine) as session:
-        rows, totals = q.target_vs_actual(
+        rows, totals, _ = q.target_vs_actual(
             session, ScopeFilters(), WINDOW[0], WINDOW[1], GroupBy.REGION)
     by_code = {row["code"]: row for row in rows}
 
@@ -1181,3 +1181,77 @@ def test_item_filter_options_come_from_the_material_master(client):
     for gone in ("brand", "category", "sku_code"):
         assert client.get(f"/api/master-data/options/{gone}",
                           headers=auth(token)).status_code == 404
+
+
+# -- a period is identified by its year, not only by its number ---------------
+
+
+@pytest.fixture
+def two_year_engine(seeded_engine: Engine) -> Engine:
+    """The same month in two financial years, which is the case that breaks.
+
+    January 2025 belongs to FY 2024-25 and January 2026 to FY 2025-26. Both are
+    "January", and a breakdown keyed on the month number alone cannot tell them
+    apart.
+    """
+    _load(seeded_engine, [
+        sales_row(**{"Invoice No": "INV-A", "Date": "2025-01-10", "Quantity": 100,
+                     "Gross Sales": 1_000_000, "Discount": 0, "Cost": 600_000}),
+        sales_row(**{"Invoice No": "INV-B", "Date": "2026-01-10", "Quantity": 50,
+                     "Gross Sales": 400_000, "Discount": 0, "Cost": 250_000}),
+    ])
+    return seeded_engine
+
+
+def test_a_monthly_breakdown_does_not_merge_two_financial_years(
+    two_year_engine: Engine,
+) -> None:
+    """Two Januarys are two rows, never one row holding both.
+
+    Keyed on the month number alone, a breakdown spanning a year end reported a
+    single "January" worth both Januarys added together — one bar, two years,
+    and nothing on screen saying so. The financial year is part of the key and
+    part of the label, so the rows are distinct and a reader can tell which is
+    which.
+    """
+    with Session(two_year_engine, future=True) as session:
+        rows, _ = q.aggregate_by(session, q.SALES_MEASURES, ScopeFilters(),
+                                 dt.date(2024, 12, 1), dt.date(2026, 3, 31),
+                                 GroupBy.MONTH, limit=50)
+
+    januaries = [row for row in rows if "January" in row["label"]]
+    assert len(januaries) == 2, [row["label"] for row in rows]
+    assert {row["net_sales"] for row in januaries} == {1_000_000.0, 400_000.0}
+    assert len({row["code"] for row in januaries}) == 2
+    assert all("FY" in row["label"] for row in januaries)
+
+
+def test_a_quarterly_breakdown_is_keyed_and_labelled_by_its_financial_year(
+    two_year_engine: Engine,
+) -> None:
+    """The same rule, for the grouping added beside the month.
+
+    January is financial Q3 in both years, so a quarterly breakdown has exactly
+    the flaw a monthly one had, and adding it without the year would have
+    shipped the same defect twice.
+    """
+    with Session(two_year_engine, future=True) as session:
+        rows, _ = q.aggregate_by(session, q.SALES_MEASURES, ScopeFilters(),
+                                 dt.date(2024, 12, 1), dt.date(2026, 3, 31),
+                                 GroupBy.QUARTER, limit=50)
+
+    third = [row for row in rows if row["label"].endswith("Q3")]
+    assert len(third) == 2, [row["label"] for row in rows]
+    assert {row["label"] for row in third} == {"FY 2024-25 Q3", "FY 2025-26 Q3"}
+
+
+def test_a_grouping_keyed_on_a_business_code_is_left_alone(
+    two_year_engine: Engine,
+) -> None:
+    """Only the periods need a year: every other code is already unique."""
+    with Session(two_year_engine, future=True) as session:
+        rows, _ = q.aggregate_by(session, q.SALES_MEASURES, ScopeFilters(),
+                                 dt.date(2024, 12, 1), dt.date(2026, 3, 31),
+                                 GroupBy.REGION, limit=50)
+
+    assert rows and all("|" not in str(row["code"]) for row in rows)

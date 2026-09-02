@@ -242,13 +242,33 @@ def build_system_prompt(user_role: str, scope_description: str,
 
 def conversation_messages(system: str, history: Sequence[dict[str, str]],
                           message: str, max_turns: int = 8) -> list[dict[str, str]]:
-    """Assemble the LLM message list from recent conversation history."""
+    """Assemble the LLM message list from recent conversation history.
+
+    **Every replayed turn is sanitised again here.** The current question is
+    cleaned before it reaches the planner, but ``chat_messages`` stores what the
+    reader actually typed — which is right, because that table is the record of
+    what was asked — so an instruction stripped on the turn it arrived came back
+    verbatim as history on the next one. Waiting one turn was enough to walk
+    past the sanitiser.
+
+    Storing raw and cleaning on the way *out* keeps both properties: the audit
+    trail says what was typed, and the model is never shown it. A turn with
+    nothing left after cleaning is dropped rather than sent as an empty message.
+
+    Assistant turns are cleaned too. With an LLM configured, an answer is model
+    prose derived from the question that prompted it, so a crafted question can
+    get its own words echoed into the text this system stores under its own
+    name — and that text is replayed with the same trust as anything else here.
+    """
     messages = [{"role": "system", "content": system}]
     for turn in list(history)[-max_turns:]:
         role = turn.get("role")
         content = turn.get("content") or turn.get("message")
-        if role in ("user", "assistant") and content:
-            messages.append({"role": role, "content": content})
+        if role not in ("user", "assistant") or not content:
+            continue
+        cleaned, _ = sanitize_message(content)
+        if cleaned:
+            messages.append({"role": role, "content": cleaned})
     messages.append({"role": "user", "content": message})
     return messages
 

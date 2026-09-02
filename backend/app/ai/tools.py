@@ -25,6 +25,7 @@ from ..config import get_settings
 from ..etl.transforms import achievement_percent, growth_percent
 from ..etl.validation import safe_divide
 from . import queries as q
+from .date_resolver import DateResolver
 from .exceptions import NoDataError, PermissionDeniedError, ToolExecutionError
 from .permission_filter import PermissionFilter, UserContext
 from .schemas import (
@@ -61,6 +62,16 @@ class ToolContext:
     def scoped(self, filters: ScopeFilters) -> ScopeFilters:
         """Apply the user's data scope. Called first by every tool."""
         return self.permissions.enforce(filters)
+
+    def period_name(self, start: dt.date, end: dt.date) -> str:
+        """What to call a range a tool computed rather than one a reader named.
+
+        Delegated to the resolver, which is the module that names periods: a
+        comparison window written as two ISO dates beneath a period line reading
+        "January 2025" left the reader to work out that they were the same
+        month. Two names for periods would be worse than one ugly one.
+        """
+        return DateResolver(today=self.today).name_range(start, end)
 
 
 ToolHandler = Callable[[ToolContext, Any], ToolResult]
@@ -254,6 +265,37 @@ def get_sales_detail(ctx: ToolContext, arguments: GroupedToolInput) -> ToolResul
     return _grouped_sales("get_sales_detail", ctx, arguments)
 
 
+def _add_share(ctx: ToolContext, result: ToolResult, rows: list[dict[str, Any]],
+               filters: ScopeFilters, arguments: GroupedToolInput,
+               truncated: bool) -> None:
+    """Each group's share of the period's total net sales.
+
+    The denominator is the total for the whole window and filters, read in its
+    own query — never the sum of the rows in hand. The rows are limited and may
+    be truncated, so summing them would make the top five add to 100% of the
+    business however small a part of it they are.
+
+    A zero total yields ``None`` rather than ``0%``: no sales is not a share of
+    nothing, and ``safe_divide`` is what the rest of the reporting layer uses to
+    say so. A truncated answer says outright that its shares do not add up,
+    because a reader who totals the column and finds 40% must be able to tell a
+    short list from missing data.
+    """
+    totals = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
+                                arguments.date_from, arguments.date_to)
+    total = totals.get("net_sales")
+    for row in rows:
+        row["share_percent"] = _percent(
+            safe_divide(row.get("net_sales"), total, percent=True)
+        )
+    result.values["total_net_sales"] = total
+    if truncated:
+        result.notes.append(
+            "Shares are of the period's whole total, so the rows shown do not "
+            "add up to 100% — more groups exist beyond this list."
+        )
+
+
 def _grouped_sales(tool: str, ctx: ToolContext, arguments: GroupedToolInput,
                    group_by: GroupBy | None = None) -> ToolResult:
     filters = ctx.scoped(arguments.filters)
@@ -288,6 +330,10 @@ def _grouped_sales(tool: str, ctx: ToolContext, arguments: GroupedToolInput,
     result.truncated = truncated
     result.values = {"group_by": group.value}
     result.sources = [q.SALES_VIEW]
+    # After ``values`` is assigned, because the share adds the denominator to it
+    # and an assignment here would drop the figure the shares were built from.
+    if arguments.include_share:
+        _add_share(ctx, result, rows, filters, arguments, truncated)
     result.chart = ChartSpec(type="bar", x_axis="label", y_axis="net_sales", data=rows)
     top = rows[0]
     result.facts.append(
@@ -347,8 +393,9 @@ def _growth(tool: str, ctx: ToolContext, arguments: GrowthToolInput,
     result = _base(tool, arguments, filters, measure)
     result.values = {
         **comparison,
-        "current_period": f"{arguments.date_from} to {arguments.date_to}",
-        "previous_period": f"{arguments.compare_from} to {arguments.compare_to}",
+        "current_period": ctx.period_name(arguments.date_from, arguments.date_to),
+        "previous_period": ctx.period_name(arguments.compare_from,
+                                           arguments.compare_to),
         "current_totals": current,
         "previous_totals": previous,
     }
@@ -391,23 +438,39 @@ def get_sales_achievement(ctx: ToolContext, arguments: AchievementToolInput) -> 
 def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
                  gap_only: bool = False) -> ToolResult:
     filters = ctx.scoped(arguments.filters)
-    rows, totals = q.target_vs_actual(ctx.session, filters, arguments.date_from,
-                                      arguments.date_to, arguments.group_by,
-                                      arguments.limit)
+    # The narrowing goes *into* the query rather than being applied to what it
+    # returns: this list is already cut to ``limit``, so filtering it here tested
+    # the reader's condition against a pre-selected handful. See
+    # ``queries.target_vs_actual``.
+    rows, totals, matched = q.target_vs_actual(
+        ctx.session, filters, arguments.date_from, arguments.date_to,
+        arguments.group_by, arguments.limit,
+        below_percent=arguments.below_percent, gap_only=gap_only,
+    )
     result = _base(tool, arguments, filters, "achievement_percent")
     result.sources = [q.TARGET_VIEW, q.SALES_VIEW]
     result.values = totals
-
     if arguments.below_percent is not None:
-        rows = [r for r in rows
-                if r["achievement_percent"] is not None
-                and r["achievement_percent"] < arguments.below_percent]
         result.values["below_percent"] = arguments.below_percent
-    if gap_only:
-        rows = [r for r in rows if r["gap"] > 0]
+    result.truncated = matched > len(rows)
 
     if not rows and not totals["target"] and not totals["actual"]:
         return _empty(result)
+
+    # A condition that matched nothing is a finding, and has to be said. The
+    # headline figures are still on screen, so a table that is simply absent
+    # reads as a rendering fault rather than as "every group is on target".
+    if not rows:
+        if arguments.below_percent is not None:
+            result.notes.append(
+                f"No {arguments.group_by.value.replace('_', ' ')} is below "
+                f"{arguments.below_percent:g}% of target for this period."
+            )
+        elif gap_only:
+            result.notes.append(
+                f"No {arguments.group_by.value.replace('_', ' ')} is short of "
+                "target for this period."
+            )
 
     result.rows = rows
     result.row_count = len(rows)
@@ -816,7 +879,14 @@ BRAND_TARGET_ROW_FIELDS: tuple[str, ...] = (
           "volume, sales volume, target amount, net sales, the two achievement "
           "percentages and the two shortfalls, per material brand, ranked by net "
           "sales.",
-          GroupedToolInput)
+          GroupedToolInput,
+          # It was registered with no intents at all, so no allow-list could
+          # contain it and the assistant could never reach it — 35 of the 36
+          # tools were askable and this one was dashboard-only by accident.
+          # It answers a brand question and a target question, so it joins both
+          # allow-lists; it stays off `TOOL_BY_INTENT`, which keeps the cheaper
+          # brand tool as what a plain brand question gets.
+          [Intent.MATERIAL_BRAND_PERFORMANCE, Intent.TARGET_ACHIEVEMENT])
 def get_material_brand_target_performance(ctx: ToolContext,
                                           arguments: GroupedToolInput) -> ToolResult:
     """The brand ranking, with each brand's target set against what it sold.
@@ -931,8 +1001,9 @@ def get_business_summary(ctx: ToolContext, arguments: BusinessSummaryToolInput) 
 
     sales = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
                                arguments.date_from, arguments.date_to)
-    _, target_totals = q.target_vs_actual(ctx.session, filters, arguments.date_from,
-                                          arguments.date_to, GroupBy.REGION, limit=200)
+    _, target_totals, _ = q.target_vs_actual(ctx.session, filters, arguments.date_from,
+                                             arguments.date_to, GroupBy.REGION,
+                                             limit=200)
     regions, _ = q.aggregate_by(ctx.session, q.SALES_MEASURES, filters,
                                 arguments.date_from, arguments.date_to, GroupBy.REGION,
                                 limit=200)
@@ -1171,8 +1242,8 @@ def get_business_alerts(ctx: ToolContext, arguments: AlertToolInput) -> ToolResu
     result.sources = [q.SALES_VIEW, q.TARGET_VIEW, q.MATERIAL_STOCK_VIEW]
     alerts: list[dict[str, Any]] = []
 
-    rows, _ = q.target_vs_actual(ctx.session, filters, arguments.date_from,
-                                 arguments.date_to, GroupBy.REGION, limit=200)
+    rows, _, _ = q.target_vs_actual(ctx.session, filters, arguments.date_from,
+                                    arguments.date_to, GroupBy.REGION, limit=200)
     for row in rows:
         achievement = row["achievement_percent"]
         if achievement is not None and achievement < arguments.achievement_below_percent:
@@ -1349,8 +1420,9 @@ def get_root_cause_analysis(ctx: ToolContext, arguments: RootCauseToolInput) -> 
     result.value = overall["current"]
     result.values = {
         "overall": overall,
-        "current_period": f"{arguments.date_from} to {arguments.date_to}",
-        "previous_period": f"{arguments.compare_from} to {arguments.compare_to}",
+        "current_period": ctx.period_name(arguments.date_from, arguments.date_to),
+        "previous_period": ctx.period_name(arguments.compare_from,
+                                           arguments.compare_to),
         "contributors": contributors,
     }
     result.rows = contributors["region"]

@@ -48,9 +48,10 @@ from ..database.models_admin import UploadBatch, UploadStatus
 from ..database.models_ai import AuditAction
 from ..utils import progress as progress_registry
 from ..utils.progress import ImportCancelled, Phase, ProgressReporter
+from ..ai import masters
 from . import service
 from .files import StoredUpload, discard
-from .registry import get_upload_type
+from .registry import UploadCategory, get_upload_type
 
 logger = logging.getLogger("app.upload.jobs")
 
@@ -191,6 +192,16 @@ def _run(kind: str, upload_id: int, job_id: str, reporter: ProgressReporter,
         _persist_progress(batch, reporter)
         _audit(session, batch, action, ip_address)
         session.commit()
+        # A master upload has just rewritten the dimensions the agent resolves
+        # names against, so every cached index of them is stale. After the
+        # commit, never before: bumping first would let a concurrent question
+        # load the uncommitted state and file it under the new generation.
+        #
+        # A *validation* changes nothing — it is a dry run that rolls its own
+        # work back — and a transaction upload writes facts, not masters, so
+        # neither throws away a good cache.
+        if kind != VALIDATE and spec.category == UploadCategory.MASTER:
+            masters.invalidate()
         logger.info("import job %s (%s) finished as %s with %s valid row(s)",
                     job_id, kind, batch.status, outcome.batch.valid_rows)
     except Exception:
