@@ -913,6 +913,7 @@
   "targetMgmt.dashboard.stage.in_approval": "অনুমোদনে",
   "targetMgmt.dashboard.stage.locked": "লক করা",
   "targetMgmt.dataState.AVAILABLE": "উপলব্ধ",
+  "targetMgmt.dataState.EXCEEDS_LIMIT": "অত্যধিক বড়",
   "targetMgmt.dataState.INSUFFICIENT_DATA": "অপর্যাপ্ত ডেটা",
   "targetMgmt.dataState.INVALID_DATA": "ত্রুটিপূর্ণ ডেটা",
   "targetMgmt.dataState.NOT_APPLICABLE": "প্রযোজ্য নয়",

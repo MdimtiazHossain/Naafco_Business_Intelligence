@@ -310,7 +310,10 @@ def check(session: Session, user: UserContext, *, plan: TargetPlan,
         datastate.available(
             f"{projection['projected_rows']:,} rows, within the "
             f"{projection['maximum_rows']:,} row limit.", **projection)
-        if not projection["exceeds"] else datastate.insufficient(
+        # Not ``insufficient``: the projection succeeded and is exact. Nothing
+        # is missing — the plan is simply larger than the ceiling, and saying
+        # "insufficient data" sent a reader hunting for data that was all there.
+        if not projection["exceeds"] else datastate.exceeds_limit(
             f"This allocation would write {projection['projected_rows']:,} rows, "
             f"above the {projection['maximum_rows']:,} row limit.",
             "Narrow the plan: a single quarter, one business unit or sales "

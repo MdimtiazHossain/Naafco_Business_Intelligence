@@ -546,7 +546,17 @@ def test_the_readiness_gate_reports_the_ceiling_before_anything_starts(
                                  version=version)
 
     limit = {row["key"]: row for row in report["checks"]}["row_limit"]
-    assert limit["state"] == datastate.INSUFFICIENT_DATA
+    # Not INSUFFICIENT_DATA: the projection succeeded and is exact. Nothing is
+    # missing — the plan is simply larger than the ceiling, and calling that a
+    # data problem sent a reader hunting for data that was all there.
+    assert limit["state"] == datastate.EXCEEDS_LIMIT
+    assert limit["state"] != datastate.INSUFFICIENT_DATA
+    # Still a refusal, and still red. Only the reason changed.
+    assert limit["blocking"] is True
+    assert limit["ok"] is False
+    assert limit["tone"] == "error"
+    assert "row limit" in limit["detail"]
+    assert "Narrow the plan" in limit["action"]
     assert report["ready"] is False
     assert report["projection"]["exceeds"] is True
 
@@ -814,3 +824,16 @@ def test_a_ready_plan_reports_ready(with_history, users, planned) -> None:
     assert report["ready"] is True
     assert report["blocking"] == []
     assert report["allocation_level"] == TargetLevel.CUSTOMER
+
+
+def test_exceeds_limit_is_a_declared_blocking_state() -> None:
+    """Declared once, so the badge, the gate and the tone cannot disagree.
+
+    The other states describe *the data*; this one describes **the request**,
+    which is why it needed a name of its own rather than borrowing one.
+    """
+    assert datastate.EXCEEDS_LIMIT in datastate.ALL
+    assert datastate.EXCEEDS_LIMIT in datastate.BLOCKING
+    assert datastate.TONE[datastate.EXCEEDS_LIMIT] == "error"
+    assert datastate.EXCEEDS_LIMIT not in (datastate.AVAILABLE,
+                                           datastate.VALID_ZERO)

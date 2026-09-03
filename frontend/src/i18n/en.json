@@ -913,6 +913,7 @@
   "targetMgmt.dashboard.stage.in_approval": "In approval",
   "targetMgmt.dashboard.stage.locked": "Locked",
   "targetMgmt.dataState.AVAILABLE": "Available",
+  "targetMgmt.dataState.EXCEEDS_LIMIT": "Too Large",
   "targetMgmt.dataState.INSUFFICIENT_DATA": "Insufficient Data",
   "targetMgmt.dataState.INVALID_DATA": "Invalid Data",
   "targetMgmt.dataState.NOT_APPLICABLE": "Not Applicable",

@@ -52,15 +52,26 @@ INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 INVALID_DATA = "INVALID_DATA"
 NOT_AVAILABLE = "NOT_AVAILABLE"
 NOT_APPLICABLE = "NOT_APPLICABLE"
+#: Complete, consistent, and too big to run.
+#:
+#: The other states all describe *the data*. This one describes **the request**:
+#: the projection succeeded and is exact, nothing is missing or contradictory,
+#: and the plan as configured would write more rows than the ceiling allows.
+#: It exists because the alternative was reporting a capacity refusal as
+#: ``INSUFFICIENT_DATA``, which sent a reader looking for absent data when the
+#: real answer was "narrow the plan" — the precise confusion this vocabulary was
+#: introduced to prevent.
+EXCEEDS_LIMIT = "EXCEEDS_LIMIT"
 #: Everything needed is present and consistent.
 AVAILABLE = "AVAILABLE"
 
 ALL = (AVAILABLE, VALID_ZERO, NO_DATA, INSUFFICIENT_DATA, INVALID_DATA,
+       EXCEEDS_LIMIT,
        NOT_AVAILABLE, NOT_APPLICABLE)
 
 #: States that stop a calculation from producing a trustworthy answer.
 #: ``VALID_ZERO`` is deliberately absent: zero is an answer.
-BLOCKING = (NO_DATA, INSUFFICIENT_DATA, INVALID_DATA)
+BLOCKING = (NO_DATA, INSUFFICIENT_DATA, INVALID_DATA, EXCEEDS_LIMIT)
 
 #: How each state reads as a signal. Colour is never the only cue — every
 #: check carries its own sentence — but a reader scanning a list of twelve
@@ -71,6 +82,8 @@ TONE: dict[str, str] = {
     NO_DATA: "blocked",
     INSUFFICIENT_DATA: "blocked",
     INVALID_DATA: "error",
+    # Red rather than amber: this is a refusal, not something to look into.
+    EXCEEDS_LIMIT: "error",
     NOT_AVAILABLE: "muted",
     NOT_APPLICABLE: "muted",
 }
@@ -134,6 +147,17 @@ class DataState:
 
 def available(detail: str, **facts: Any) -> DataState:
     return DataState(AVAILABLE, detail, facts=facts or None)
+
+
+def exceeds_limit(detail: str, action: str, *, blocks: bool | None = None,
+                  **facts: Any) -> DataState:
+    """The data is fine; the run this plan asks for is too large.
+
+    Kept apart from :func:`insufficient` deliberately. "Something is missing"
+    and "this is complete and too big" send a reader to entirely different
+    places, and only one of them is fixed by loading data.
+    """
+    return DataState(EXCEEDS_LIMIT, detail, action, facts or None, blocks)
 
 
 def no_data(detail: str, action: str, *, blocks: bool | None = None,
