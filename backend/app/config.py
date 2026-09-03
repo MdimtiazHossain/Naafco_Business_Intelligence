@@ -147,8 +147,18 @@ class Settings:
     #: never a truncation — the job fails with the projected count and what to
     #: narrow, because half an allocation would reconcile against nothing and
     #: look like a complete one.
+    #: Raised from 250,000 once real geography arrived. A single quarter over
+    #: 41 materials and 2,114 mapped customers is 318,939 rows and a full year
+    #: of the same plan is ~1.28M — neither is unreasonable, and the old ceiling
+    #: refused both. It is a **technical** safety limit, not a statement about
+    #: how large a business may plan for, so it is set above what the business
+    #: actually needs rather than the business being narrowed to fit it.
+    #:
+    #: 1.5M is what the engine was measured against: ~0.56 GB for the rows it
+    #: holds, with the insert payload streamed a batch at a time rather than
+    #: materialised beside them.
     target_allocation_max_rows: int = int(
-        os.getenv("TARGET_ALLOCATION_MAX_ROWS", "250000")
+        os.getenv("TARGET_ALLOCATION_MAX_ROWS", "1500000")
     )
     #: Allocation workers. One, for the reason ``import_worker_count`` is one:
     #: the run ends in a single write transaction, and on SQLite a second

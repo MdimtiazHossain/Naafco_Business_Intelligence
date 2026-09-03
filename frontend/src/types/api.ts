@@ -1827,6 +1827,23 @@ export interface TargetAllocationJob {
   started_at: string | null;
   completed_at: string | null;
   created_at: string | null;
+  /**
+   * What one finished run came to. `rows_saved` equals `rows_generated` by
+   * construction — persist writes every row or raises — and
+   * `duplicates_rejected` is always 0 because the full-grain unique constraint
+   * makes one impossible, which is a different claim from "we did not look".
+   */
+  summary?: {
+    rows_generated: number;
+    rows_saved: number;
+    duplicates_rejected: number;
+    validation_failures: number;
+    warnings: number;
+    projected_rows: number | null;
+    allocation_level: string | null;
+    sales_rows_found: number | null;
+    processing_seconds: number | null;
+  };
 }
 
 export interface TargetAllocationState {
@@ -1904,6 +1921,11 @@ export interface TargetCustomerMappingHealth {
 export interface TargetProjection {
   projected_rows: number;
   maximum_rows: number;
+  /** Rows left under the ceiling. Negative when the plan is over it. */
+  available_rows: number;
+  capacity_used_percent: number | null;
+  /** What the engine would hold, at ~400 bytes per row (measured). */
+  estimated_memory_mb: number;
   exceeds: boolean;
   financial_year: string;
   target_period: string;

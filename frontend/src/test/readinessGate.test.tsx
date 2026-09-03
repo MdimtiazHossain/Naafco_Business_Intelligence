@@ -67,7 +67,10 @@ function readiness(overrides: Partial<TargetReadiness> = {}): TargetReadiness {
     hierarchy: { counts: {}, broken_parent_links: {} },
     projection: {
       projected_rows: 1840,
-      maximum_rows: 250000,
+      maximum_rows: 1500000,
+      available_rows: 1498160,
+      capacity_used_percent: 0.1,
+      estimated_memory_mb: 0.7,
       exceeds: false,
       financial_year: 'FY 2026-27',
       target_period: 'FY',
@@ -218,6 +221,12 @@ describe('ReadinessGate', () => {
           projection: {
             ...readiness().projection,
             projected_rows: 400000,
+            // Stated rather than inherited: this scenario is about a plan over
+            // its ceiling, so it carries its own ceiling and the capacity that
+            // follows from it, and stays true when the default moves.
+            maximum_rows: 250000,
+            available_rows: -150000,
+            capacity_used_percent: 160,
             exceeds: true,
             narrowing_options: ['target_period', 'business_unit'],
           },

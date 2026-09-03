@@ -158,10 +158,33 @@ export function ReadinessGate({ readiness }: { readiness: TargetReadiness }) {
                 tone={projection.exceeds ? 'bad' : undefined} />
           <Fact label={t('targetMgmt.maximumRows')}
                 value={formatQuantity(projection.maximum_rows)} />
+          {/*
+            * Capacity and memory are shown before the run rather than after it
+            * fails. A ceiling is a technical limit, so what a reader needs is
+            * how much of it this plan uses — not only whether it fits.
+            */}
+          <Fact label={t('targetMgmt.availableRows')}
+                value={
+                  projection.available_rows < 0
+                    ? `−${formatQuantity(Math.abs(projection.available_rows))}`
+                    : formatQuantity(projection.available_rows)
+                }
+                tone={projection.exceeds ? 'bad' : undefined} />
+          <Fact label={t('targetMgmt.capacityUsed')}
+                value={
+                  projection.capacity_used_percent === null
+                    ? 'n/a'
+                    : `${projection.capacity_used_percent.toFixed(1)}%`
+                }
+                tone={projection.exceeds ? 'bad' : undefined} />
+          <Fact label={t('targetMgmt.estimatedMemory')}
+                value={`${formatQuantity(projection.estimated_memory_mb)} MB`} />
           <Fact label={t('targetMgmt.materialCount')}
                 value={formatQuantity(projection.materials)} />
           <Fact label={t('targetMgmt.monthCount')}
                 value={formatQuantity(projection.months)} />
+          <Fact label={t('targetMgmt.nodeCount')}
+                value={formatQuantity(projection.nodes)} />
         </dl>
         {projection.exceeds && (
           <div

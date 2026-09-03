@@ -439,6 +439,45 @@ def latest_for_version(session: Session,
     ).scalar_one_or_none()
 
 
+def _summary(job: TargetAllocationJob) -> dict[str, Any]:
+    """What one finished run came to, in the terms a planner asks about.
+
+    Composed from the columns the job already carries rather than from new
+    ones — none of these needed storing, because each is either a figure the
+    run recorded or a difference between two timestamps.
+
+    **Generated and saved are the same number, and both are reported anyway.**
+    ``persist`` writes every row the engine produced or raises; it never keeps
+    part of a run. Showing one figure would leave a reader wondering whether the
+    other differed, and showing them equal says plainly that nothing was lost on
+    the way to the database.
+
+    **Duplicates rejected is always zero, and that is a fact about the schema
+    rather than about this run.** ``uq_target_allocation_node`` covers the full
+    grain — version, level, node, material, month — and the version's previous
+    rows are deleted before the insert, so a duplicate cannot be written and is
+    never silently discarded. The line is kept because "0 duplicates" and "we
+    did not look" are different claims.
+    """
+    seconds = None
+    if job.started_at and job.completed_at:
+        seconds = round((job.completed_at - job.started_at).total_seconds(), 1)
+
+    generated = job.rows_processed or 0
+    return {
+        "rows_generated": generated,
+        #: Equal to ``rows_generated`` by construction; see the docstring.
+        "rows_saved": generated,
+        "duplicates_rejected": 0,
+        "validation_failures": job.error_count or 0,
+        "warnings": job.warning_count or 0,
+        "projected_rows": job.projected_rows,
+        "allocation_level": job.allocation_level,
+        "sales_rows_found": job.sales_rows_found,
+        "processing_seconds": seconds,
+    }
+
+
 def to_dict(job: TargetAllocationJob) -> dict[str, Any]:
     return {
         "job_id": job.job_uuid,
@@ -466,6 +505,7 @@ def to_dict(job: TargetAllocationJob) -> dict[str, Any]:
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "summary": _summary(job),
     }
 
 

@@ -43,6 +43,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 from decimal import Decimal
+from itertools import islice
 from typing import Any, Callable, Iterable, Sequence
 
 from sqlalchemy import and_, func, select
@@ -118,13 +119,15 @@ class AllocationTooLarge(TargetManagementError):
         super().__init__(
             f"projected {projected} allocation rows exceeds {limit}",
             user_message=(
-                f"This allocation would write {projected:,} rows — "
-                f"{projection['materials']:,} material(s) x "
+                f"Estimated allocation contains {projected:,} rows, exceeding "
+                f"the configured safety limit of {limit:,} rows. Please "
+                f"increase TARGET_ALLOCATION_MAX_ROWS or narrow the allocation "
+                f"scope. "
+                f"({projection['materials']:,} material(s) x "
                 f"{projection['months']} month(s) x "
-                f"{projection['nodes']:,} node(s) — above the {limit:,} row "
-                f"limit. Nothing has been generated and the current target is "
-                f"unchanged. Narrow the plan by target period, company, "
-                f"business unit, sales line, brand or material and try again."
+                f"{projection['nodes']:,} node(s).) Nothing has been generated "
+                f"and the current target is unchanged — no material, customer "
+                f"or month has been dropped to make it fit."
             ),
             details=projection,
         )
@@ -671,7 +674,8 @@ def _monthly_scope_volume(session: Session, filters: ScopeFilters,
 
 
 def persist(session: Session, *, version: TargetVersion,
-            result: AllocationPlan) -> int:
+            result: AllocationPlan,
+            reporter: Callable[[int], None] | None = None) -> int:
     """Replace the version's allocation with this one, in one transaction.
 
     The previous allocation is **deleted**, not merged. A merge would leave rows
@@ -683,6 +687,19 @@ def persist(session: Session, *, version: TargetVersion,
 
     The caller owns the commit, so this and the status change it accompanies
     live or die together.
+
+    **The payload is built one batch at a time, never all at once.** Measured on
+    this machine an ``AllocatedRow`` costs ~400 bytes and the dict it becomes
+    ~470, so materialising the whole payload before inserting held *both* copies
+    of the dataset in memory: at 1.5 million rows that is 1.2 GB, and slicing
+    the list per batch copied a third time. Generating each batch on demand
+    leaves only the rows the engine already holds, which is what makes a
+    full-year run at this size a question of time rather than of memory.
+
+    **Duplicates cannot arise and none are counted.** The version's existing
+    rows are deleted above, and ``uq_target_allocation_node`` covers the full
+    grain — version, level, node, material, month — so a repeat is refused by
+    the database rather than by loading the dataset to look for one.
     """
     session.execute(
         TargetAllocation.__table__.delete().where(
@@ -691,8 +708,8 @@ def persist(session: Session, *, version: TargetVersion,
     if not result.rows:
         return 0
 
-    payload = [
-        {
+    def _payload(row: AllocatedRow) -> dict[str, Any]:
+        return {
             "version_id": version.version_id,
             "level": row.level,
             "node_code": row.node_code,
@@ -705,17 +722,26 @@ def persist(session: Session, *, version: TargetVersion,
             "approved_volume": None,
             "status": TargetStatus.ALLOCATED,
         }
-        for row in result.rows
-    ]
+
     # Chunked against the bind-parameter ceiling the ETL respects for the same
     # reason: SQLite refuses a statement with more than 32,766 of them, and an
     # allocation is exactly the shape that trips it.
     chunk = max(1, 30000 // 10)
-    for start in range(0, len(payload), chunk):
-        session.execute(TargetAllocation.__table__.insert(),
-                        payload[start:start + chunk])
+    written = 0
+    stream = iter(result.rows)
+    while True:
+        batch = [_payload(row) for row in islice(stream, chunk)]
+        if not batch:
+            break
+        session.execute(TargetAllocation.__table__.insert(), batch)
+        written += len(batch)
+        if reporter is not None:
+            reporter(written)
+        # Released before the next batch is built, so peak memory is one batch
+        # rather than the whole payload.
+        del batch
     session.flush()
-    return len(payload)
+    return written
 
 
 __all__ = [

@@ -960,4 +960,9 @@ def test_an_oversized_allocation_is_refused_not_truncated(with_history, users,
             _run(session, users, planned)
 
     assert "rows" in caught.value.user_message
-    assert "Narrow the plan" in caught.value.user_message
+    # The wording is specified: it names both figures and both remedies, and
+    # says plainly that nothing was dropped to make the plan fit.
+    assert "exceeding the configured safety limit" in caught.value.user_message
+    assert "TARGET_ALLOCATION_MAX_ROWS" in caught.value.user_message
+    assert "narrow the allocation scope" in caught.value.user_message
+    assert "has been dropped" in caught.value.user_message

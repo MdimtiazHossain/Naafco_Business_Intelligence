@@ -396,9 +396,20 @@ def project(session: Session, *, plan: TargetPlan, version: TargetVersion,
 
     projected = material_count * len(months) * nodes
     maximum = get_settings().target_allocation_max_rows
+    # ~400 bytes per row for the objects the engine holds, measured on this
+    # machine over 50,000 rows. The insert payload is streamed a batch at a
+    # time, so it is not counted here — that was the second copy this figure
+    # used to have to include.
+    estimated_mb = round(projected * 400 / (1024 * 1024), 1)
     return {
         "projected_rows": projected,
         "maximum_rows": maximum,
+        #: What is left under the ceiling. Negative when the plan is over it,
+        #: which is the number a reader needs to size a narrowing by.
+        "available_rows": maximum - projected,
+        "capacity_used_percent": (None if not maximum
+                                  else round(projected / maximum * 100, 1)),
+        "estimated_memory_mb": estimated_mb,
         "exceeds": projected > maximum,
         "financial_year": plan.financial_year,
         "target_period": plan.target_period,

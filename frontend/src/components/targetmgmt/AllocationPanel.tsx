@@ -223,17 +223,71 @@ function RunCounts({ job }: { job: TargetAllocationJob }) {
     [t('targetMgmt.monthCount'), formatQuantity(result.months?.length ?? 0)],
     [t('targetMgmt.nodeCount'), formatQuantity(result.node_count ?? 0)],
   ];
+  /*
+   * What the run came to, beside what it was over. Two of these carry a
+   * tooltip because the honest number invites a question: rows saved always
+   * equals rows generated (the write stores every row or fails), and
+   * duplicates rejected is always zero (the unique key makes one impossible) —
+   * and "zero" is a different claim from "we did not look".
+   */
+  const summary = job.summary;
+  const outcome: [string, string, string | undefined][] = summary
+    ? [
+        [t('targetMgmt.summary.generated'),
+         formatQuantity(summary.rows_generated), undefined],
+        [t('targetMgmt.summary.saved'),
+         formatQuantity(summary.rows_saved),
+         t('targetMgmt.summary.savedHint')],
+        [t('targetMgmt.summary.duplicates'),
+         formatQuantity(summary.duplicates_rejected),
+         t('targetMgmt.summary.duplicatesHint')],
+        [t('targetMgmt.summary.failures'),
+         formatQuantity(summary.validation_failures), undefined],
+        [t('targetMgmt.summary.time'),
+         summary.processing_seconds === null
+           ? 'n/a'
+           : t('targetMgmt.summary.seconds', {
+               seconds: String(summary.processing_seconds),
+             }),
+         undefined],
+      ]
+    : [];
+
   return (
-    <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {cells.map(([label, value]) => (
-        <div key={label}>
-          <dt className="text-xs text-slate-500 dark:text-slate-400">{label}</dt>
-          <dd className="text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-50">
-            {value}
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <>
+      <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {cells.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-xs text-slate-500 dark:text-slate-400">{label}</dt>
+            <dd className="text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {outcome.length > 0 && (
+        <>
+          <h4 className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            {t('targetMgmt.summary.title')}
+          </h4>
+          <dl className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {outcome.map(([label, value, hint]) => (
+              <div key={label}>
+                <dt
+                  className={`text-xs text-slate-500 dark:text-slate-400${hint ? ' cursor-help' : ''}`}
+                  title={hint}
+                >
+                  {label}
+                </dt>
+                <dd className="text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </>
+      )}
+    </>
   );
 }
 

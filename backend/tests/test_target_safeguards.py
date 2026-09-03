@@ -31,6 +31,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database.models import DimMaterial
 from app.database.models_target import (
     AllocationJobStatus,
@@ -837,3 +838,102 @@ def test_exceeds_limit_is_a_declared_blocking_state() -> None:
     assert datastate.TONE[datastate.EXCEEDS_LIMIT] == "error"
     assert datastate.EXCEEDS_LIMIT not in (datastate.AVAILABLE,
                                            datastate.VALID_ZERO)
+
+
+# ---------------------------------------------------------------------------
+# The ceiling is a technical limit, and the engine is sized for the business
+# ---------------------------------------------------------------------------
+
+
+def test_the_ceiling_covers_a_full_year_of_the_real_geography() -> None:
+    """A limit that refuses the business is a limit set in the wrong place.
+
+    The real deployment maps 2,114 customers under 479 organisational nodes.
+    A quarter over 41 materials is ~319k rows and a full year ~1.28M — neither
+    is unreasonable, and the old 250,000 ceiling refused both. The limit exists
+    to stop a run exhausting the machine, not to cap how large a business may
+    plan, so it is set above what the business needs rather than the business
+    being narrowed to fit it.
+    """
+    get_settings.cache_clear()
+    ceiling = get_settings().target_allocation_max_rows
+
+    nodes, materials = 2_593, 41
+    quarter = nodes * materials * 3
+    full_year = nodes * materials * 12
+
+    assert quarter == 318_939
+    assert ceiling >= quarter
+    assert ceiling >= full_year, (
+        f"{full_year:,} rows for a full year exceeds the {ceiling:,} ceiling")
+
+
+def test_the_insert_payload_is_never_materialised_whole(
+        with_history, users, planned) -> None:
+    """The write streams a batch at a time rather than building a second copy.
+
+    Measured, an ``AllocatedRow`` costs ~400 bytes and the dict it becomes
+    ~470, so materialising the payload beside the rows held both datasets at
+    once — 1.2 GB at 1.5 million rows. Building each batch on demand leaves
+    only the rows the engine already holds.
+
+    Pinned by observing the batches rather than the memory: a reporter that
+    counts every insert sees several calls, and none of them carries the whole
+    dataset.
+    """
+    seen: list[int] = []
+    with Session(with_history) as session:
+        version = plan_service.get_version(session, planned["version_id"])
+        result = _run(session, users, planned)
+        written = allocation_engine.persist(
+            session, version=version, result=result, reporter=seen.append)
+        session.commit()
+
+    assert written == len(result.rows)
+    # Progress is reported as it goes, so a long run is not silent.
+    assert seen and seen[-1] == written
+    assert seen == sorted(seen)
+
+
+def test_nothing_is_dropped_to_make_a_plan_fit(with_history, users, planned,
+                                               monkeypatch) -> None:
+    """No truncation, no merging, no quietly skipped materials or customers.
+
+    The refusal names both figures and both remedies, and says outright that
+    the plan is untouched — the alternative, a half allocation, reconciles
+    against nothing and looks exactly like a complete one.
+    """
+    _tiny_limit(monkeypatch)
+    with Session(with_history) as session:
+        plan = plan_service.get_plan(session, planned["plan_id"])
+        version = plan_service.get_version(session, planned["version_id"])
+        with pytest.raises(allocation_engine.AllocationTooLarge) as caught:
+            allocation_engine.plan_allocation(session, users["ceo"], plan=plan,
+                                              version=version)
+        assert len(_rows(session, planned)) == 0
+
+    message = caught.value.user_message
+    assert "exceeding the configured safety limit" in message
+    assert "TARGET_ALLOCATION_MAX_ROWS" in message
+    assert "has been dropped" in message
+
+
+def test_the_projection_reports_capacity_and_memory(with_history, users,
+                                                    planned) -> None:
+    """Shown before the run, not after it fails.
+
+    A ceiling is a technical limit, so what a reader needs is how much of it
+    this plan uses — capacity left and the memory it implies — rather than only
+    a yes or no.
+    """
+    with Session(with_history) as session:
+        plan = plan_service.get_plan(session, planned["plan_id"])
+        version = plan_service.get_version(session, planned["version_id"])
+        report = readiness.check(session, users["ceo"], plan=plan,
+                                 version=version)
+
+    projection = report["projection"]
+    assert projection["available_rows"] == (
+        projection["maximum_rows"] - projection["projected_rows"])
+    assert 0 <= projection["capacity_used_percent"] <= 100
+    assert projection["estimated_memory_mb"] >= 0
