@@ -32,7 +32,6 @@ from ..database.models import (
 )
 from ..database.models_admin import ImportMode, UploadCategory
 from ..database.models_geo import GEO_MODEL_BY_TABLE
-from ..database.models_map import MapEntityLocation
 from ..database.models_warehouse import DimCustomer, DimSalesForce
 from ..etl.datasets import DATASETS, DatasetSpec, FieldKind as EtlFieldKind
 from ..master_data.schema import TABLE_SPECS, FieldKind as MasterFieldKind, TableSpec
@@ -584,57 +583,15 @@ def _org_note(spec: DatasetSpec) -> str:
 # The catalogue
 # ---------------------------------------------------------------------------
 
-#: Map coordinates. Modelled as a master upload because that is exactly what it
-#: is — reference data keyed on an official business code — so it inherits the
-#: whole validated pipeline: template, preview, row-level errors and history.
-GEO_LOCATION_TYPE = UploadType(
-    key="map_entity_locations",
-    label="Map Locations",
-    category=UploadCategory.MASTER,
-    description=(
-        "Latitude and longitude for entities shown on the business map. Place "
-        "the territories and every level above them is derived automatically."
-    ),
-    columns=(
-        UploadColumn("Entity Type", "entity_type", "code", True,
-                     "Which kind of entity the code belongs to, e.g. territory, "
-                     "region, customer, sales force.",
-                     "territory", ("type", "level")),
-        UploadColumn("Entity Code", "entity_code", "code", True,
-                     "The official business code, exactly as in the master data.",
-                     "TR001", ("code",)),
-        UploadColumn("Latitude", "latitude", "decimal", True,
-                     "Decimal degrees, -90 to 90. Leave blank rather than "
-                     "entering 0.", "23.7808"),
-        UploadColumn("Longitude", "longitude", "decimal", True,
-                     "Decimal degrees, -180 to 180.", "90.4008"),
-        UploadColumn("Label", "label", "text", False,
-                     "Optional display name; the master data's name is used "
-                     "when this is empty.", "Kazipara"),
-    ),
-    business_key=("entity_type", "entity_code"),
-    business_key_description=(
-        "entity_type + entity_code — one coordinate per entity. Re-uploading a "
-        "code moves it; it is never duplicated."
-    ),
-    supported_modes=ImportMode.ALL,
-    default_mode=ImportMode.UPSERT,
-    table="map_entity_locations",
-    note=(
-        "Codes must already exist in the master data. After loading, parent "
-        "levels are re-derived as the centroid of their children unless a "
-        "coordinate was placed by hand."
-    ),
-)
-
 #: Administrative geography. A second hierarchy, and reference data about the
 #: country rather than about the company — so it is uploadable in its own right,
 #: with the same validated pipeline every other dimension gets.
 #:
 #: The boundary polygons are deliberately *not* here. A spreadsheet column
 #: cannot carry a multi-thousand-vertex ring in any form a person could check,
-#: so geometry arrives through ``scripts/import_admin_areas.py`` from a
-#: published GeoJSON file, and these uploads carry the names and codes.
+#: so these uploads carry the names and codes only. Geometry used to arrive
+#: through a separate importer; it went with the business map in
+#: ``0033_remove_map`` and is re-importable from the published GADM/HDX release.
 _ADMIN_DIMENSIONS: tuple[tuple[str, str, str, tuple[tuple[str, str, bool, str], ...],
                                str | None, str | None], ...] = (
     (
@@ -729,7 +686,6 @@ MASTER_TYPES: tuple[UploadType, ...] = (
     *(_admin_type(table, label, key, fields, parent_table, parent_column)
       for table, label, key, fields, parent_table, parent_column
       in _ADMIN_DIMENSIONS),
-    GEO_LOCATION_TYPE,
 )
 
 TRANSACTION_TYPES: tuple[UploadType, ...] = tuple(
@@ -786,7 +742,6 @@ GROUP_BY_KEY: dict[str, str] = {
     # The business calls this a thana; the master, the boundaries and the map
     # all call it an upazila, and one name across the platform beats two.
     "dim_upazila": "MARKET",
-    "map_entity_locations": "MARKET",
 
     "dim_customer": "PEOPLE",
     "dim_sales_force": "PEOPLE",
@@ -839,7 +794,6 @@ MASTER_MODEL_BY_TABLE = {
     "dim_customer": DimCustomer,
     "dim_sales_force": DimSalesForce,
     **GEO_MODEL_BY_TABLE,
-    "map_entity_locations": MapEntityLocation,
 }
 
 

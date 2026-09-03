@@ -1089,25 +1089,7 @@ def test_the_detail_view_carries_hierarchy_geo_and_history(client):
     assert body["record"]["territory_code"] == "TR001"
     assert body["hierarchy"]["region_code"] == "REG001"
     assert body["hierarchy"]["zone_code"]
-    assert body["location"]["entity_type"] == "territory"
     assert "history" in body and "dependants" in body
-
-
-def test_a_record_with_a_coordinate_reports_it_for_the_map(client, agent_engine):
-    from app.database.models_map import GeoPrecision, GeoSource, MapEntityLocation
-
-    with Session(agent_engine) as session:
-        session.add(MapEntityLocation(
-            entity_type="territory", entity_code="TR001",
-            latitude=23.7808, longitude=90.4008,
-            source=GeoSource.MANUAL, precision=GeoPrecision.EXACT,
-        ))
-        session.commit()
-
-    token = login(client)
-    body = client.get("/api/master/dim_territory/TR001",
-                      headers=auth(token)).json()
-    assert body["location"]["latitude"] == pytest.approx(23.7808)
 
 
 def test_selected_records_can_be_fetched_by_code_for_the_map(client):

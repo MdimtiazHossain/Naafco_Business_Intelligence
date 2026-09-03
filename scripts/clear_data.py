@@ -64,9 +64,6 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "transactions": (*DATASET_TABLES, "etl_rejected_records", "etl_import_batches"),
     "uploads": ("upload_errors", "upload_batches"),
     "masters": (
-        # Coordinates and boundaries are keyed on master codes, so they go with
-        # the codes rather than being left pointing at nothing.
-        "map_entity_locations", "map_area_boundaries",
         # Administrative geography, deepest first.
         "dim_upazila", "dim_district", "dim_division",
         # Dimensions with no children of their own. The material masters are

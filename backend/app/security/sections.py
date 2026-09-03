@@ -59,8 +59,6 @@ class SectionKey:
     DATA_UPLOAD = "data_upload"
     MASTER_DATA = "master_data"
     TRANSACTION_DATA = "transaction_data"
-    MAP = "map"
-    MAP_SETTINGS = "map_settings"
     AGENT_LEARNING = "agent_learning"
     ADMIN = "admin"
     SETTINGS = "settings"
@@ -372,19 +370,6 @@ SECTIONS: tuple[Section, ...] = (
         actions=(Action.VIEW,),
     ),
     Section(
-        key=SectionKey.MAP,
-        label="Business Map",
-        route="/map",
-        group=GROUP_REPORTING,
-        description=(
-            "The multi-level geographic view: performance by zone, region, area, "
-            "unit and territory, with drill-down."
-        ),
-        api_prefixes=("/api/map/data", "/api/map/config", "/api/map/levels",
-                      "/api/map/marker-config", "/api/map/legend"),
-        actions=_REPORT_ACTIONS,
-    ),
-    Section(
         key=SectionKey.DATA_QUALITY,
         label="Data Quality",
         route="/data-quality",
@@ -450,26 +435,6 @@ SECTIONS: tuple[Section, ...] = (
         },
     ),
     Section(
-        key=SectionKey.MAP_SETTINGS,
-        label="Map Settings",
-        route="/admin/map-settings/markers",
-        group=GROUP_SYSTEM,
-        description=(
-            "Marker and shape designs for the business map: create, preview, "
-            "version and assign the markers each entity type is drawn with."
-        ),
-        api_prefixes=("/api/map/marker-designs", "/api/map/marker-assets",
-                      "/api/map/assignments"),
-        actions=(Action.VIEW, Action.CREATE, Action.EDIT, Action.DELETE,
-                 Action.UPLOAD, Action.EXPORT),
-        # A permission in its own right, not a synonym for "administrator": it is
-        # off by default for everyone and on by default for administrators, and
-        # an administrator can grant it to, say, a marketing lead who owns how
-        # the map looks without handing over user administration.
-        default_allow=False,
-        default_roles=Role.ADMIN_ROLES,
-    ),
-    Section(
         key=SectionKey.AGENT_LEARNING,
         label="Agent Learning",
         route="/admin/agent-learning",
@@ -484,7 +449,7 @@ SECTIONS: tuple[Section, ...] = (
         # one: knowing that "chini" means a particular brand is knowledge a
         # sales analyst has and a system administrator generally does not. So
         # this is grantable on its own, off by default for everyone, and on by
-        # default for administrators — the same shape as Map Settings, and for
+        # default for administrators — off by default for everyone, and for
         # the same reason.
         #
         # There is no DELETE. An approved mapping is retired, never removed, so

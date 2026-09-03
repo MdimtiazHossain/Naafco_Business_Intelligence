@@ -268,6 +268,10 @@ class AuditAction:
     TEMPLATE_DOWNLOADED = "TEMPLATE_DOWNLOADED"
 
     # --- Phase 4: map marker designer ------------------------------------
+    #: Retired with the business map in ``0033_remove_map``, and kept
+    #: deliberately: ``audit_logs`` still holds rows carrying these
+    #: values, and an audit trail that cannot name what it recorded is
+    #: not a trail. Nothing writes them any more.
     MARKER_DESIGN_CREATED = "MARKER_DESIGN_CREATED"
     MARKER_DESIGN_UPDATED = "MARKER_DESIGN_UPDATED"
     MARKER_DESIGN_DUPLICATED = "MARKER_DESIGN_DUPLICATED"

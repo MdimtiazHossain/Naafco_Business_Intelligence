@@ -48,7 +48,6 @@ from app.database.models import Base
 from app.database import models_admin  # noqa: F401  (registers Phase 4 tables)
 from app.database import models_ai  # noqa: F401  (registers Phase 3 tables)
 from app.database import models_geo  # noqa: F401  (registers the geography tables)
-from app.database import models_map  # noqa: F401  (registers map-config tables)
 from app.database import models_warehouse  # noqa: F401  (registers Phase 2 tables)
 from app.etl.bulk import PARAMETER_LIMITS
 

@@ -45,33 +45,6 @@ for _router in ALL_ROUTERS:
 
 
 @app.on_event("startup")
-def seed_map_defaults() -> None:
-    """Ensure every entity type has a system-default marker.
-
-    Idempotent, and deliberately non-fatal: a database that is unreachable at
-    boot is the health probe's problem, not a reason for the whole API to refuse
-    to start. A map with no seeded defaults still renders — the resolver falls
-    back to a plain circle.
-    """
-    import logging
-
-    from sqlalchemy.orm import Session
-
-    from .database.connection import get_engine
-    from .map.service import ensure_system_defaults
-
-    logger = logging.getLogger("app.startup")
-    try:
-        with Session(get_engine()) as session:
-            created = ensure_system_defaults(session)
-            session.commit()
-        if created:
-            logger.info("seeded %s system-default marker designs", created)
-    except Exception:  # noqa: BLE001 - never block startup on seed data
-        logger.warning("could not seed default marker designs", exc_info=True)
-
-
-@app.on_event("startup")
 def close_interrupted_imports() -> None:
     """Mark imports that a restart killed, before the first request is served.
 

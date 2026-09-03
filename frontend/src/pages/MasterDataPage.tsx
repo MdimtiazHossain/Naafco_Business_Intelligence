@@ -15,7 +15,6 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import {
   Download,
   Eye,
-  MapPin,
   Pencil,
   Plus,
   RotateCcw,
@@ -217,14 +216,6 @@ export default function MasterDataPage() {
         onSelect: () => setEditing(row),
       });
     }
-    if (entity.supports_geo) {
-      actions.push({
-        key: 'map',
-        label: t('action.viewOnMap'),
-        icon: <MapPin size={14} />,
-        onSelect: () => navigate(mapLink(entity, [code])),
-      });
-    }
     if (mayDelete) {
       actions.push(
         retired
@@ -382,7 +373,6 @@ export default function MasterDataPage() {
                   onAction={(action) =>
                     bulk.mutate({ action, codes: [...selected] })
                   }
-                  onShowOnMap={() => navigate(mapLink(entity, [...selected]))}
                   onClear={() => setSelected(new Set())}
                 />
               ) : null
@@ -437,14 +427,6 @@ export default function MasterDataPage() {
 function keyOf(entity: ManagedEntity | undefined, row: ManagedRow): string {
   if (!entity) return String(row._key ?? '');
   return String(row[entity.key_fields[0]] ?? row._key ?? '');
-}
-
-/** Deep link into the map, focused on these records. */
-export function mapLink(entity: ManagedEntity, codes: string[]): string {
-  const type = entity.scope_level
-    ? entity.scope_level.replace('_code', '')
-    : entity.key.replace('dim_', '');
-  return `/map?focus=${type}:${codes.map(encodeURIComponent).join(',')}`;
 }
 
 function StatusCell({
@@ -564,7 +546,6 @@ function BulkBar({
   mayEdit,
   mayDelete,
   onAction,
-  onShowOnMap,
   onClear,
 }: {
   entity: ManagedEntity;
@@ -573,7 +554,6 @@ function BulkBar({
   mayEdit: boolean;
   mayDelete: boolean;
   onAction: (action: string) => void;
-  onShowOnMap: () => void;
   onClear: () => void;
 }) {
   const t = useT();
@@ -599,12 +579,6 @@ function BulkBar({
             {t('bulk.deactivate')}
           </button>
         </>
-      )}
-      {entity.supports_geo && (
-        <button type="button" className="btn-secondary py-1 text-xs" onClick={onShowOnMap}>
-          <MapPin size={12} />
-          {t('bulk.showOnMap')}
-        </button>
       )}
       {mayDelete && (
         <button

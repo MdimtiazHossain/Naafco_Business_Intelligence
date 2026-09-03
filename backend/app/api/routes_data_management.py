@@ -319,7 +319,6 @@ def get_master_record(
             "permissions": _permissions(session, user, entity),
             "record": query.master_row(entity, record),
             "hierarchy": _hierarchy_of(session, entity, code),
-            "location": _location_of(session, entity, code),
             "dependants": dependencies.for_master(session, entity, code).to_dict(),
             "history": changes,
             "history_total": total,
@@ -339,36 +338,6 @@ def _hierarchy_of(session: Session, entity: ManagedEntity,
 
     chain = MasterDataIndex(session).ancestors_of(entity.scope_level, code)
     return {level: value for level, value in chain.items() if value}
-
-
-def _location_of(session: Session, entity: ManagedEntity,
-                 code: str) -> dict[str, Any] | None:
-    """The record's coordinate, so the detail page can offer "View on map"."""
-    if not entity.supports_geo:
-        return None
-    from sqlalchemy import select
-
-    from ..database.models_map import MapEntityLocation
-
-    entity_type = entity.fact_scope_type or (entity.scope_level or "").removesuffix(
-        "_code"
-    )
-    row = session.execute(
-        select(MapEntityLocation).where(
-            MapEntityLocation.entity_type == entity_type,
-            MapEntityLocation.entity_code == code,
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        return {"entity_type": entity_type, "latitude": None, "longitude": None}
-    return {
-        "entity_type": entity_type,
-        "latitude": row.latitude,
-        "longitude": row.longitude,
-        "source": row.source,
-    }
-
-
 @router.get("/api/master/{entity_key}/{code}/history")
 def master_history(
     entity_key: str,

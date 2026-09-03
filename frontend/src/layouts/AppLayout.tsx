@@ -20,8 +20,6 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
-  Map,
-  MapPin,
   Menu,
   Moon,
   Package,
@@ -81,7 +79,6 @@ const MAIN_NAV: NavItem[] = [
     icon: <ReceiptText size={18} />,
     section: 'credit_control',
   },
-  { to: '/map', labelKey: 'nav.map', icon: <Map size={18} />, section: 'map' },
   { to: '/alerts', labelKey: 'nav.alerts', icon: <AlertTriangle size={18} />, section: 'alerts' },
   { to: '/data-quality', labelKey: 'nav.dataQuality', icon: <ClipboardCheck size={18} />, section: 'data_quality' },
 ];
@@ -102,16 +99,11 @@ const ADMIN_NAV: NavItem[] = [
 ];
 
 /**
- * Map Settings is its own section, so it appears for anyone granted it —
- * including a user who is not an administrator at all.
+ * Sections that stand on their own rather than under administration, so they
+ * appear for anyone granted them — including a user who is not an
+ * administrator at all.
  */
-const MAP_NAV: NavItem[] = [
-  {
-    to: '/admin/map-settings/markers',
-    labelKey: 'nav.mapSettings',
-    icon: <MapPin size={18} />,
-    section: 'map_settings',
-  },
+const SECTION_NAV: NavItem[] = [
   {
     // Its own section too, so it appears for a reviewer who owns the
     // assistant's vocabulary without being an administrator.
@@ -374,7 +366,7 @@ export function AppLayout() {
     [
       ...MAIN_NAV,
       ...DATA_NAV,
-      ...MAP_NAV,
+      ...SECTION_NAV,
       ...(isAdmin ? ADMIN_NAV : []),
     ].filter((item) => hasSection(item.section)),
   );

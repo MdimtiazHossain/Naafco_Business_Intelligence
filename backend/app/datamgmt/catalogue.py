@@ -213,12 +213,11 @@ class ManagedEntity:
     parent_table: str | None = None
     parent_column: str | None = None
     scope_level: str | None = None
-    #: For customer / sales force: the map hierarchy's entity type, whose scope
-    #: is resolved from the facts.
+    #: For customer / sales force: the organisational hierarchy's entity type,
+    #: whose scope is resolved from the facts.
     fact_scope_type: str | None = None
     status_field: str | None = None
     soft_delete: bool = True
-    supports_geo: bool = False
 
     # -- transactional -----------------------------------------------------
     data_type: str | None = None
@@ -260,7 +259,6 @@ class ManagedEntity:
             "status_values": list(STATUS_VALUES) if self.status_field else [],
             "soft_delete": self.soft_delete,
             "voidable": self.voidable,
-            "supports_geo": self.supports_geo,
             "scope_level": self.scope_level,
             "parent_table": self.parent_table,
             "parent_column": self.parent_column,
@@ -347,10 +345,7 @@ def _name_field(upload_type: UploadType) -> str | None:
 
 def _master_entity(upload_type: UploadType) -> ManagedEntity | None:
     model = MASTER_MODEL_BY_TABLE.get(upload_type.table or "")
-    if model is None or upload_type.table == "map_entity_locations":
-        # Coordinates are managed by the map's own settings screens, which know
-        # about centroid derivation and the marker cache. Duplicating them here
-        # would give two places to change one thing.
+    if model is None:
         return None
 
     fields = tuple(
@@ -374,9 +369,6 @@ def _master_entity(upload_type: UploadType) -> ManagedEntity | None:
         scope_level=_SCOPE_LEVEL_BY_TABLE.get(table),
         fact_scope_type=_FACT_SCOPED_TABLES.get(table),
         status_field=_STATUS_FIELD.get(table),
-        # Every organisational level and every business dimension can carry a
-        # coordinate, so every one of them can offer "View on map".
-        supports_geo=table in _SCOPE_LEVEL_BY_TABLE or table in _FACT_SCOPED_TABLES,
     )
 
 

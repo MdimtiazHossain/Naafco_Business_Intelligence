@@ -15,7 +15,6 @@ from .routes_etl import router as etl_router
 from .routes_export import router as export_router
 from .routes_import import router as import_router
 from .routes_learning import router as learning_router
-from .routes_map import router as map_router
 from .routes_masterdata import router as master_data_router
 from .routes_pages import router as pages_router
 from .routes_credit import router as credit_router
@@ -44,7 +43,6 @@ ALL_ROUTERS = (
     # confused with ``/api/master-data/*``, and registering it later keeps the
     # more specific existing prefixes matched first.
     data_management_router,
-    map_router,
     admin_router,
     learning_router,
     target_management_router,
@@ -65,7 +63,6 @@ __all__ = [
     "dashboard_router",
     "pages_router",
     "master_data_router",
-    "map_router",
     "admin_router",
     "target_management_router",
     "whatsapp_router",

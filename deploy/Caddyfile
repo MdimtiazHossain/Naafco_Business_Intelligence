@@ -45,7 +45,7 @@
 		-Server
 	}
 
-	# Not compressed by default anywhere else: the API returns GeoJSON area
-	# payloads that are mostly coordinates and compress by an order of magnitude.
+	# JSON API responses and the JS bundle both compress well; this is the one
+	# place either is served from.
 	encode gzip zstd
 }

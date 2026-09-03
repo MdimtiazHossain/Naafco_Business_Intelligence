@@ -13,13 +13,9 @@ import {
   tokenStore,
 } from './apiClient';
 import type {
-  AdminLevel,
   AdminSummary,
   AlertsResponse,
   AncestorsResponse,
-  AreaCoverageRow,
-  AreaResponse,
-  AreaStyle,
   AuditLogEntry,
   BatchQuality,
   BulkResponse,
@@ -41,25 +37,12 @@ import type {
   DashboardResponse,
   DataCatalogue,
   Dependants,
-  DesignerOptions,
   EtlBatch,
   HistoryEntry,
   ExportRequest,
   GlobalFilters,
   LevelsResponse,
   LoginResponse,
-  MapConfig,
-  MapCoverageRow,
-  MapEntitiesResponse,
-  MapEntityTrendResponse,
-  MapPointsResponse,
-  MapEntityLocation,
-  MarkerAsset,
-  MarkerAssignmentRow,
-  MarkerDesign,
-  MarkerLegendEntry,
-  MarkerPreview,
-  MarkerVersion,
   MaterialsPage,
   NotificationsResponse,
   OptionsResponse,
@@ -67,7 +50,6 @@ import type {
   PeriodOptionsResponse,
   RecordDetailResponse,
   RecordListResponse,
-  ResolvedMarkerConfig,
   Role,
   RoleSummary,
   SalesPage,
@@ -107,8 +89,6 @@ import type {
   TargetManagementOptions,
   TargetPeriod,
   TargetPlan,
-  TargetPlanDeletable,
-  TargetPlanDeleted,
   TargetPlanDeletable,
   TargetPlanDeleted,
   TargetPlanStatus,
@@ -590,24 +570,6 @@ export const targetManagementService = {
     request<TargetUploadResult>(
       `/api/target-management/versions/${versionId}/country-target/apply`,
       { method: 'POST', body: { upload_token: uploadToken, sheet_name: sheetName ?? null } },
-    ),
-
-  planDeletable: (planId: number) =>
-    request<TargetPlanDeletable>(
-      `/api/target-management/plans/${planId}/deletable`,
-    ),
-
-  /**
-   * Remove a draft plan that was never allocated, approved or locked.
-   *
-   * A typed country target does not block it — figures entered and never
-   * allocated are a draft target, not a record. Everything the plan
-   * actually became is refused by the backend, by name.
-   */
-  deletePlan: (planId: number) =>
-    request<TargetPlanDeleted>(
-      `/api/target-management/plans/${planId}`,
-      { method: 'DELETE' },
     ),
 
   planDeletable: (planId: number) =>
@@ -1127,255 +1089,6 @@ export const dataUploadService = {
       { method: 'POST', params: { confirm: true } },
     ),
 };
-
-/**
- * The map's server calls.
- *
- * Deliberately short. Since the MapLibre rebuild the map's *geometry* comes from
- * static files under `public/geo/` — administrative boundaries change only when
- * somebody imports a new release, so an endpoint for them would answer the same
- * bytes on every page load. What remains here is what only the server can
- * answer: business data under the caller's permissions, and how it should look.
- */
-export const mapService = {
-  config: () => request<MapConfig>('/api/map/config'),
-
-  /**
-   * Every entity under a hierarchy filter, at every level, in one call.
-   *
-   * The one business-data call the map makes, and the same permission-filtered
-   * query the rest of the dashboard reads — which is why a map and a report can
-   * never disagree about a number.
-   *
-   * `layers` controls what is drawn; it never narrows the filter, so the
-   * returned `counts` always describe the full scope.
-   */
-  entities: (
-    query: ReportQuery & {
-      zone_code?: string;
-      region_code?: string;
-      area_code?: string;
-      unit_code?: string;
-      territory_code?: string;
-      sub_territory_code?: string;
-      layers?: string;
-      metric?: string;
-      zoom?: number;
-      diagnostics?: boolean;
-    },
-  ) => request<MapEntitiesResponse>('/api/map/entities', { params: query }),
-
-  /**
-   * Monthly net sales for one entity the map has drawn.
-   *
-   * What the detail panel's history bars read. Runs `get_sales_trend` through
-   * the same tool path everything else on this page uses, so the months here
-   * and the figure in the KPI strip come from one query layer under one set of
-   * permissions.
-   *
-   * Actuals only — `fact_target` records a target month and a financial year
-   * rather than a date, and nothing on this path groups it by month, so there
-   * is no monthly target to draw behind them.
-   */
-  entityTrend: (
-    query: ReportQuery & { level: string; code: string; months?: number },
-  ) => request<MapEntityTrendResponse>('/api/map/entity-trend', { params: query }),
-
-  /**
-   * Aggregated business points for one level, from the warehouse.
-   *
-   * Distinct from `entities`, which lists records so they can be *drawn*: this
-   * asks the warehouse to **aggregate** a level and hand back one point per
-   * code with its measures. That is what a bubble map reads — a territory's
-   * bubble is its territory's sales, summed by the same query the reports use,
-   * not a count of the pins that happen to sit inside it.
-   *
-   * With `metric: 'achievement'` each point also carries `net_sales`,
-   * `target_amount` and `achievement_percent`, aggregated server-side, so the
-   * browser never divides one business figure by another.
-   */
-  points: (
-    query: ReportQuery & {
-      level?: string;
-      metric?: string;
-      cluster?: boolean;
-      zoom?: number;
-      limit?: number;
-    },
-  ) => request<MapPointsResponse>('/api/map/data', { params: query }),
-
-  /**
-   * The metric behind each administrative area.
-   *
-   * Called with `geometry: false` by the map: the polygons are already in the
-   * browser from `public/geo/`, and the two are joined on the P-code both carry.
-   * Asking for geometry as well is supported and is what a non-browser client
-   * gets, but on the map's path it would re-send megabytes that never change.
-   */
-  areas: (
-    query: ReportQuery & {
-      level?: string;
-      division_code?: string;
-      district_code?: string;
-      upazila_code?: string;
-      territory_code?: string;
-      bbox?: string;
-      simplify?: number;
-      geometry?: boolean;
-    },
-  ) => request<AreaResponse>('/api/map/areas', { params: query }),
-
-  areaLevels: () =>
-    request<{ levels: AdminLevel[]; default_level: string; layer_key: string }>(
-      '/api/map/area-levels',
-    ),
-
-  areaStyles: () =>
-    request<{ styles: Record<string, AreaStyle>; coverage: AreaCoverageRow[] }>(
-      '/api/map/area-styles',
-    ),
-
-  saveAreaStyle: (level: string, style: Partial<AreaStyle>) =>
-    request<AreaStyle>(`/api/map/area-styles/${level}`, {
-      method: 'PUT',
-      body: style,
-    }),
-
-  locations: (entityType?: string) =>
-    request<{ locations: MapEntityLocation[]; coverage: MapCoverageRow[] }>(
-      '/api/map/locations',
-      { params: { entity_type: entityType } },
-    ),
-
-  saveLocations: (
-    locations: {
-      entity_type: string;
-      entity_code: string;
-      latitude: number;
-      longitude: number;
-      label?: string;
-    }[],
-    derive = true,
-  ) =>
-    request<{ saved: number; derived: Record<string, number>; problems: string[] }>(
-      '/api/map/locations',
-      { method: 'PUT', body: { locations, derive_parents: derive } },
-    ),
-
-  deriveLocations: () =>
-    request<{ derived: Record<string, number>; coverage: MapCoverageRow[] }>(
-      '/api/map/locations/derive',
-      { method: 'POST' },
-    ),
-
-  deleteLocation: (entityType: string, entityCode: string) =>
-    request<{ deleted: string }>(`/api/map/locations/${entityType}/${entityCode}`, {
-      method: 'DELETE',
-    }),
-};
-
-export const markerService = {
-  options: () => request<DesignerOptions>('/api/map/designer-options'),
-
-  list: (
-    params: {
-      entity_type?: string;
-      status?: string;
-      search?: string;
-      limit?: number;
-      offset?: number;
-    } = {},
-  ) => request<{ total: number; designs: MarkerDesign[] }>('/api/map/marker-designs', { params }),
-
-  get: (designId: number) => request<MarkerDesign>(`/api/map/marker-designs/${designId}`),
-
-  create: (body: Record<string, unknown>) =>
-    request<MarkerDesign>('/api/map/marker-designs', { method: 'POST', body }),
-
-  update: (designId: number, body: Record<string, unknown>) =>
-    request<MarkerDesign>(`/api/map/marker-designs/${designId}`, { method: 'PUT', body }),
-
-  remove: (designId: number, confirm = false) =>
-    request<{ deleted: number; assignments_removed: number }>(
-      `/api/map/marker-designs/${designId}`,
-      { method: 'DELETE', params: { confirm } },
-    ),
-
-  duplicate: (designId: number, name?: string) =>
-    request<MarkerDesign>(`/api/map/marker-designs/${designId}/duplicate`, {
-      method: 'POST',
-      body: { name },
-    }),
-
-  assign: (designId: number, entityCode?: string | null, priority = 0) =>
-    request<{ assignment_id: number; entity_type: string; design: MarkerDesign }>(
-      `/api/map/marker-designs/${designId}/assign`,
-      { method: 'POST', body: { entity_code: entityCode ?? null, priority } },
-    ),
-
-  activate: (designId: number) =>
-    request<MarkerDesign>(`/api/map/marker-designs/${designId}/activate`, {
-      method: 'POST',
-    }),
-
-  deactivate: (designId: number) =>
-    request<MarkerDesign>(`/api/map/marker-designs/${designId}/deactivate`, {
-      method: 'POST',
-    }),
-
-  versions: (designId: number) =>
-    request<{ design_id: number; current_version: number; versions: MarkerVersion[] }>(
-      `/api/map/marker-designs/${designId}/versions`,
-    ),
-
-  /** Render a definition without saving — drives the live preview. */
-  preview: (body: {
-    definition: Record<string, unknown>;
-    asset_id?: number | null;
-    context?: Record<string, string>;
-  }) => request<MarkerPreview>('/api/map/marker-designs/preview', { method: 'POST', body }),
-
-  uploadAsset: (file: File) => {
-    const form = new FormData();
-    form.append('file', file);
-    return requestForm<MarkerAsset>('/api/map/marker-assets', form);
-  },
-
-  assets: () => request<{ assets: MarkerAsset[] }>('/api/map/marker-assets'),
-
-  assignments: () =>
-    request<{ assignments: MarkerAssignmentRow[] }>('/api/map/assignments'),
-
-  reset: (entityType: string) =>
-    request<{ entity_type: string; assignments_removed: number }>(
-      `/api/map/assignments/${entityType}/reset`,
-      { method: 'POST', params: { confirm: true } },
-    ),
-
-  /** The map's own configuration call — one request for every entity type. */
-  config: () =>
-    request<{
-      generation: number;
-      renderer: string;
-      markers: Record<string, ResolvedMarkerConfig>;
-    }>('/api/map/marker-config'),
-
-  legend: () =>
-    request<{ generation: number; entries: MarkerLegendEntry[] }>('/api/map/legend'),
-
-  async exportDesigns(entityType?: string): Promise<void> {
-    await saveAs('/api/map/marker-designs-export', {
-      params: entityType ? { entity_type: entityType } : {},
-    });
-  },
-
-  importDesigns: (designs: unknown[], overwrite = false) =>
-    request<{ created: number; updated: number; skipped: number; problems: string[] }>(
-      '/api/map/marker-designs-import',
-      { method: 'POST', body: { designs, overwrite } },
-    ),
-};
-
 /** Fetch an attachment and trigger the browser's download. */
 async function saveAs(path: string, options: { params?: object } = {}): Promise<void> {
   const { blob, filename } = await requestBlob(path, { method: 'GET', ...options });

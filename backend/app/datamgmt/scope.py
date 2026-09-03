@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from ..ai.permission_filter import PermissionFilter, UserContext
-from ..map.hierarchy import (
+from ..org.hierarchy import (
     ORG_CHAIN,
     OrgScope,
     resolve_business_entities,

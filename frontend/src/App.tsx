@@ -41,10 +41,7 @@ const AdminPage = lazy(() => import('./pages/AdminPage'));
 const AdminUsersPage = lazy(() => import('./pages/AdminUsersPage'));
 const AdminRolesPage = lazy(() => import('./pages/AdminRolesPage'));
 const UserPermissionsPage = lazy(() => import('./pages/UserPermissionsPage'));
-const BusinessMapPage = lazy(() => import('./pages/BusinessMapPage'));
-const MarkerLibraryPage = lazy(() => import('./pages/MarkerLibraryPage'));
 const AgentLearningPage = lazy(() => import('./pages/AgentLearningPage'));
-const MarkerDesignerPage = lazy(() => import('./pages/MarkerDesignerPage'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 
 const queryClient = new QueryClient({
@@ -292,14 +289,6 @@ function AppRoutes() {
           }
         />
         <Route
-          path="/map"
-          element={
-            <Guarded section="map">
-              <BusinessMapPage />
-            </Guarded>
-          }
-        />
-        <Route
           path="/data-quality"
           element={
             <Guarded section="data_quality">
@@ -410,10 +399,9 @@ function AppRoutes() {
           }
         />
         {/*
-          Agent Learning sits beside Map Settings and for the same reason: it is
-          its own section, so a reviewer who owns what the assistant's words
-          mean need not be a user administrator. The path is under /admin
-          because that is where the section's route says it is.
+          Agent Learning is its own section, so a reviewer who owns what the
+          assistant's words mean need not be a user administrator. The path is
+          under /admin because that is where the section's route says it is.
         */}
         <Route
           path="/admin/agent-learning"
@@ -421,35 +409,6 @@ function AppRoutes() {
             <Suspense fallback={<PageFallback />}>
               <AgentLearningPage />
             </Suspense>
-          }
-        />
-        {/*
-          Map Settings lives under /admin but is guarded by its own section, not
-          by RequireAdmin: it is a permission in its own right, so someone who
-          owns how the map looks need not be a user administrator.
-        */}
-        <Route
-          path="/admin/map-settings/markers"
-          element={
-            <Guarded section="map_settings">
-              <MarkerLibraryPage />
-            </Guarded>
-          }
-        />
-        <Route
-          path="/admin/map-settings/marker-designer"
-          element={
-            <Guarded section="map_settings">
-              <MarkerDesignerPage />
-            </Guarded>
-          }
-        />
-        <Route
-          path="/admin/map-settings/marker-designer/:id"
-          element={
-            <Guarded section="map_settings">
-              <MarkerDesignerPage />
-            </Guarded>
           }
         />
         <Route

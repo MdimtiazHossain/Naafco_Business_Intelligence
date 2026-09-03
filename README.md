@@ -126,16 +126,8 @@ AI_Business_Agent/
 │   │   │   ├── service.py               Create, edit, retire, restore, void, bulk
 │   │   │   ├── history.py               Field-level change log + audit
 │   │   │   └── export.py                CSV / Excel of exactly the filtered rows
-│   │   ├── map/                         Phase 4 extension — geo map + markers
-│   │   │   ├── hierarchy.py             One filter → ancestors, descendants, members
-│   │   │   ├── entity_view.py           Assembles the multi-level answer
-│   │   │   ├── areas.py                 Administrative polygons, stock, filters
-│   │   │   ├── geometry.py              Bbox, centroid, point-in-polygon, simplify
-│   │   │   ├── data.py                  Single-level aggregation + clustering
-│   │   │   ├── geo.py                   Web Mercator, centroids, coverage
-│   │   │   ├── resolver.py              Entity type → the marker it is drawn with
-│   │   │   ├── shapes.py, icons.py, render.py, svg_safety.py
-│   │   │   └── adapters.py              Marker payload adapter (SVG for MapLibre)
+│   │   ├── org/                         The organisational chain (was under map/)
+│   │   │   └── hierarchy.py             One filter → ancestors, descendants, members
 │   │   ├── upload/                      Phase 4 extension — Data Upload Center
 │   │   ├── security/sections.py         Section permissions
 │   │   ├── reporting/service.py         Parameterised report queries
@@ -1410,334 +1402,36 @@ new value, timestamp and IP. Secrets are stripped by `audit.sanitize` as before.
 
 ---
 
-## Phase 4 extension — Multi-Level Geo Business Map
+## Phase 4 extension — the Business Map (removed)
+
+**Removed in revision `0033_remove_map`.** Both this section and the Marker /
+Shape Designer that followed it specified a feature that no longer exists: the
+`app/map/` package, `routes_map.py`, `models_map.py`, the MapLibre renderer and
+eleven database tables were all deleted so the map could be rebuilt from
+nothing rather than carried forward half-used. The specification they contained
+is in git; it is not restated here, because a specification kept beside a
+feature that does not exist is read as a description of the system.
+
+Three things the map had accumulated were not its own and stayed:
+
+* **The organisational chain** — Zone → Region → Area → Territory →
+  Sub-Territory — moved to `app/org/hierarchy.py`. Data Management scopes on it
+  (`datamgmt/scope.py`), so it was never map-specific; it lived under `map/`
+  only because the map was the first surface to need it.
+* **The four administrative dimensions** `dim_country`, `dim_division`,
+  `dim_district` and `dim_upazila` are master data with their own upload
+  templates, Bangla name columns and parent links, and the Upload Centre offers
+  them whether or not anything draws them. Only their *geometry* was dropped —
+  boundary rings, admin points and area styles exist only to be rendered, and
+  are re-importable from the published GADM/HDX release.
+* **The retired `MARKER_*` and `MAP_LOCATION_UPDATED` audit actions** stay in
+  `models_ai.AuditAction`. Nothing writes them, but `audit_logs` still holds
+  rows carrying those values.
+
+The removal destroyed 1,397 entity coordinates, 6,284 administrative points and
+580 boundary rings, deliberately and on instruction; `data/dev.db.pre0033.bak`
+sits beside the revision.
 
-Performance by place: zone → region → area → unit → territory → sub-territory,
-with drill-down, metric selection, clustering and the caller's data scope
-applied. It consumes the Marker Designer's configuration rather than embedding
-marker definitions, so changing a design changes the map.
-
-### The coordinate problem, and how it is solved
-
-`Master Data.xlsx` carries a `Location` name and an `HQ` town — **not** a
-latitude and longitude. So coordinates are stored in their own table,
-`map_entity_locations`, rather than as columns bolted onto the Phase 1
-dimensions: the workbook's contract stays exactly as Phase 1 defined it, one
-uniform table covers every entity type, and a coordinate keeps its own
-provenance (`UPLOAD` / `MANUAL` / `DERIVED` / `GEOCODED`).
-
-Nobody has to place all nine levels. **Place the territories — the level where a
-real address exists — and every level above is derived** as the centroid of its
-children. Verified on the dev database: six territories produced coordinates for
-all seven levels above them in one call.
-
-```
-6 territories placed
-  → unit 5, area 5, region 4, zone 2, sales_line 1, bu 1, company 1
-```
-
-A centroid is marked `DERIVED` and **never overwrites a coordinate someone
-placed by hand**, so re-deriving is safe and hand-placing a region's true head
-office simply wins. Centroids are averaged in 3-D and projected back, so they are
-correct across the antimeridian rather than landing at longitude 0.
-
-Coordinates arrive through the **existing Data Upload Center** as a master upload
-type (`Map Locations`), inheriting the whole validated pipeline — template,
-preview, row-level errors with suggested fixes, and history. This required
-generalising the master loader to composite business keys
-(`entity_type + entity_code`), which it now supports for every upload type.
-
-### One renderer: MapLibre GL JS over OpenFreeMap
-
-| Piece | What it is | What it costs |
-|---|---|---|
-| Engine | MapLibre GL JS | no SDK licence, no key |
-| Basemap | OpenFreeMap (`positron` / `dark`) | no token, no per-view billing |
-| Boundaries | local files under `frontend/public/geo/` | no request at all |
-
-This replaced a pair — Google Maps when a browser key was configured, and a
-hand-written Web Mercator canvas renderer when it was not. The pair existed
-because the good renderer needed a credential that not every deployment had, and
-it cost two marker payload formats, a `renderer` parameter on every endpoint that
-resolved a marker, and a projection implemented twice. One engine that needs no
-credential removes all of that: `app/map/adapters.py` now has a single adapter
-emitting the rendered SVG, its size and its anchor, which is exactly what
-MapLibre's `addImage` takes and equally what a legend's `<img>` takes.
-
-`GET /api/map/config` names the basemap style URLs rather than the frontend
-bundling them, so a deployment with no route to OpenFreeMap can point
-`MAP_BASEMAP_STYLE_URL` at its own tile server without a rebuild. **No key,
-token or credential appears in that response, and a test asserts that none
-creeps back.**
-
-Administrative geometry does not travel over the API. The published HDX COD-AB
-release is 118 MB across seven files, so `scripts/build_map_geojson.py` reduces
-it to 3.4 MB — Douglas–Peucker at a tolerance chosen per level, coordinates
-rounded to five places, and every property but the P-code, the name and the
-parent dropped — and writes it to `frontend/public/geo/`. It only ever discards
-precision: no feature is repaired, dropped for being awkward, or invented. The
-script also derives `bgd_mask.geojson`, a world rectangle with Bangladesh's outer
-rings punched out as holes, which is what dims the surrounding world under one
-fill layer.
-
-The metric behind an area still comes from the server: the map calls
-`/api/map/areas?geometry=false` and joins the answer to the local polygon on the
-P-code both sides already carry (`BD`, `BD10`, `BD1004`, `BD20030004`). Geometry
-local, numbers from the permission-filtered query.
-
-### Aggregation, scope and clustering
-
-Metrics come from `app.ai.queries` — the same aggregation the dashboard and the
-AI agent use — so a region's sales on the map equals a region's sales everywhere
-else by construction. Seven metrics: net sales, quantity, gross profit,
-collection, outstanding, material stock and target.
-
-Data scope goes through `PermissionFilter` exactly as every report does, and is
-applied to the **query**, not the result: a regional manager's request never
-reads another region's rows. Asking for a region outside the scope is `403`.
-
-Clustering is **zoom-aware**, computed server-side in projected space. A fixed
-cell is wrong at both ends — at country zoom it leaves overlapping pins, at
-street zoom it merges distinct places — so the cell is derived from the pixel
-size the user is actually looking at (`64px / (256 · 2^zoom)`). Verified: six
-territories cluster to 2 groups at zoom 5 and separate into 6 at zoom 14.
-
-Entities with data but **no coordinate are reported, not hidden**: they are
-counted in the total and listed in the side panel with the reason, so a sparse
-map explains itself.
-
-### One filter, every level
-
-`GET /api/map/data` answers for one level at a time, which is right for a
-drill-down and wrong for a picture. Selecting a territory should also show its
-sub-territories, its customers, its sales force and the ancestors that place it
-— so `GET /api/map/entities` returns all of them **in one call**, each entity
-carrying its own `type` and `parent_type` so the Marker Designer decides how it
-is drawn. The front end never walks the hierarchy itself.
-
-Two relationships have to be resolved, because the schema holds them in two
-different places:
-
-| | Where the relationship lives | How it is resolved |
-|---|---|---|
-| Company → sub-territory | Foreign keys between the Phase 1 dimensions | One outer join across all nine levels |
-| Customer, sales force, warehouse | Nowhere in their dimension — only on the facts | `DISTINCT` over `vw_sales_detail`, one query per type |
-
-The organisational chain is **fixed at nine levels**, so it needs one outer join
-rather than a recursive CTE, and filtering the resulting paths yields ancestors
-and descendants together. Outer joins matter: a territory with no sub-territory
-must still produce a row, or filtering to it would return nothing. The cost does
-not change with how deep the filter sits — verified by test, the query count is
-identical for no filter, a region, a territory and a sub-territory.
-
-`dim_customer` and `dim_warehouse` carry **no organisational column at all**, and
-only `dim_sales_force` has a `territory_code`. So a customer's place in the
-hierarchy is derived from where it has actually transacted, which is the real
-existing relationship rather than an invented one. A customer trading in two
-sub-territories is still one point: the query groups by the entity and attributes
-it to the deepest level the facts populate. Sales force additionally comes from
-the master, so someone assigned to a territory appears before their first sale.
-
-Three rules keep the behaviour predictable:
-
-* **Membership is not a metric.** The entity set is resolved over *all* history,
-  the metric on each entity honours the period and product filters. Filtering to
-  one SKU changes the numbers on the map; it must not empty a territory of its
-  customers.
-* **Filters intersect, they never widen.** `region=REG001&territory=TR002`
-  returns nothing when TR002 does not sit in REG001 — not REG001's whole tree.
-* **A layer is visibility, not scope.** Turning the customer layer off stops
-  customers being drawn and changes nothing about what is selected, so the counts
-  panel always reports the scope. Turning it back on needs no re-filtering.
-
-Data scope is enforced before any data is read: filters go through
-`PermissionFilter` first, so an out-of-scope code is `403` at every level rather
-than at the one the user happens to have scope on.
-
-`?diagnostics=true` returns what the filter resolved to — the selected level, the
-ancestors, the descendants and the business codes. It is a development aid and is
-**dropped outside development**, so resolved identifiers can never reach a normal
-user; the request still succeeds rather than failing.
-
-### New tables and endpoints
-
-`map_entity_locations`, migration `0008_map_locations` — additive only.
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/map/config` | Renderer, key, levels, metrics, coverage |
-| `GET /api/map/levels` | The drill path |
-| `GET /api/map/data` | Points, clusters, bounds, marker, unplaced — one level |
-| `GET /api/map/entities` | Every entity under a filter — all levels at once |
-| `GET/PUT /api/map/locations` | Coordinates |
-| `POST /api/map/locations/derive` | Recompute parent centroids |
-| `DELETE /api/map/locations/{type}/{code}` | Remove one coordinate |
-
-Two sections: **`map`** (viewing, default on) and **`map_settings`** (designs and
-coordinates, admin by default). Seeing the map is not permission to move things
-on it. Marker appearance is readable by any of `map`, `dashboard` or
-`map_settings`, because it carries no business figures.
-
-### Configuration
-
-```
-# No API key or token: MapLibre GL JS and OpenFreeMap neither authenticate nor
-# bill per view. Override the styles only to point at your own tile server.
-MAP_BASEMAP_STYLE_URL=https://tiles.openfreemap.org/styles/positron
-MAP_BASEMAP_STYLE_URL_DARK=https://tiles.openfreemap.org/styles/dark
-MAP_DEFAULT_LATITUDE=23.777
-MAP_DEFAULT_LONGITUDE=90.399
-MAP_DEFAULT_ZOOM=7
-MAP_MARKER_MAX_UPLOAD_KB=512
-
-# Administrative area layer
-MAP_AREA_DEFAULT_STOCK=1          # placeholder until stock is attributable
-MAP_AREA_SIMPLIFY_TOLERANCE=0.001 # degrees, ~100 m, applied at import
-MAP_AREA_MAX_FEATURES=1000        # cap on one areas response
-```
-
----
-
-## Phase 4 extension — Marker / Shape Designer
-
-> **Scope note.** This module was specified as an addition to an existing
-> "Multi-Level Geo Business Map", which did not exist when it was built. The map
-> was built afterwards (above) and consumes this designer's configuration
-> through `GET /api/map/marker-config`, exactly as the contract intended.
-
-### What it is
-
-Administrators design the markers the map draws — shape, colour, icon, label,
-badge — save them, version them, and assign them to entity types, without
-touching source code. A map front-end then reads one endpoint and draws what it
-is told.
-
-```
-Database → Marker Configuration API → adapter → map renderer → map
-```
-
-The adapter is the only module that knows any mapping SDK exists
-(`app/map/adapters.py`). The designer, the stored definitions and the renderer
-know nothing about one, so changing renderer is one new adapter.
-
-### Pages
-
-| Route | Purpose |
-|---|---|
-| `/admin/map-settings/markers` | Library: previews, status, assignment, legend |
-| `/admin/map-settings/marker-designer` | The designer |
-| `/admin/map-settings/marker-designer/:id` | Edit an existing design |
-
-The designer is three panes — identity, canvas, properties — with undo/redo,
-reset, a live preview and a sample map. **The preview is rendered by the
-server**, debounced, from the same code the map uses: there is no second drawing
-implementation in the browser, so what you see is what the map draws.
-
-### Design types
-
-* **Built-in shape** — twelve parameterised shapes (circle, square, rounded
-  square, triangle, diamond, pentagon, hexagon, star, pin, flag, arrow, cross),
-  each declaring its own anchor so a pin points at its location rather than
-  floating above it.
-* **Custom SVG / image** — uploaded SVG (preferred), PNG or WebP.
-* **Shape builder** — an SVG canvas with grid, snap, add/move/delete point,
-  polygon and star generators. Output is a **vector** point list, not a raster.
-
-A marker composes a shape, an icon, a label, a badge and a background plate.
-
-### Assignment priority
-
-```
-specific entity  (entity_type + entity_code)
-        ↓
-entity type      (entity_type, entity_code IS NULL)
-        ↓
-system default   (seeded, one per entity type)
-        ↓
-built-in circle  (so the map is never blank)
-```
-
-Only `ACTIVE` designs are served, which is what makes *deactivate* reversible:
-the assignment survives, the marker falls back.
-
-### Security
-
-SVG is a document a browser executes, so an uploaded one is untrusted input.
-`app/map/svg_safety.py` applies a **whitelist** — unknown elements and
-attributes are dropped rather than inspected for badness — and the stored markup
-is re-serialised from the parsed tree, so what is served is never the bytes that
-arrived. Verified against: `<script>`, event handlers, `javascript:` URLs,
-`<foreignObject>`, external `href`/`url()` references, and `DOCTYPE`/`ENTITY`
-(XXE and billion-laughs, rejected before the parser sees them).
-
-Marker definitions are Pydantic models with `extra="forbid"`: colours must match
-a hex pattern, sizes and opacities are bounded, every choice is an enum, polygons
-have a point limit and a coordinate range. Labels are a template over a fixed
-placeholder set (`{Name}` `{Code}` `{Type}` `{Level}`) — arbitrary text is
-rejected, and substituted *values* are XML-escaped, so warehouse data cannot
-carry markup into a page.
-
-### Performance
-
-Every marker is one SVG, registered once with MapLibre through `addImage` and
-drawn by a symbol layer on the GPU — no image per pin and no DOM node per pin,
-which is what makes two thousand customers affordable. One payload describes
-every pin of a type, and the whole layer loads in a single configuration request
-with no follow-up fetches. Resolution is cached with generation-based
-invalidation: any write bumps the generation, so there is no stale window and no
-per-key invalidation to get wrong.
-
-The payload still reports `vector_only` and the bare `path` when a shape has no
-icon, label, badge, plate or shadow. Nothing draws with them today — MapLibre
-takes an image either way — but they are what the designer uses to tell an author
-that a shape has stayed a pure vector.
-
-### RBAC
-
-A new section, **`map_settings`**, off by default for every role and on by
-default for administrators. It is a permission in its own right, not a synonym
-for administrator: it can be granted to a non-administrator who owns how the map
-looks, and denied to an administrator. Authoring endpoints require it; the
-read-only `/marker-config` and `/legend` require only what seeing the map
-requires, so every viewer gets markers without anyone becoming a map admin.
-
-### New tables
-
-`map_marker_designs`, `map_marker_design_versions`, `map_marker_assignments`,
-`map_marker_assets`. Migration `0007_map_markers` is additive only.
-
-Editing an **active** design snapshots the previous definition and bumps the
-version; editing a draft does not, so version history records changes that
-mattered rather than drafting noise.
-
-### Endpoints
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/map/designer-options` | Entity types, shapes, icons, limits — one call |
-| `GET/POST /api/map/marker-designs` | Library and create |
-| `GET/PUT/DELETE /api/map/marker-designs/{id}` | Read, update, delete |
-| `POST /api/map/marker-designs/{id}/duplicate` | Copy as a draft |
-| `POST /api/map/marker-designs/{id}/assign` | Assign to type or entity |
-| `POST /api/map/marker-designs/{id}/activate` / `/deactivate` | Lifecycle |
-| `GET /api/map/marker-designs/{id}/versions` | Version history |
-| `POST /api/map/marker-designs/preview` | Render without saving |
-| `POST /api/map/marker-assets` | Upload artwork (sanitised) |
-| `POST /api/map/assignments/{entity_type}/reset` | Reset to system default |
-| `GET/POST /api/map/marker-designs-export` / `-import` | JSON round trip |
-| `GET /api/map/marker-config[?renderer=]` | **What the map reads** |
-| `GET /api/map/legend` | Legend, from the same resolver |
-
-Audited: created, updated, duplicated, assigned, activated, deactivated,
-deleted, asset uploaded, reset, imported — with actor, old and new
-configuration, timestamp and IP.
-
-### Not built
-
-Conditional styling (outstanding > 10 lakh → red marker) is **architected, not
-implemented**, as the specification asked: `map_marker_assignments.condition`
-and the badge's semantic `kind` exist so rules become a resolver change rather
-than a migration. Nothing evaluates them yet.
 
 ---
 
@@ -1811,11 +1505,10 @@ mapped, unmapped with reasons, conflicts, and the duplicate/invalid/missing
 code checks. It writes nothing, so it can be refreshed while deciding what to
 do about what it says.
 
-### The map: the master field becomes authoritative
+### The master field becomes authoritative
 
-Until now the map derived customer membership from the facts, which works only
-for customers that have traded and is ambiguous for one that has traded in two
-places. `sub_territory_code` settles both, and does so in **both directions**:
+Membership used to be derived from the facts, which works only for customers
+that have traded and is ambiguous for one that has traded in two places. `sub_territory_code` settles both, and does so in **both directions**:
 
 * a customer assigned to a sub-territory appears there even with no
   transactions — invisible to the old rule, and the point of the field;
@@ -1825,8 +1518,11 @@ places. `sub_territory_code` settles both, and does so in **both directions**:
 
 The fact-derived rule remains the fallback for customers the field has not been
 set on, so nothing that worked before stops working. Selecting territory `T001`
-still returns `T001 → ST001, ST002 → C001, C002, C003`; selecting `ST001`
-returns `C001, C002` and not `C003`.
+still resolves `T001 → ST001, ST002 → C001, C002, C003`; selecting `ST001`
+resolves `C001, C002` and not `C003`. This is `org.hierarchy`'s
+`resolve_business_entities`, which Data Management scopes on and
+`test_master_data_mapping.py` pins directly — the business map used to be the
+surface that showed it, and its removal changed none of the rule.
 
 ### Migration
 
@@ -1837,150 +1533,27 @@ would give nobody a chance to check them first.
 
 ---
 
-## Phase 4 extension — Administrative Area layer (Upazila)
+## Phase 4 extension — Administrative Area layer (Upazila) (partly removed)
 
-The map already showed *the company*: zones, regions, territories, each a point.
-This adds *the country*: Bangladesh's administrative areas, drawn as the shapes
-they actually are.
+The **four administrative dimensions survive**: `dim_country`, `dim_division`,
+`dim_district` and `dim_upazila` are master data, each with its own upload
+template in `upload.registry`, its own Bangla name column and its own parent
+link, and the Upload Centre and Data Management offer them independently of
+anything that draws them. 580 rows across the three lower levels are loaded.
 
-### Two hierarchies, related spatially
+Their **geometry did not survive** revision `0033_remove_map`:
+`map_area_boundaries`, `map_area_styles` and `map_admin_points` existed only to
+be rendered, so they went with the renderer, along with
+`GET /api/map/areas`, `scripts/import_admin_areas.py`,
+`scripts/import_admin_points.py`, `scripts/build_map_geojson.py` and the
+`frontend/public/geo/` files. 580 boundary rings and 6,284 administrative
+points were dropped; both are re-importable from the published GADM/HDX
+release, which is where they came from.
 
-`division → district → upazila` is a **second, independent hierarchy**. It has no
-foreign key into the organisational chain and the chain has none into it —
-because neither is true. A district exists whether or not the company sells
-there, and a territory is a sales construct that respects no administrative
-boundary. Modelling one as a child of the other would be inventing a
-relationship.
-
-What *is* true is geographic, and it is computed rather than stored: a territory
-falls inside whichever upazila polygon contains its coordinate. That is what the
-territory filter uses — a point-in-polygon test over data the map already holds,
-not a mapping table anyone has to maintain. A territory with no coordinate
-matches nothing, and is reported saying so.
-
-### Polygons, not points
-
-Boundaries live in `map_area_boundaries` as GeoJSON, for the same reason
-coordinates live in their own table: the geometry has its own provenance, its
-own lifecycle and its own size, and a polygon of several hundred vertices has no
-business being loaded to read a district's name.
-
-Stored beside each geometry are the things that let it stay unread — a bounding
-box (which answers "is this on screen?" in four float comparisons), an
-area-weighted centroid, and the vertex counts before and after simplification so
-the reduction is visible rather than silent.
-
-That machinery still backs `GET /api/map/areas` and `/api/map/areas/{level}/{code}`
-for any client that wants geometry from the server. The **browser** no longer
-does: since the MapLibre rebuild it reads polygons from `frontend/public/geo/`
-and calls this layer with `geometry=false` for the figure alone, joining the two
-on the P-code. A boundary that changes only when somebody imports a new release
-should not be re-sent on every filter change.
-
-### Stock, and what "default 1" honestly means
-
-Stock used to be asked of the warehouse first: stock was held at warehouses,
-warehouses are placed on the map, and a placed warehouse falls inside one
-upazila. Under the material stock model that chain no longer exists. Stock is
-held by **plant, storage location and material** — none of the three material
-masters names a warehouse, an area or a coordinate, and neither does the stock
-extract. `stock_by_area` therefore attributes nothing, and says so in its
-docstring rather than reaching for a substitute.
-
-So every area now reports `Settings.map_area_default_stock`, marks it `default`,
-and the popup says in words that the figure is a placeholder. The number is
-configuration (`MAP_AREA_DEFAULT_STOCK`, default `1`), not a constant in the
-resolver, and a test asserts that changing the setting changes the answer. The
-`measured` path is kept intact: the day a plant carries coordinates or a stated
-area, the layer switches to real figures with no change to the map at all.
-
-The distinction matters: a *measured* zero and an *unknown* are different
-statements, and rendering the second as the first would be a quiet lie.
-
-### Colour is configuration
-
-`map_area_styles` holds fill colour, fill opacity, stroke colour, stroke width
-and opacity, hover and selected variants, and a z-index. Seeded in migration
-`0010` with the documented default — blue `#2563EB`, 0.20 fill, 1.5px border —
-which is the single place that blue is written down. The legend swatch reads the
-same row, so changing the style changes the legend with it.
-
-`0017` re-weighted those rows once the levels could be drawn **together**. One
-identical style was right while exactly one level was ever on screen and is
-unreadable when four overlap, so the levels are now distinguished by stroke
-weight rather than by colour: country 3px, division 2px, district 1.25px,
-upazila 0.75px, all still `#2563EB` — the upazila stroke keeping that blue is a
-documented requirement — and only the deepest level carries a fill (0.18), so
-stacked layers tint the map once rather than four times. A row an operator has
-customised is left exactly as they set it: `is_system_default` gates every one
-of those updates.
-
-Hex only. `"blue"` renders differently across the three places the value is used
-— a MapLibre paint property, the SVG renderer and the legend — and cannot be interpolated.
-
-`rules` is declared and deliberately **not evaluated**. The specification asked
-for the architecture to be ready for stock-based colouring without those rules
-being implemented, so the column exists and nothing reads it — the same posture
-`map_marker_assignments.condition` already takes for markers.
-
-### Performance
-
-Boundaries are large and change almost never, which is exactly the shape an ETag
-is for. `GET /api/map/areas` returns one built from a generation token; a browser
-that already holds the layer gets `304` until an import moves it. The response is
-`private` because it depends on the caller's data scope, so no shared cache may
-hold it.
-
-Beyond that: the viewport predicate runs on the stored bounding box before any
-geometry is fetched; `geometry=false` returns properties alone; import-time
-Douglas–Peucker simplification (`MAP_AREA_SIMPLIFY_TOLERANCE`, ~100 m) with a
-further per-request tolerance available; coordinates rounded to five decimal
-places, which typically halves the payload; and a cap of
-`MAP_AREA_MAX_FEATURES`. On the browser's path the same two reductions are
-applied ahead of time by `scripts/build_map_geojson.py`, and MapLibre culls
-off-screen geometry itself.
-
-### Where the boundary data comes from
-
-**No boundary geometry ships with this project.** Polygon outlines cannot be
-invented — a fabricated coastline renders as convincingly as a real one and is
-wrong in a way nobody notices — so `scripts/import_admin_areas.py` loads a
-published GeoJSON instead:
-
-```bash
-python scripts/import_admin_areas.py bgd_admbnda_adm3.geojson --dry-run
-python scripts/import_admin_areas.py bgd_admbnda_adm3.geojson
-```
-
-Free sources: **HDX/OCHA** (`data.humdata.org/dataset/cod-ab-bgd`, with official
-`ADM3_PCODE` codes), **GADM** level 3, or any local authority export. Property
-names are auto-detected across the usual conventions (`ADM3_EN`, `NAME_3`,
-`upazila`, …), so a file from any of them loads unreshaped; `--property-map`
-handles anything else. Re-running updates rather than duplicates, and a
-re-imported retired area comes back.
-
-The three dimensions are also ordinary master data: they appear in the Data
-Upload Center and in Data Management alongside every other dimension, with the
-same validation, scope and audit.
-
-### New tables and endpoints
-
-Migration `0010_admin_areas`, additive only — `dim_division`, `dim_district`,
-`dim_upazila`, `map_area_boundaries`, `map_area_styles`.
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/map/areas` | GeoJSON FeatureCollection, filtered and ETagged |
-| `GET /api/map/areas/{level}/{code}` | One area's detail, for the click popup |
-| `GET /api/map/area-levels` | The administrative levels |
-| `GET /api/map/area-styles` | Configured appearance and boundary coverage |
-| `PUT /api/map/area-styles/{level}` | Change it (Map Settings only) |
-
-`GET /api/map/config` gains an `administrative_areas` block and `GET
-/api/map/legend` gains `area_entries`, so one round trip still configures the
-whole map.
-
----
+What the removed machinery did — point-in-polygon assignment of a placed entity
+to the area containing it, Douglas–Peucker simplification at import, an ETagged
+GeoJSON response, and a `map_area_styles` row per layer — is described in git
+rather than restated here.
 
 ## Phase 4 extension — Master & Transaction Data Management
 
@@ -2000,7 +1573,7 @@ that reported success while the record stayed invisible would be a trap.
 
 **A transaction is never deleted.** It is *voided* — and the reporting views
 were rewritten to filter on `is_void`, which is what makes that mean something:
-one flag removes the row from the dashboard, the reports, the exports, the map
+one flag removes the row from the dashboard, the reports, the exports
 and the AI agent simultaneously, because all of them read through those views.
 The row itself is kept with its figures, its provenance and the reason, so the
 ETL still recognises its business key and re-importing updates it rather than
@@ -2016,8 +1589,8 @@ export and its validation with nothing else to change. Eighteen entities today:
 the nine organisational levels, products, customers, sales force, warehouses,
 and the five transaction types.
 
-Map coordinates are deliberately *not* in it. Map Settings already owns them,
-including centroid derivation and the marker cache, and two screens for one
+Map coordinates are no longer held at all: the business map and its
+`map_entity_locations` table were removed in `0033_remove_map`, and nothing
 thing is one too many.
 
 ### Granular permissions
@@ -2052,10 +1625,10 @@ own reporting section, so a user denied Stock is denied
 The same rule as everywhere: scope constrains the *query*, never the result.
 
 * An **organisational dimension** *is* a level, so its scope is resolved through
-  the map's nine-way hierarchy join — the same resolver, so the table, the map
+  the nine-way hierarchy join in `org.hierarchy` — the same resolver, so the table
   and the report cannot disagree about what a manager may see.
 * **Customers, sales force and warehouses** have no organisational column, so
-  their scope is derived from the facts, again by reusing the map's resolver.
+  their scope is derived from the facts, again by reusing that resolver.
 * **Products** belong to no region. The workbook exposes no link between a SKU
   and any level, so there is nothing to scope by and inventing one would hide
   products rather than protect anything.
@@ -2076,7 +1649,8 @@ restated. Three checks are added because they only arise when editing:
 * an **organisational code that is not this dimension's parent** must still
   exist — `dim_sales_force.territory_code` is the live case, documented as
   "must exist in dim_territory" but deliberately not a foreign key;
-* **latitude and longitude** are bounded by the map module's own constants.
+* **latitude and longitude** are no longer accepted anywhere: the only table
+  that held a coordinate went with the map.
 
 Every problem is reported at once, against the field it belongs to, in the same
 shape the upload preview renders.
@@ -2130,16 +1704,6 @@ because a truncated file that does not say so is worse than a refusal.
 
 Bulk operations are capped at 200 and report each record's outcome
 independently: partial success is the honest result of a partial request.
-
-### Map integration, both ways
-
-**Table → map.** Any entity that can carry a coordinate offers *View on map* per
-row and *Show selected on map* for a selection, deep-linking to
-`/map?focus=territory:TR001,TR004`. The map draws only those, and says so with a
-banner that clears back to the full view.
-
-**Map → table.** A selected marker offers *View details*, which opens that
-record's page. Map ↔ table ↔ detail is a loop, not three dead ends.
 
 ### New tables and endpoints
 
@@ -2422,7 +1986,7 @@ code is *not* is a SKU code: it identifies the goods inside the plant, while a
 SKU code identifies them in the sales master, and no source states how the two
 correspond. So no stock figure appears beside a brand, SKU or customer — the
 Product Analysis page has no stock or coverage columns, the root-cause tool has
-no stock contributor, and the map's `stock_by_area` attributes nothing. Each of
+no stock contributor. Each of
 those could be filled with a plausible number; each would be invented.
 
 `0019` created the one place a mapping may live: `dim_product.material_code`,

@@ -9,9 +9,9 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Ban, MapPin, Pencil, RotateCcw, Trash2 } from 'lucide-react';
+import { ArrowLeft, Ban, Pencil, RotateCcw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PageHeader, Section } from '../components/PageHeader';
 import { RecordForm } from '../components/RecordForm';
@@ -24,7 +24,6 @@ import {
   transactionRecordService,
 } from '../services';
 import { formatFieldValue, formatDateTime } from '../utils/format';
-import { mapLink } from './MasterDataPage';
 import type { ManagedEntity, ManagedRow } from '../types/api';
 
 export default function RecordDetailPage({ kind }: { kind: 'master' | 'transaction' }) {
@@ -32,7 +31,6 @@ export default function RecordDetailPage({ kind }: { kind: 'master' | 'transacti
   const entityKey = (kind === 'master' ? params.entity : params.type) ?? '';
   const recordId = params.id ?? '';
   const t = useT();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [editing, setEditing] = useState(false);
@@ -104,16 +102,6 @@ export default function RecordDetailPage({ kind }: { kind: 'master' | 'transacti
               <ArrowLeft size={14} />
               {t('record.backToTable')}
             </Link>
-            {entity?.supports_geo && detail.data?.location?.latitude != null && (
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => navigate(mapLink(entity, [recordId]))}
-              >
-                <MapPin size={14} />
-                {t('action.viewOnMap')}
-              </button>
-            )}
             {permissions.EDIT && !inactive && (
               <button type="button" className="btn-secondary" onClick={() => setEditing(true)}>
                 <Pencil size={14} />

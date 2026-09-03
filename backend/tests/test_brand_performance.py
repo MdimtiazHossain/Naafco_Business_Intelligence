@@ -709,27 +709,6 @@ def test_the_sales_measure_set_reports_quantity_and_net_sales():
     assert "net_sales" in q.SALES_MEASURES.sums
 
 
-def test_the_map_offers_no_retired_measure_as_a_metric():
-    """The map is part of the reporting surface, so the same rule binds it.
-
-    It is also the one surface where a retired measure fails quietly rather
-    than loudly: ``aggregate_by`` selects only the columns its measure set
-    names, so a metric pointing at one outside that set reads back as absent
-    and renders as ``0`` on every area, while the ordering underneath still
-    reflects the real figure. A metric that cannot be computed is removed, not
-    drawn as nothing.
-    """
-    from app.map.data import METRIC_BY_KEY, METRICS
-
-    for metric in METRICS:
-        assert metric.key not in RETIRED_MEASURES
-        assert metric.field not in RETIRED_MEASURES
-        # Every metric must name a field its own measure set actually
-        # aggregates — the check that would have caught this one.
-        assert metric.field in metric.measures.sums, metric.key
-    assert "net_sales" in METRIC_BY_KEY
-
-
 def test_the_transaction_table_does_not_expose_gross_columns():
     from app.reporting.columns import TRANSACTION_COLUMNS
 

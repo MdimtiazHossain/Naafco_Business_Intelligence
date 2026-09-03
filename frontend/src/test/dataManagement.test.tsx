@@ -76,7 +76,6 @@ const CUSTOMER: ManagedEntity = {
   status_values: ['Active', 'Inactive'],
   soft_delete: true,
   voidable: false,
-  supports_geo: true,
   scope_level: null,
   parent_table: null,
   parent_column: null,
@@ -112,7 +111,6 @@ const SALES: ManagedEntity = {
   status_values: [],
   soft_delete: false,
   voidable: true,
-  supports_geo: false,
   data_type: 'sales',
   table: null,
 };
@@ -254,8 +252,6 @@ describe('MasterDataPage', () => {
     expect(actions.getByText('View')).toBeInTheDocument();
     expect(actions.getByText('Edit')).toBeInTheDocument();
     expect(actions.getByText('Retire')).toBeInTheDocument();
-    // The geo-capable entity also offers the map hop.
-    expect(actions.getByText('View on map')).toBeInTheDocument();
   });
 
   it('hides the actions the backend would refuse', async () => {

@@ -75,6 +75,39 @@ def auth(token: str) -> dict[str, str]:
 # ==========================================================================
 
 
+
+def business_entities(engine, **filters) -> list[dict]:
+    """Customers and sales force inside a scope, as flat dicts.
+
+    These assertions used to be made through the business map's entity
+    endpoint, because the map was the only screen that drew a customer under
+    the sub-territory the master assigned it. The map is gone; the resolution
+    it displayed is not — Data Management scopes on exactly this function — so
+    the tests now call it where it lives rather than through a deleted route.
+    The shape mirrors what the endpoint returned, so the assertions below are
+    unchanged in meaning.
+    """
+    from app.org.hierarchy import resolve_business_entities, resolve_org_scope
+
+    # The resolver keys on the level name, not the column: ``sub_territory``,
+    # not ``sub_territory_code``. The endpoint these tests used to call did the
+    # same stripping on its own query parameters.
+    levels = {k.removesuffix("_code"): v for k, v in filters.items()}
+    with Session(engine) as session:
+        scope = resolve_org_scope(session, levels)
+        found = resolve_business_entities(session, scope)
+    # Organisational levels first, then the business entities under them — the
+    # same two halves the endpoint combined, so a test can still ask whether a
+    # territory, its sub-territory and its customers all resolved from one
+    # filter.
+    rows = [{"type": level, "id": code, "name": code,
+             "parent_type": None, "parent_id": None}
+            for level, codes in scope.codes.items() for code in codes]
+    rows += [{"type": e.type, "id": e.code, "name": e.name,
+              "parent_type": e.parent_type, "parent_id": e.parent_code}
+             for entities in found.values() for e in entities]
+    return rows
+
 def test_customer_has_sub_territory_code_immediately_before_customer_code():
     """The specification is explicit: before, not after, and not at the end."""
     from app.upload.registry import get_upload_type
@@ -605,11 +638,9 @@ def test_the_master_field_places_a_customer_with_no_transactions(client,
                                 sub_territory_code="STR001"))
         session.commit()
 
-    token = login(client)
-    body = client.get(f"/api/map/entities?{WINDOW}&territory_code=TR001",
-                      headers=auth(token)).json()
+    entities = business_entities(agent_engine, territory_code="TR001")
 
-    customer = next(e for e in body["entities"]
+    customer = next(e for e in entities
                     if e["type"] == "customer" and e["id"] == "C-QUIET")
     assert customer["parent_type"] == "sub_territory"
     assert customer["parent_id"] == "STR001"
@@ -631,10 +662,8 @@ def test_a_sub_territory_filter_shows_only_its_own_customers(client,
                                 sub_territory_code="STR002"))
         session.commit()
 
-    token = login(client)
-    body = client.get(f"/api/map/entities?{WINDOW}&sub_territory_code=STR001",
-                      headers=auth(token)).json()
-    customers = {e["id"] for e in body["entities"] if e["type"] == "customer"}
+    entities = business_entities(agent_engine, sub_territory_code="STR001")
+    customers = {e["id"] for e in entities if e["type"] == "customer"}
 
     assert {"C001", "C002"} <= customers
     assert "C003" not in customers
@@ -655,24 +684,19 @@ def test_the_master_assignment_overrides_where_the_facts_placed_a_customer(
                                 sub_territory_code="STR002"))
         session.commit()
 
-    token = login(client)
-    first = client.get(f"/api/map/entities?{WINDOW}&sub_territory_code=STR001",
-                       headers=auth(token)).json()
-    assert "CUST-001" not in {e["id"] for e in first["entities"]
+    first = business_entities(agent_engine, sub_territory_code="STR001")
+    assert "CUST-001" not in {e["id"] for e in first
                               if e["type"] == "customer"}
 
-    second = client.get(f"/api/map/entities?{WINDOW}&sub_territory_code=STR002",
-                        headers=auth(token)).json()
-    assert "CUST-001" in {e["id"] for e in second["entities"]
+    second = business_entities(agent_engine, sub_territory_code="STR002")
+    assert "CUST-001" in {e["id"] for e in second
                           if e["type"] == "customer"}
 
 
 def test_an_unassigned_customer_still_falls_back_to_the_facts(traded, client):
     """Nothing that worked before the field existed stops working."""
-    token = login(client)
-    body = client.get(f"/api/map/entities?{WINDOW}&territory_code=TR001",
-                      headers=auth(token)).json()
-    customers = {e["id"] for e in body["entities"] if e["type"] == "customer"}
+    entities = business_entities(traded, territory_code="TR001")
+    customers = {e["id"] for e in entities if e["type"] == "customer"}
     assert "CUST-001" in customers
 
 
@@ -683,11 +707,9 @@ def test_the_territory_to_customer_chain_still_resolves(client, agent_engine):
                                 sub_territory_code="STR001"))
         session.commit()
 
-    token = login(client)
-    body = client.get(f"/api/map/entities?{WINDOW}&territory_code=TR001",
-                      headers=auth(token)).json()
+    entities = business_entities(agent_engine, territory_code="TR001")
     by_type: dict[str, set[str]] = {}
-    for entity in body["entities"]:
+    for entity in entities:
         by_type.setdefault(entity["type"], set()).add(entity["id"])
 
     assert "TR001" in by_type["territory"]
@@ -718,12 +740,6 @@ def test_the_transaction_tables_still_work(client):
     response = client.get(f"/api/pages/transactions/sales?{WINDOW}",
                           headers=auth(token))
     assert response.status_code == 200
-
-
-def test_the_map_still_draws(client):
-    token = login(client)
-    assert client.get(f"/api/map/data?{WINDOW}&level=region",
-                      headers=auth(token)).status_code == 200
 
 
 def test_the_material_export_carries_the_master_it_describes(client):

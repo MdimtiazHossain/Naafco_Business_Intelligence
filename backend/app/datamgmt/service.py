@@ -327,7 +327,7 @@ def load_transaction(session: Session, user: UserContext,
 def _transaction_in_scope(session: Session, user: UserContext,
                           record: Any) -> bool:
     from ..ai.permission_filter import PermissionFilter
-    from ..map.hierarchy import ORG_CHAIN
+    from ..org.hierarchy import ORG_CHAIN
     from ..upload.registry import MASTER_MODEL_BY_TABLE  # noqa: F401
 
     if user.is_unrestricted:

@@ -14,7 +14,6 @@ from pathlib import Path
 #: Repository root: <repo>/backend/app/config.py -> <repo>
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-
 def _load_dotenv(path: Path) -> None:
     """Minimal .env loader so scripts work without an extra dependency."""
     if not path.exists():
@@ -27,9 +26,7 @@ def _load_dotenv(path: Path) -> None:
         key, value = key.strip(), value.strip().strip('"').strip("'")
         os.environ.setdefault(key, value)
 
-
 _load_dotenv(PROJECT_ROOT / ".env")
-
 
 @dataclass(frozen=True)
 class Settings:
@@ -169,48 +166,8 @@ class Settings:
     )
 
     # --- Administrative area layer ------------------------------------------
-    #: What an administrative area reports for stock while no transactional
-    #: stock is attributable to it.
-    #:
-    #: A configured placeholder, not a business rule. The resolver asks the
-    #: warehouse first and only falls back to this, so the day stock can be
-    #: attributed to an upazila the layer switches to real figures with no code
-    #: change — and every response says which of the two it used.
-    map_area_default_stock: float = float(
-        os.getenv("MAP_AREA_DEFAULT_STOCK", "1")
-    )
-    #: Douglas–Peucker tolerance in degrees applied when boundaries are imported.
-    #: ~0.001° is roughly 100 m: far finer than a country-level view resolves,
-    #: and typically an order of magnitude fewer vertices than the source file.
-    map_area_simplify_tolerance: float = float(
-        os.getenv("MAP_AREA_SIMPLIFY_TOLERANCE", "0.001")
-    )
-    #: Most areas returned in one request. A guard against a viewport-free
-    #: query for every upazila in the country arriving as one payload.
-    map_area_max_features: int = int(os.getenv("MAP_AREA_MAX_FEATURES", "1000"))
 
     # --- Basemap ------------------------------------------------------------
-    #: MapLibre style URLs for the two themes.
-    #:
-    #: OpenFreeMap by default, which serves the OpenStreetMap basemap with no
-    #: API key, no token and no per-view billing — the reason the map moved off
-    #: Google Maps. Both defaults are deliberately muted designs: a business map
-    #: is read for what is drawn *on* it, and a vivid basemap competes with the
-    #: boundaries and markers it exists to support.
-    #:
-    #: Overridable so a deployment with no route to the public internet can
-    #: point at its own tile server without a frontend rebuild. Whatever is
-    #: configured must be a MapLibre style document, not a raster tile URL.
-    map_basemap_style_url: str = os.getenv(
-        "MAP_BASEMAP_STYLE_URL", "https://tiles.openfreemap.org/styles/positron"
-    )
-    map_basemap_style_url_dark: str = os.getenv(
-        "MAP_BASEMAP_STYLE_URL_DARK", "https://tiles.openfreemap.org/styles/dark"
-    )
-    #: Where the map opens before anything has been placed. Dhaka by default.
-    map_default_latitude: float = float(os.getenv("MAP_DEFAULT_LATITUDE", "23.777"))
-    map_default_longitude: float = float(os.getenv("MAP_DEFAULT_LONGITUDE", "90.399"))
-    map_default_zoom: int = int(os.getenv("MAP_DEFAULT_ZOOM", "7"))
 
     # --- Presentation -------------------------------------------------------
     company_name: str = os.getenv("COMPANY_NAME", "Example Industries Ltd.")
@@ -248,10 +205,8 @@ class Settings:
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
-
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-
 
 settings = get_settings()
