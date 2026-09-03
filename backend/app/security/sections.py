@@ -292,7 +292,13 @@ SECTIONS: tuple[Section, ...] = (
         ),
         api_prefixes=("/api/target-management",),
         actions=(Action.VIEW, Action.CREATE, Action.EDIT, Action.EXPORT,
-                 Action.UPLOAD, Action.APPROVE, Action.REVISE),
+                 Action.UPLOAD, Action.APPROVE, Action.REVISE,
+                 # Only ever a plan that was created and abandoned — a
+                 # form filled in by mistake rather than a record. A
+                 # plan that has been allocated, submitted or locked is
+                 # refused by ``plans.delete_plan``, and DELETE defaults
+                 # to administrators alone.
+                 Action.DELETE),
         # Off by default for everyone, unlike the Target section beside it.
         # Reading achievement against a target is reporting; setting the target
         # the whole sales force is measured on is not, and a role that should

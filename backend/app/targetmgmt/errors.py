@@ -143,6 +143,31 @@ class ReasonRequired(TargetManagementError):
     )
 
 
+class PlanNotDeletable(TargetManagementError):
+    """A plan that has become something, asked to be removed.
+
+    Deletion here is for a plan that was created and abandoned — a form filled
+    in by mistake, not a record. The moment a plan has been allocated, put to an
+    approver or locked, it has a history somebody may need to read, and the
+    answer is to supersede it with a new version rather than to erase it.
+
+    The reasons are listed rather than merged, because they are fixed in
+    different places: an allocation is undone by re-running or by starting a new
+    version, an approval by the person who gave it, a lock not at all.
+    """
+
+    code = "TARGET_PLAN_NOT_DELETABLE"
+
+    def __init__(self, plan_code: str, reasons: list[str]) -> None:
+        super().__init__(
+            f"{plan_code} is not deletable: {'; '.join(reasons)}",
+            user_message=(
+                f"{plan_code} cannot be deleted. " + " ".join(reasons)
+            ),
+            details={"plan_code": plan_code, "reasons": reasons},
+        )
+
+
 __all__ = [
     "TargetManagementError",
     "PlanScopeConflict",
@@ -153,4 +178,5 @@ __all__ = [
     "VersionFrozen",
     "InvalidTransition",
     "ReasonRequired",
+    "PlanNotDeletable",
 ]

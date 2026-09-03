@@ -2397,6 +2397,18 @@ export interface TargetPlanDeleted {
   country_lines_removed: number;
 }
 
+/** Whether a plan may be deleted, and every reason it may not. */
+export interface TargetPlanDeletable {
+  deletable: boolean;
+  blockers: string[];
+}
+
+export interface TargetPlanDeleted {
+  plan_code: string;
+  versions_removed: number;
+  country_lines_removed: number;
+}
+
 export interface TargetAvailableMaterial {
   material_code: string;
   material_description: string | null;

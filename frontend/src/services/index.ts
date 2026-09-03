@@ -109,6 +109,8 @@ import type {
   TargetPlan,
   TargetPlanDeletable,
   TargetPlanDeleted,
+  TargetPlanDeletable,
+  TargetPlanDeleted,
   TargetPlanStatus,
   TargetVersion,
   TransactionsResponse,
@@ -588,6 +590,24 @@ export const targetManagementService = {
     request<TargetUploadResult>(
       `/api/target-management/versions/${versionId}/country-target/apply`,
       { method: 'POST', body: { upload_token: uploadToken, sheet_name: sheetName ?? null } },
+    ),
+
+  planDeletable: (planId: number) =>
+    request<TargetPlanDeletable>(
+      `/api/target-management/plans/${planId}/deletable`,
+    ),
+
+  /**
+   * Remove a draft plan that was never allocated, approved or locked.
+   *
+   * A typed country target does not block it — figures entered and never
+   * allocated are a draft target, not a record. Everything the plan
+   * actually became is refused by the backend, by name.
+   */
+  deletePlan: (planId: number) =>
+    request<TargetPlanDeleted>(
+      `/api/target-management/plans/${planId}`,
+      { method: 'DELETE' },
     ),
 
   planDeletable: (planId: number) =>

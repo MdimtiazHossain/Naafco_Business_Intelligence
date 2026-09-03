@@ -47,6 +47,9 @@ from ..database.models import (
     DimSalesLine,
 )
 from ..database.models_target import (
+    TargetAudit,
+    TargetAllocation,
+    TargetApproval,
     TargetCountryLine,
     TargetPlan,
     TargetStatus,
@@ -55,6 +58,7 @@ from ..database.models_target import (
 from ..etl.calendar import FinancialYearConfig
 from . import audit as target_audit
 from .errors import (
+    PlanNotDeletable,
     InvalidTransition,
     PlanNotFound,
     PlanScopeConflict,
@@ -181,18 +185,32 @@ def validate_scope(session: Session, scope: PlanScope) -> None:
 def next_plan_code(session: Session, financial_year: str) -> str:
     """``TP-2026-001`` — sequential within the financial year that starts it.
 
-    Derived from the count of plans already in that year rather than from a
-    sequence, so the number a planner sees follows the plans they can see. It is
-    a label, not a key: ``uq_target_plan_scope`` is what actually prevents a
-    duplicate, so a collision here can only be a race and is resolved by trying
-    the next number rather than by failing the creation.
+    Derived from the plans already in that year rather than from a sequence, so
+    the number a planner sees follows the plans they can see. It is a label, not
+    a key: ``uq_target_plan_scope`` is what actually prevents a duplicate, so a
+    collision here can only be a race and is resolved by trying the next number
+    rather than by failing the creation.
+
+    **A code is never reused, including one a deleted plan had.** The live table
+    is not the whole record: deleting a draft plan frees its number, and handing
+    that number to the next plan would leave the audit trail — which survives the
+    delete and names the plan by code — pointing at two different plans with one
+    label. So the codes an audit entry has already spoken for are counted as
+    taken, which is what makes ``plan_code`` mean one thing forever.
     """
     digits = "".join(ch for ch in financial_year if ch.isdigit())[:4] or "0000"
+    prefix = f"TP-{digits}-"
     used = {
         code for (code,) in session.execute(
             select(TargetPlan.plan_code).where(
-                TargetPlan.plan_code.like(f"TP-{digits}-%"))
+                TargetPlan.plan_code.like(f"{prefix}%"))
         )
+    }
+    used |= {
+        label for (label,) in session.execute(
+            select(TargetAudit.node_label).where(
+                TargetAudit.node_label.like(f"{prefix}%"))
+        ) if label
     }
     for n in range(1, 1000):
         candidate = f"TP-{digits}-{n:03d}"
@@ -479,6 +497,131 @@ def assert_editable(version: TargetVersion) -> None:
 # ---------------------------------------------------------------------------
 
 
+def deletion_blockers(session: Session, plan: TargetPlan) -> list[str]:
+    """Why this plan may not be deleted, one sentence per reason.
+
+    Read-only, so a screen can decide whether to offer the control at all
+    rather than offering one that refuses — the rule the rest of this package
+    follows.
+
+    **A typed country target is not a blocker, deliberately.** Figures somebody
+    entered and never allocated are a *draft* target: they have gone nowhere,
+    nothing downstream reads them, and treating them as a record would mean a
+    plan became undeletable the moment anybody typed into it. The distinction
+    this package keeps is between a draft target and an allocated or approved
+    one, and only the second is history.
+    """
+    reasons: list[str] = []
+
+    versions = session.execute(
+        select(TargetVersion).where(TargetVersion.plan_id == plan.plan_id)
+    ).scalars().all()
+
+    if plan.status != TargetStatus.DRAFT:
+        reasons.append(
+            f"Its status is {plan.status.replace('_', ' ').lower()}; only a "
+            f"draft plan can be deleted.")
+
+    moved = sorted({version.status for version in versions
+                    if version.status != TargetStatus.DRAFT})
+    if moved:
+        reasons.append(
+            f"A version of it is {', '.join(s.replace('_', ' ').lower() for s in moved)}. "
+            f"Supersede it with a new version instead.")
+
+    if any(version.locked_batch_id for version in versions):
+        reasons.append(
+            "It has been locked, so its figures are in fact_target and are "
+            "what every report reads.")
+
+    version_ids = [version.version_id for version in versions] or [0]
+    allocated = session.execute(
+        select(func.count(TargetAllocation.allocation_id))
+        .where(TargetAllocation.version_id.in_(version_ids))
+    ).scalar() or 0
+    if allocated:
+        reasons.append(
+            f"It has {allocated:,} allocated rows. Re-run the allocation or "
+            f"start a new version rather than erasing this one.")
+
+    approvals = session.execute(
+        select(func.count(TargetApproval.approval_id))
+        .where(TargetApproval.version_id.in_(version_ids))
+    ).scalar() or 0
+    if approvals:
+        reasons.append(
+            f"{approvals} approval act{'s have' if approvals != 1 else ' has'} "
+            f"been recorded against it, and an approval log is not something a "
+            f"delete may take with it.")
+
+    return reasons
+
+
+def delete_plan(session: Session, user: UserContext, *, plan_id: int) -> dict:
+    """Remove a plan that was created and abandoned. Refuses anything else.
+
+    Deletion is deliberately narrow. The rest of this package supersedes rather
+    than removes, because a target that has been allocated, put to an approver
+    or locked has a history somebody may need to read. A plan that has been none
+    of those is not a record — it is a form filled in by mistake, and leaving it
+    in the list forever helps nobody.
+
+    **The audit trail outlives the plan.** ``target_audit.plan_id`` and
+    ``version_id`` are ``SET NULL``, so every entry this plan wrote survives the
+    delete with its actor, its action and its reason intact; only the link goes.
+    That is what makes the removal safe to offer at all, and it is why this
+    needs no schema change.
+
+    The versions are deleted **first and explicitly**: ``target_version.plan_id``
+    is ``RESTRICT``, on purpose, so nothing can remove a plan and silently take
+    its versions with it. Their own children — country lines, allocations,
+    revisions, adjustments, jobs — are ``CASCADE`` and go with them.
+    """
+    plan = get_plan(session, plan_id)
+    if (reasons := deletion_blockers(session, plan)):
+        raise PlanNotDeletable(plan.plan_code, reasons)
+
+    versions = session.execute(
+        select(TargetVersion).where(TargetVersion.plan_id == plan.plan_id)
+    ).scalars().all()
+    lines = session.execute(
+        select(func.count(TargetCountryLine.line_id))
+        .where(TargetCountryLine.version_id.in_(
+            [version.version_id for version in versions] or [0]))
+    ).scalar() or 0
+
+    # Written *before* the rows go, so the entry exists even though its foreign
+    # keys are about to be nulled. The trail is the whole record afterwards.
+    target_audit.record(
+        session, action=target_audit.TargetAction.PLAN_DELETED,
+        plan_id=plan.plan_id, actor=user.username, actor_role=user.role,
+        node_label=plan.plan_code,
+        old_value=f"{plan.status} · {len(versions)} version(s) · "
+                  f"{lines} country line(s)",
+        new_value=None,
+        reason="Draft plan deleted before it was allocated or approved.",
+    )
+    session.flush()
+
+    for version in versions:
+        # Released first: ``uq_target_version_current`` is checked on the flush,
+        # and a delete that left the claim standing would collide with nothing
+        # useful while being harder to read in a failure.
+        version.current_plan_id = None
+    session.flush()
+    for version in versions:
+        session.delete(version)
+    session.flush()
+    session.delete(plan)
+    session.flush()
+
+    return {
+        "plan_code": plan.plan_code,
+        "versions_removed": len(versions),
+        "country_lines_removed": lines,
+    }
+
+
 def plan_to_dict(plan: TargetPlan, current: TargetVersion | None = None) -> dict:
     return {
         "plan_id": plan.plan_id,
@@ -711,4 +854,6 @@ __all__ = [
     "period_months_label",
     "financial_year_options",
     "scope_options",
+    "deletion_blockers",
+    "delete_plan",
 ]

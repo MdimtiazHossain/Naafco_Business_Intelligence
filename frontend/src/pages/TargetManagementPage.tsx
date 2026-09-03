@@ -202,6 +202,12 @@ export default function TargetManagementPage() {
    * at once can be different people.
    */
   const canUpload = actions.UPLOAD === true;
+  /*
+   * Deleting is only ever a draft plan created and abandoned; everything a
+   * plan *becomes* is refused by the backend. Administrators alone hold it
+   * by default.
+   */
+  const canDelete = actions.DELETE === true;
 
   // Not memoised: `planRows` is a fresh array on every render (the `?? []`
   // fallback), so a memo would recompute anyway while claiming not to.
@@ -374,6 +380,7 @@ export default function TargetManagementPage() {
    */
   const [revising, setRevising] = useState<TargetReviewRow | null>(null);
   const [lockResult, setLockResult] = useState<TargetLockResult | null>(null);
+  const [deleted, setDeleted] = useState<string | null>(null);
   /*
    * The staged upload and its outcome, held here rather than in the
    * component: the preview is what `apply` acts on, and the component that
@@ -607,6 +614,22 @@ export default function TargetManagementPage() {
     onError,
   });
 
+  const deletePlan = useMutation({
+    mutationFn: (planId: number) =>
+      targetManagementService.deletePlan(planId),
+    onSuccess: (data) => {
+      setError(null);
+      // The selected plan is gone, so the selection has to go with it —
+      // otherwise every tab reads a plan that is not there any more.
+      setParam('plan', null);
+      refresh();
+      void queryClient.invalidateQueries({
+        queryKey: ['target-management-trail'] });
+      setDeleted(data.plan_code);
+    },
+    onError,
+  });
+
   const createVersion = useMutation({
     mutationFn: ({ planId, reason }: { planId: number; reason: string }) =>
       targetManagementService.createVersion(planId, reason),
@@ -698,6 +721,36 @@ export default function TargetManagementPage() {
       hidden: true,
       render: (row: TargetPlan) => formatDateTime(row.created_at),
     },
+    /*
+     * Offered only on a draft, and only to a holder of DELETE. A plan that has
+     * been allocated, approved or locked is refused by the backend anyway, so
+     * drawing the control there would be a button whose only outcome is a
+     * refusal.
+     */
+    ...(canDelete
+      ? [{
+          key: 'delete',
+          header: '',
+          render: (row: TargetPlan) =>
+            row.status === 'DRAFT' ? (
+              <button
+                type="button"
+                disabled={deletePlan.isPending}
+                title={t('targetMgmt.deletePlanHint')}
+                onClick={() => {
+                  if (window.confirm(t('targetMgmt.deletePlanConfirm', {
+                    plan: row.plan_code,
+                  }))) {
+                    deletePlan.mutate(row.plan_id);
+                  }
+                }}
+                className="rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+              >
+                {t('common.delete')}
+              </button>
+            ) : null,
+        }]
+      : []),
   ];
 
   return (
@@ -742,6 +795,15 @@ export default function TargetManagementPage() {
           </button>
         ))}
       </div>
+
+      {deleted && (
+        <div
+          role="status"
+          className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+        >
+          {t('targetMgmt.planDeleted', { plan: deleted })}
+        </div>
+      )}
 
       {error && (
         <div

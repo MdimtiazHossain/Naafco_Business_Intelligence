@@ -88,6 +88,10 @@ _REVISE = require_action(SectionKey.TARGET_MANAGEMENT, Action.REVISE)
 #: two separable so a planner who may adjust a figure by hand and one who
 #: may load three hundred at once can be different people.
 _UPLOAD = require_action(SectionKey.TARGET_MANAGEMENT, Action.UPLOAD)
+#: Deleting is for a plan that was created and abandoned, and defaults to
+#: administrators alone. Everything a plan *becomes* is refused by
+#: ``plans.deletion_blockers`` rather than by this dependency.
+_DELETE = require_action(SectionKey.TARGET_MANAGEMENT, Action.DELETE)
 
 
 # ---------------------------------------------------------------------------
@@ -1520,4 +1524,47 @@ def _staged_upload(token: str) -> upload_files.StoredUpload:
         path=candidate, original_name=candidate.name,
         extension=candidate.suffix.lower(), size=candidate.stat().st_size,
         content_type=None,
+    )
+
+
+@router.get("/plans/{plan_id}/deletable")
+def plan_deletable(plan_id: int, session: Session = Depends(get_session),
+                   user: UserContext = Depends(_VIEW)) -> dict[str, Any]:
+    """Whether this plan can be deleted, and what is stopping it.
+
+    Read-only, so the screen can leave the control out rather than draw one
+    that refuses — the rule every other refusal in this package follows.
+    """
+    def work() -> dict[str, Any]:
+        plan = plans.get_plan(session, plan_id)
+        reasons = plans.deletion_blockers(session, plan)
+        return {"deletable": not reasons, "blockers": reasons}
+
+    return _read(work)
+
+
+@router.delete("/plans/{plan_id}")
+def delete_plan(
+    plan_id: int,
+    http_request: Request,
+    session: Session = Depends(get_session),
+    user: UserContext = Depends(_DELETE),
+) -> dict[str, Any]:
+    """Remove a draft plan that was never allocated, approved or locked.
+
+    A typed country target does **not** block this: figures entered and never
+    allocated are a draft target, not a record. Everything the plan actually
+    became is refused by name.
+
+    The audit trail outlives the plan — ``target_audit`` holds the plan by a
+    ``SET NULL`` foreign key, so every entry survives with its actor and reason
+    and only the link goes.
+    """
+    def work() -> dict[str, Any]:
+        return plans.delete_plan(session, user, plan_id=plan_id)
+
+    return _commit(
+        session, user, http_request, resource=f"target_plan:{plan_id}",
+        audit_action=AuditAction.TARGET_PLAN_DELETED,
+        detail={"plan_id": plan_id}, work=work,
     )
