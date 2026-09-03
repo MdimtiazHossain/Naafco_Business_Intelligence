@@ -287,3 +287,25 @@ def downgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.UniqueConstraint("layer_id"),
     )
+
+    # The indexes matter as much as the tables. An earlier revision's own
+    # downgrade drops the index it created, so a chain walked all the way back
+    # fails on the first DROP INDEX if this recreation left them out — which is
+    # exactly what test_migration_downgrade_removes_every_table caught.
+    op.create_index("ix_map_marker_assets_checksum", "map_marker_assets", ["checksum"])
+    op.create_index("ix_map_marker_designs_entity_status", "map_marker_designs", ["entity_type", "status"])
+    op.create_index("ix_map_marker_designs_entity_type", "map_marker_designs", ["entity_type"])
+    op.create_index("ix_map_marker_designs_status", "map_marker_designs", ["status"])
+    op.create_index("ix_map_marker_design_versions_design_id", "map_marker_design_versions", ["design_id"])
+    op.create_index("ix_map_marker_assignments_design_id", "map_marker_assignments", ["design_id"])
+    op.create_index("ix_map_marker_assignments_entity_type", "map_marker_assignments", ["entity_type"])
+    op.create_index("ix_map_entity_locations_entity_type", "map_entity_locations", ["entity_type"])
+    op.create_index("ix_map_area_boundaries_bbox", "map_area_boundaries", ["entity_type", "bbox_south", "bbox_north"])
+    op.create_index("ix_map_area_boundaries_entity_type", "map_area_boundaries", ["entity_type"])
+    op.create_index("ix_map_area_styles_entity_type", "map_area_styles", ["entity_type"])
+    op.create_index("ix_map_admin_points_bbox", "map_admin_points", ["kind", "latitude", "longitude"])
+    op.create_index("ix_map_admin_points_kind_level", "map_admin_points", ["kind", "admin_level"])
+    op.create_index("ix_map_designs_active", "map_designs", ["is_active"])
+    op.create_index("ix_map_designs_default", "map_designs", ["is_default"])
+    op.create_index("ix_map_layers_design", "map_layers", ["design_id"])
+    op.create_index("ix_map_layers_order", "map_layers", ["design_id", "display_order"])
