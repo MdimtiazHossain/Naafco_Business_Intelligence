@@ -363,6 +363,56 @@ def test_target_achievement(ctx: ToolContext) -> None:
     assert result.values["gap"] == pytest.approx(1_200_000)
 
 
+def test_target_achievement_totals_carry_volume_beside_quantity(
+    ctx: ToolContext,
+) -> None:
+    """The headline has to state every measure the rows do.
+
+    The Target page's Volume card reads ``values.target_volume``, and for a
+    while nothing put that key in the totals: volume was summed per group and
+    shown in the table, so the column was populated while the card above it
+    rendered "—" over data that was there. Pinning the key is what stops a
+    measure being added to the rows again without the headline following.
+    """
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20)
+
+    for key in ("target_quantity", "actual_quantity",
+                "target_volume", "actual_volume"):
+        assert key in result.values, f"totals are missing {key}"
+
+    # The totals equal the sum of the rows they head — the card and the table
+    # cannot disagree about the same scope. Written for both cases because the
+    # seeded targets state no volume: an empty sum is 0, but the total of
+    # nothing stated is None, and collapsing the two is the whole mistake.
+    for total_key, row_key in (("target_volume", "target_volume"),
+                               ("actual_volume", "actual_volume")):
+        measured = [row[row_key] for row in result.rows
+                    if row.get(row_key) is not None]
+        expected = pytest.approx(sum(measured)) if measured else None
+        assert result.values[total_key] == expected
+
+    # This fixture's targets carry no volume, so the card reads "n/a" rather
+    # than a zero somebody might act on.
+    assert result.values["target_volume"] is None
+
+
+def test_target_volume_is_absent_rather_than_zero_when_none_was_stated(
+    ctx: ToolContext,
+) -> None:
+    """A target nobody expressed in volume is not a target of no volume.
+
+    ``None`` renders "n/a"; a zero would read as a real figure somebody could
+    act on, which is the distinction this platform draws everywhere else.
+    """
+    from app.ai import queries as q
+
+    assert q._volume_sum({}) is None
+    assert q._volume_sum({"REG001": None}) is None
+    assert q._volume_sum({"REG001": 12.5, "REG002": 7.5}) == pytest.approx(20.0)
+    # A group that stated none is skipped, not counted as zero.
+    assert q._volume_sum({"REG001": 12.5, "REG002": None}) == pytest.approx(12.5)
+
+
 def test_target_achievement_can_list_only_underperformers(ctx: ToolContext) -> None:
     result = run(ctx, "get_target_achievement", group_by="region", limit=20,
                  below_percent=50.0)

@@ -704,6 +704,19 @@ def compare_totals(current: dict[str, Any], previous: dict[str, Any],
     }
 
 
+def _volume_sum(by_group: dict[str, Any]) -> float | None:
+    """The total of a per-group volume mapping, or ``None`` when there is none.
+
+    ``volume_by_group`` excludes a line whose file stated no volume and so
+    returns no row at all for a group that stated none, which is what makes the
+    empty mapping meaningful: nothing in scope carried a volume. That reports as
+    ``n/a`` rather than as a zero, the same distinction :func:`volume_total`
+    draws — a target nobody expressed in volume is not a target of no volume.
+    """
+    measured = [value for value in by_group.values() if value is not None]
+    return float(sum(measured)) if measured else None
+
+
 def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date,
                      date_to: dt.date, group_by: GroupBy = GroupBy.REGION,
                      limit: int = 20, below_percent: float | None = None,
@@ -800,6 +813,19 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
             achievement_percent(actual_quantity, target_quantity)
         ),
         "quantity_gap": target_quantity - actual_quantity,
+        # Volume belongs in the headline for the same reason quantity does, and
+        # was missing from it: the per-group figures above have been on every
+        # row since revision 0022 replaced the unit-partitioned readers, but the
+        # totals were never given the matching pair, so the page's Target Volume
+        # card read a key that did not exist and rendered "—" over data that was
+        # there.
+        #
+        # Summed from the same per-group mapping the rows carry rather than
+        # re-queried, so the headline covers exactly the groups the table does —
+        # a scope-wide ``volume_total`` here would cover *more* groups than the
+        # amount totals beside it, which sum this same capped set.
+        "target_volume": _volume_sum(target_volume),
+        "actual_volume": _volume_sum(actual_volume),
         "group_by": group_by.value,
         "group_column": code_column,
     }

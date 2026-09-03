@@ -77,7 +77,9 @@ export default function TargetPage() {
 
   // Quantity and volume sit beside value: a region can hit its taka target on
   // price while shipping less than it promised, and one column cannot show that.
-  // Volume is blank where the targets in scope span mass and volume units.
+  // Volume carries no unit and is never converted — since revision 0022 the
+  // Material Master states none, so there is nothing to partition by and a
+  // blank means the targets in scope stated no volume, not a mixed basis.
   const achievementColumns = (labelHeader: string) => [
     { key: 'label', header: labelHeader },
     { key: 'target_quantity', header: t('target.quantity') },
