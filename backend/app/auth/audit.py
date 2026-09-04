@@ -8,7 +8,9 @@ password or token into the audit trail.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
+from decimal import Decimal
 from typing import Any, Iterable
 
 from sqlalchemy import desc, func, select
@@ -34,8 +36,34 @@ def is_secret(key: str) -> bool:
     return any(marker in lowered for marker in SECRET_KEYS)
 
 
+#: Types that go into a JSON column unchanged. Anything else is converted,
+#: because both callers of :func:`sanitize` write their result to one.
+_JSON_SAFE = (str, bool, int, float, type(None))
+
+
 def sanitize(detail: Any, _depth: int = 0) -> Any:
-    """Strip secrets and bound the size of an audit detail payload."""
+    """Strip secrets, bound the size, and make the payload storable.
+
+    Both of this function's callers write what it returns into a JSON column —
+    ``audit_logs.detail`` and ``data_change_log.old_values``/``new_values`` — so
+    a value it lets through unchanged has to be one the JSON encoder accepts.
+    It did not check that, and the failure mode was as bad as it gets: a
+    ``Decimal`` (what SQLAlchemy returns for any NUMERIC column, and what the
+    upload cleaner produces for a ``decimal`` field) raised inside
+    :func:`record`'s flush, where the ``except`` that keeps auditing from
+    breaking a request **rolled the whole transaction back** — taking the
+    caller's own write with it. The route then committed a clean session and
+    reported success, so creating a Map Location, a material with a conversion
+    factor or a transfer price, or an upazila with a coordinate, silently did
+    nothing and said it had worked.
+
+    ``Decimal`` becomes ``float``, matching ``ai.queries.normalize_value`` so
+    the change log and the reporting layer state a figure the same way. Dates
+    become ISO strings. Anything else unrecognised becomes its ``str``, which
+    closes the whole class of failure rather than the two instances of it that
+    exist today — an audit trail that loses the event it was recording is worse
+    than one that records an approximate value.
+    """
     if _depth > 4:
         return REDACTED
     if isinstance(detail, dict):
@@ -47,6 +75,12 @@ def sanitize(detail: Any, _depth: int = 0) -> Any:
         return [sanitize(item, _depth + 1) for item in detail][:50]
     if isinstance(detail, str) and len(detail) > MAX_VALUE_LENGTH:
         return detail[:MAX_VALUE_LENGTH] + "…"
+    if isinstance(detail, Decimal):
+        return float(detail)
+    if isinstance(detail, (dt.datetime, dt.date, dt.time)):
+        return detail.isoformat()
+    if not isinstance(detail, _JSON_SAFE):
+        return str(detail)
     return detail
 
 

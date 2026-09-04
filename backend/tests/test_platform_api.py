@@ -575,6 +575,64 @@ def test_audit_details_never_contain_secrets() -> None:
     assert cleaned["nested"]["ok"] == 1
 
 
+def test_audit_details_are_json_storable() -> None:
+    """Everything sanitize returns must survive the JSON column it is written to.
+
+    This is not a cosmetic guarantee. Both callers write the result into a JSON
+    column, and a value the encoder refuses raised inside ``audit.record``'s
+    flush — where the ``except`` that stops auditing from breaking a request
+    rolled the *caller's own write* back. The route then committed a clean
+    session and answered 201, so the record silently did not exist. A Decimal is
+    what SQLAlchemy returns for every NUMERIC column, so this was reachable by
+    creating any managed record with a decimal field: a Map Location, a material
+    with a conversion factor or transfer price, or an upazila with a coordinate.
+    """
+    import datetime as dt
+    import json
+    from decimal import Decimal
+
+    from app.auth.audit import sanitize
+
+    cleaned = sanitize({
+        "latitude": Decimal("23.7808"),
+        "conversion_factor": Decimal("0.5"),
+        "when": dt.datetime(2026, 9, 4, 10, 30),
+        "day": dt.date(2026, 9, 4),
+        "nested": [Decimal("1.5"), {"transfer_price": Decimal("240")}],
+        "already_fine": "text",
+    })
+
+    # The point of the test: it can actually be stored.
+    json.dumps(cleaned)
+
+    # A figure keeps its value, as a float — the same shape
+    # ``ai.queries.normalize_value`` gives every other number leaving the
+    # warehouse, so the change log and the reports cannot state one differently.
+    assert cleaned["latitude"] == 23.7808
+    assert isinstance(cleaned["latitude"], float)
+    assert cleaned["conversion_factor"] == 0.5
+    assert cleaned["nested"][0] == 1.5
+    assert cleaned["nested"][1]["transfer_price"] == 240.0
+    assert cleaned["when"] == "2026-09-04T10:30:00"
+    assert cleaned["day"] == "2026-09-04"
+    assert cleaned["already_fine"] == "text"
+
+
+def test_an_unstorable_value_becomes_text_rather_than_losing_the_entry() -> None:
+    """An unrecognised type is recorded approximately, never dropped."""
+    import json
+
+    from app.auth.audit import sanitize
+
+    class Odd:
+        def __str__(self) -> str:
+            return "odd-value"
+
+    cleaned = sanitize({"thing": Odd()})
+    json.dumps(cleaned)
+    assert cleaned["thing"] == "odd-value"
+
+
 # --------------------------------------------------------------------------
 # Export
 # --------------------------------------------------------------------------

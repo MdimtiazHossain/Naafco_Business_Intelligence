@@ -309,6 +309,47 @@ def test_materials_are_not_scoped_because_they_belong_to_no_region(client):
     assert body["total"] >= 1
 
 
+def test_creating_a_record_with_a_decimal_field_actually_stores_it(client):
+    """A created record must exist afterwards, decimal columns included.
+
+    Regression. ``clean_value`` produces a ``Decimal`` for a ``decimal`` field,
+    which is not JSON serialisable — and the change log writes the created
+    values into a JSON column. The encoder raised inside ``audit.record``'s
+    flush, where the ``except`` that keeps auditing from breaking a request
+    called ``session.rollback()``, discarding the new record along with the
+    audit entry. The route then committed a clean session and answered 201, so
+    the material was reported created and was not there. Conversion Factor and
+    Transfer Price are exactly the two columns most deployments still need to
+    fill in, which is how this stayed unnoticed.
+    """
+    token = login(client)
+    created = client.post("/api/master/dim_material", headers=auth(token), json={
+        "values": {
+            "company_code": "C001",
+            "material_code": "MAT-DEC-1",
+            "material_description": "Urea 50 KG Bag",
+            "material_group_code": "MG01",
+            "material_group_name": "Tea",
+            "material_brand_code": "MB01",
+            "material_brand": "Example Brand",
+            "conversion_factor": "0.5",
+            "transfer_price": "240.75",
+        },
+    })
+    assert created.status_code in (200, 201), created.text
+
+    fetched = client.get("/api/master/dim_material/MAT-DEC-1", headers=auth(token))
+    assert fetched.status_code == 200, fetched.text
+    record = fetched.json()["record"]
+    assert record["conversion_factor"] == 0.5
+    assert record["transfer_price"] == 240.75
+
+    # And the change log kept the figures rather than losing the entry.
+    history = fetched.json().get("history") or {}
+    entries = history.get("changes") if isinstance(history, dict) else history
+    assert entries, "the creation should be in the record's history"
+
+
 # ==========================================================================
 # Role-based actions (items 9, 10, 34)
 # ==========================================================================
