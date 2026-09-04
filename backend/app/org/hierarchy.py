@@ -107,6 +107,17 @@ def code_field(level: str) -> str:
     return _LEVELS[level][1] if level in _LEVELS else f"{level}_code"
 
 
+def org_level(level: str) -> tuple[Any, str, str, str | None]:
+    """``(model, code column, name column, parent code column)`` for one level.
+
+    The one public reading of :data:`_LEVELS`, for a caller that needs to
+    address a dimension by level name — the map's level registry, which draws
+    every organisational level and must not restate which table each lives in.
+    Raises ``KeyError`` for a level outside :data:`ORG_CHAIN`.
+    """
+    return _LEVELS[level]
+
+
 def filter_codes(value: FilterValue) -> list[str]:
     """One level's codes, from either spelling, de-duplicated and trimmed.
 

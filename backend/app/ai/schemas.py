@@ -410,6 +410,28 @@ class GrowthToolInput(BaseToolInput):
     compare_to: dt.date
 
 
+class MapLayerToolInput(BaseToolInput):
+    """One business level, every entity, every measure the map draws.
+
+    ``compare_from`` / ``compare_to`` are optional as a pair: with them the
+    rows carry growth against that window, without them growth is ``None`` —
+    never a growth against a window this tool chose for itself.
+    """
+
+    group_by: GroupBy = GroupBy.REGION
+    compare_from: dt.date | None = None
+    compare_to: dt.date | None = None
+
+    @model_validator(mode="after")
+    def _comparison_is_a_pair(self) -> "MapLayerToolInput":
+        if (self.compare_from is None) != (self.compare_to is None):
+            raise ValueError("compare_from and compare_to must be given together")
+        if (self.compare_from is not None and self.compare_to is not None
+                and self.compare_to < self.compare_from):
+            raise ValueError("compare_to must not precede compare_from")
+        return self
+
+
 class CreditToolInput(BaseToolInput):
     """Credit Control questions.
 

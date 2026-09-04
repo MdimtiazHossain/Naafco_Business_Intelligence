@@ -525,7 +525,6 @@ export interface UploadJobsResponse {
   active: number;
 }
 
-// --- Marker / Shape Designer -----------------------------------------------
 
 export interface UploadSummary {
   total_uploads: number;
@@ -2219,3 +2218,331 @@ export interface WhatsAppStatus {
   linked_users: number;
 }
 
+
+// ---------------------------------------------------------------------------
+// Business Map
+// ---------------------------------------------------------------------------
+
+/**
+ * A basemap the deployment offers, as `GET /api/map/config` publishes it.
+ *
+ * `kind` says whether `style_url` is a MapLibre style document or a raster
+ * `{z}/{x}/{y}` template; the browser wraps a template in the one-source style
+ * MapLibre needs rather than being handed a URL it cannot parse. `attribution`
+ * is *added* to what the style already carries, never substituted for it.
+ */
+export interface MapBasemap {
+  key: string;
+  label: string;
+  style_url: string;
+  style_url_dark: string | null;
+  kind: 'style' | 'raster';
+  attribution: string | null;
+  /** The glyph source a raster basemap draws labels with; a style has its own. */
+  glyphs_url: string | null;
+}
+
+export type MapViewMode = 'point' | 'boundary' | 'both';
+
+/** One drawable business level, derived server-side from the org chain. */
+export interface MapLevelInfo {
+  key: string;
+  label: string;
+  code_field: string;
+  name_field: string;
+  table: string;
+  parent: string | null;
+  group: string;
+  depth: number | null;
+  promoted: boolean;
+  /** False for every level today: no source states a business outline. */
+  boundary_available: boolean;
+  /** The view modes this level can honour — `['point']` until it has an outline. */
+  view_modes: MapViewMode[];
+}
+
+export type MapMetricKind = 'currency' | 'quantity' | 'volume' | 'percent' | 'count';
+
+/** One figure a layer may be sized, coloured or ranked by. */
+export interface MapMetricInfo {
+  key: string;
+  label: string;
+  /** The feature property that carries the figure. */
+  field: string;
+  kind: MapMetricKind;
+  higher_is_better: boolean;
+  signed: boolean;
+  unavailable_at: string[];
+  description: string;
+}
+
+export interface MapStyleBand {
+  key: 'good' | 'medium' | 'low' | 'critical';
+  min: number | null;
+  max: number | null;
+  label: string;
+  color: string;
+}
+
+/**
+ * How a figure becomes a colour and a size. Declared once server-side and
+ * overridable per layer; the browser builds MapLibre expressions from it and
+ * invents no threshold or colour of its own.
+ */
+export interface MapStyle {
+  thresholds: number[];
+  band_colors: Record<string, string>;
+  bands: MapStyleBand[];
+  no_data_color: string;
+  sequential: string[];
+  diverging: { negative: string; neutral: string; positive: string };
+  radius: [number, number];
+  cluster: { color: string; text_color: string };
+}
+
+export interface MapCoverage {
+  entity_type: string;
+  label: string;
+  total: number;
+  placed: number;
+  derived: number;
+  missing: number;
+}
+
+export interface MapConfig {
+  basemaps: MapBasemap[];
+  default_basemap: string;
+  view: { latitude: number; longitude: number; zoom: number };
+  levels: MapLevelInfo[];
+  promoted_levels: string[];
+  view_modes: { key: MapViewMode; label: string; requires_boundary: boolean }[];
+  metrics: MapMetricInfo[];
+  defaults: {
+    metric: string;
+    color_metric: string;
+    size_metric: string;
+    tooltip_fields: string[];
+  };
+  style: MapStyle;
+  coverage: MapCoverage[];
+}
+
+export type MapColorMode = 'bands' | 'diverging' | 'sequential';
+
+/**
+ * One layer of a design, with every inherited value resolved beside the
+ * stored one: `metric` is what the layer says (null = inherit) and
+ * `effective_metric` is what it draws.
+ */
+export interface MapLayerConfig {
+  layer_id: number;
+  layer_name: string;
+  point_level: string;
+  level_label: string;
+  parent_level: string | null;
+  view_mode: MapViewMode;
+  view_modes: MapViewMode[];
+  boundary_available: boolean;
+  metric: string | null;
+  effective_metric: string;
+  color_metric: string | null;
+  effective_color_metric: string;
+  color_mode: MapColorMode;
+  size_metric: string | null;
+  effective_size_metric: string;
+  is_visible: boolean;
+  display_order: number;
+  min_zoom: number;
+  cluster_at: number | null;
+  label_field: string;
+  show_label: boolean;
+  label_min_zoom: number;
+  tooltip_fields: string[];
+  tooltip_inherited: boolean;
+  style_config: Record<string, unknown> | null;
+  style: MapStyle;
+}
+
+export interface MapDesign {
+  design_id: number;
+  name: string;
+  description: string | null;
+  basemap: string;
+  basemap_resolved: MapBasemap;
+  /** Set when the design names a basemap the deployment no longer configures. */
+  basemap_note: string | null;
+  default_metric: string;
+  is_default: boolean;
+  is_active: boolean;
+  is_system_default: boolean;
+  created_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  layer_count: number;
+  layers: MapLayerConfig[];
+}
+
+export interface MapDesignsResponse {
+  designs: MapDesign[];
+  default_design_id: number | null;
+}
+
+/** A layer as the editor sends it. Order in the list is display order. */
+export interface MapLayerInput {
+  point_level: string;
+  layer_name?: string | null;
+  view_mode?: MapViewMode;
+  metric?: string | null;
+  color_metric?: string | null;
+  size_metric?: string | null;
+  is_visible?: boolean;
+  min_zoom?: number;
+  cluster_at?: number | null;
+  label_field?: string;
+  show_label?: boolean;
+  label_min_zoom?: number;
+  tooltip_fields?: string[] | null;
+  style_config?: Record<string, unknown> | null;
+}
+
+export interface MapDesignInput {
+  name: string;
+  description?: string | null;
+  basemap?: string;
+  default_metric?: string;
+  layers: MapLayerInput[];
+}
+
+/** Only the fields sent are changed; `null` clears, absence leaves alone. */
+export interface MapDesignUpdate {
+  name?: string;
+  description?: string | null;
+  basemap?: string;
+  default_metric?: string;
+  layers?: MapLayerInput[];
+}
+
+/** The figures every map row carries. `null` is absent, never zero. */
+export interface MapMeasures {
+  net_sales: number | null;
+  quantity: number | null;
+  volume: number | null;
+  customer_count: number | null;
+  target_amount: number | null;
+  target_quantity: number | null;
+  target_volume: number | null;
+  achievement_percent: number | null;
+  shortfall: number | null;
+  previous_net_sales: number | null;
+  growth_percent: number | null;
+}
+
+export interface MapFeatureProperties extends MapMeasures {
+  code: string;
+  name: string;
+  level: string;
+  parent_level: string | null;
+  parent_code: string | null;
+  location_source: string;
+  location_precision: string;
+  derived_from: number | null;
+}
+
+export interface MapFeature {
+  type: 'Feature';
+  id: string;
+  /** GeoJSON: longitude first. */
+  geometry: { type: 'Point'; coordinates: [number, number] };
+  properties: MapFeatureProperties;
+}
+
+export interface MapFeatureCollection {
+  type: 'FeatureCollection';
+  features: MapFeature[];
+}
+
+export interface MapRankingRow extends MapMeasures {
+  code: string;
+  name: string;
+  placed: boolean;
+  parent_code: string | null;
+}
+
+export interface MapRanking {
+  metric: string;
+  field: string;
+  top: MapRankingRow[];
+  bottom: MapRankingRow[];
+  ranked_count: number;
+  unranked_count: number;
+}
+
+export interface MapBounds {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+  centre: { latitude: number; longitude: number };
+}
+
+/** One drawn layer: its points, what could not be drawn, and its legend inputs. */
+export interface MapLayerData {
+  level: string;
+  label: string;
+  group_by: string;
+  entity_count: number;
+  placed_count: number;
+  features: MapFeatureCollection;
+  /** Entities with data in the period and no coordinate — reported, never hidden. */
+  unplaced: { code: string; label: string }[];
+  unassigned: Record<string, unknown> | null;
+  notes: string[];
+  bounds: MapBounds | null;
+  extents: Record<string, { min: number; max: number }>;
+  breaks: Record<string, number[]>;
+  layer: MapLayerConfig;
+  ranking: MapRanking;
+}
+
+export interface MapDataResponse {
+  period: DateRange;
+  filters: Record<string, unknown>;
+  design: MapDesign;
+  metric: string;
+  levels: string[];
+  empty: boolean;
+  layers: MapLayerData[];
+}
+
+export interface MapEntityAncestor {
+  level: string;
+  label: string;
+  code: string;
+  name: string;
+  /** False when the parent code names a record the master lacks. */
+  known: boolean;
+}
+
+export interface MapEntityLocation {
+  location_id: number;
+  entity_type: string;
+  entity_code: string;
+  latitude: number;
+  longitude: number;
+  source: string;
+  precision: string;
+  label: string | null;
+  derived_from: number | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+/** The selected-entity card: a name, the chain above it, and where it is. */
+export interface MapEntity {
+  level: string;
+  label: string;
+  code: string;
+  name: string;
+  ancestors: MapEntityAncestor[];
+  location: MapEntityLocation | null;
+}

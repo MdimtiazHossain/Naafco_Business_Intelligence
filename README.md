@@ -1402,36 +1402,142 @@ new value, timestamp and IP. Secrets are stripped by `audit.sanitize` as before.
 
 ---
 
-## Phase 4 extension — the Business Map (removed)
+## Phase 4 extension — the Business Map (rebuilt in `0034_business_map`)
 
-**Removed in revision `0033_remove_map`.** Both this section and the Marker /
-Shape Designer that followed it specified a feature that no longer exists: the
-`app/map/` package, `routes_map.py`, `models_map.py`, the MapLibre renderer and
-eleven database tables were all deleted so the map could be rebuilt from
-nothing rather than carried forward half-used. The specification they contained
-is in git; it is not restated here, because a specification kept beside a
-feature that does not exist is read as a description of the system.
+**One map, many layers.** Revision `0033_remove_map` deleted the first map
+entirely — the `app/map/` package, `routes_map.py`, `models_map.py`, the marker
+library, the MapLibre renderer and eleven tables — so it could be rebuilt from
+nothing rather than carried forward half-used. `0034_business_map` is the
+rebuild's schema: four tables, not eleven, and one seeded, protected design.
+Everything the map does today is described here; the first map's specification
+and the Marker / Shape Designer stay in git.
 
-Three things the map had accumulated were not its own and stayed:
+### What it is
 
-* **The organisational chain** — Zone → Region → Area → Territory →
-  Sub-Territory — moved to `app/org/hierarchy.py`. Data Management scopes on it
-  (`datamgmt/scope.py`), so it was never map-specific; it lived under `map/`
-  only because the map was the first surface to need it.
-* **The four administrative dimensions** `dim_country`, `dim_division`,
-  `dim_district` and `dim_upazila` are master data with their own upload
-  templates, Bangla name columns and parent links, and the Upload Centre offers
-  them whether or not anything draws them. Only their *geometry* was dropped —
-  boundary rings, admin points and area styles exist only to be rendered, and
-  are re-importable from the published GADM/HDX release.
-* **The retired `MARKER_*` and `MAP_LOCATION_UPDATED` audit actions** stay in
-  `models_ai.AuditAction`. Nothing writes them, but `audit_logs` still holds
-  rows carrying those values.
+A single MapLibre GL JS map over an OpenStreetMap-compatible basemap
+(OpenFreeMap by default — no key, no token, no per-view billing), drawing each
+business level as a **layer** of points: Zone, Region, Area, Unit, Territory,
+Sub-Territory and Customer, plus the levels above Zone and the sales force,
+which are drawable but not promoted. Which layers a map draws, in what order,
+sized and coloured by which metric, labelled and tooltipped how, is a
+**design** stored in the database; readers pick a design and switch its layers
+on and off, and holders of Map Settings compose designs without a developer.
 
-The removal destroyed 1,397 entity coordinates, 6,284 administrative points and
-580 boundary rings, deliberately and on instruction; `data/dev.db.pre0033.bak`
-sits beside the revision.
+The map has **one query and it is a tool**: `get_map_layer` in `ai/tools.py`,
+registered with no intents so the assistant is never offered it, going through
+`ctx.scoped` like every other tool. A region's sales on the map are a region's
+sales on the Performance page by construction (`test_map_data` pins the two
+code for code, and `test_map_data_api` proves it again over HTTP). Aggregation
+runs uncapped (`queries.aggregate_every_group`) because a map is the one
+reader for which "the top 500" is a wrong answer rather than a long one.
 
+### Where it lives
+
+| Piece | Location |
+|---|---|
+| Levels, derived from `org.hierarchy` (never a list of tables) | `backend/app/map/levels.py` |
+| Metrics a layer may draw, and where each is meaningless | `backend/app/map/metrics.py` |
+| Style defaults: bands, ramps, radius; per-layer overrides validated by name | `backend/app/map/styles.py` |
+| Basemaps, from configuration | `backend/app/map/basemaps.py` |
+| Coordinates: validation, upsert, centroids, coverage | `backend/app/map/geo.py` |
+| One layer's figures, positions, extents, ranking | `backend/app/map/data.py` |
+| Designs and layers: the composition rules | `backend/app/map/designs.py`, `errors.py` |
+| A selected entity's ancestry | `backend/app/map/entities.py` |
+| HTTP surface | `backend/app/api/routes_map.py` |
+| Models and migration | `database/models_map.py`, `migrations/versions/0034_business_map.py` |
+| Browser: page, renderer, drawer, editors | `frontend/src/pages/BusinessMapPage.tsx`, `frontend/src/components/map/` |
+| Restoring the pre-0033 coordinate export | `scripts/reload_map_locations.py` (dry by default) |
+
+### Endpoints
+
+Every read requires the `map` section; every write requires the corresponding
+action on `map_settings`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/map/config` | Basemaps, first view, levels and the view modes each can honour, metrics, style defaults, coordinate coverage per level |
+| `GET /api/map/data?levels=…&metric=…&design_id=…` + period + filters | The requested layers of one design: GeoJSON points, entities with data but no coordinate, extents and class breaks, Top / Bottom ranking |
+| `GET /api/map/entities/{level}/{code}` | One entity's name, ancestry and coordinate, for the selected-entity card |
+| `GET /api/map/designs[?include_inactive]` | Every design a reader may pick (inactive ones only for a composer) |
+| `GET /api/map/designs/{id}` | One design with its layers, inherited values resolved beside stored ones |
+| `POST /api/map/designs` | Create (CREATE) |
+| `PUT /api/map/designs/{id}` | Change the fields sent, layers optionally riding along (EDIT) |
+| `PUT /api/map/designs/{id}/layers` | The whole ordered layer list (EDIT) |
+| `POST /api/map/designs/{id}/duplicate` | An independent copy, never protected (CREATE) |
+| `POST /api/map/designs/{id}/default`, `/activate`, `/deactivate` | The flags (EDIT) |
+| `DELETE /api/map/designs/{id}` | Remove a custom design; the system default refuses by name (DELETE) |
+
+A composition refusal answers `409 {error_code, message}` and names the layer
+and field; something absent answers 404. An inactive design is a 404 to a
+reader who may not compose the map.
+
+### Rules worth knowing
+
+* **Two sections.** `map` is reporting, on by default for every role.
+  `map_settings` is a permission in its own right — off by default for
+  everyone, on for administrators, grantable to a marketing or MIS lead — and
+  is what lets somebody change what the map draws for everyone.
+* **Scope is enforced or refused.** A regional manager's map is their region;
+  a filter outside it is a 403, not a narrower map; a user with no scope is
+  refused rather than shown an empty map. A level above the caller's scope
+  carries a note that its figures cover only that scope.
+* **Absent and zero stay apart on every row.** An entity with a target and no
+  sales sold nothing (0, achievement 0); one with sales and no target has no
+  achievement (`null`); nothing in the comparison window means no growth,
+  never −100 %. The renderer draws an absent figure in the neutral colour,
+  never as critical. An entity with data and no coordinate is reported in
+  `unplaced`, never hidden, and still ranks.
+* **The basemap is configuration**, read once: `MAP_STYLE_URL` and
+  `MAP_STYLE_URL_DARK` (a style document, or a raster `{z}/{x}/{y}` template —
+  the API says which), `MAP_STYLE_URL_SATELLITE` (Satellite is offered only
+  when set), `MAP_ATTRIBUTION` (added to the style's own credit, never
+  replacing it), `MAP_GLYPHS_URL` (what a raster basemap draws labels with) and
+  `MAP_DEFAULT_LATITUDE` / `_LONGITUDE` / `_ZOOM` (the first frame; the map
+  fits its data once it arrives).
+* **Thresholds and colours are declared once** in `styles.py` — achievement
+  bands at 90 / 70 / 50, a diverging scheme for signed metrics, quantile class
+  breaks for everything else — published through `/config`, and overridable
+  per layer through `style_config`, which is validated field by field so a
+  saved setting can never be one the renderer ignores. The browser builds
+  MapLibre expressions from what it is sent and invents no threshold of its own.
+* **Boundary and Both are offered only for a level with a boundary source**,
+  and no level has one: the masters carry no geometry and a division is not a
+  sales region. Every layer is points until a source is declared on
+  `levels.MapLevel.boundary_source`.
+* **Coordinates come from the Upload Centre** ("Map Locations", display group
+  MARKET), whose row check refuses an unknown level, an unknown code and null
+  island, and whose post-load hook re-derives every level above the placed
+  ones as centroids (`DERIVED`, pruned when the entity goes; an authoritative
+  coordinate is never pruned). They are deliberately not a Data Management
+  entity, because that screen knows nothing about derivation.
+* **Designs inherit where they say nothing** — a layer with no metric draws
+  the design's default; no colour metric means Achievement %, no size metric
+  Sales Amount, no tooltip fields the standard six — and the payload carries
+  the effective value beside the stored one. Exactly one design is the
+  default; the seeded "Business Overview" is protected from deletion and
+  deactivation and from nothing else. Deleting a custom design is a real
+  delete — it is configuration, not a figure — and is audited
+  (`MAP_DESIGN_*` actions).
+* **The browser fetches one layer per request, in parallel.** Five layers in
+  one call waited for the slowest before the first could paint (7.5 s over
+  July on the PostgreSQL deployment); fetched separately the first layer is on
+  screen in about a second, and a toggle refetches only the layer it toggled.
+  The reader's toggles, metric, design and selection live in the URL
+  (`layers`, `layers=none`, `metric`, `design`, `selected=level:code`); Reset
+  is one navigation and saves nothing.
+
+### What stayed removed
+
+The administrative geometry — `map_area_boundaries`, `map_admin_points`,
+`map_area_styles`, `GET /api/map/areas`, the `public/geo/` files and the
+scripts that built them — did not come back; the four administrative
+dimensions did, as master data. The retired `MARKER_*` and
+`MAP_LOCATION_UPDATED` audit actions stay in `models_ai.AuditAction` because
+`audit_logs` still holds rows carrying them. `0033` destroyed 1,397
+coordinates, 6,284 administrative points and 580 boundary rings, on
+instruction; `scripts/reload_map_locations.py` restored the 1,102 authoritative
+coordinates from the export that removal wrote, and recomputed every centroid
+above them.
 
 ---
 
@@ -1521,8 +1627,9 @@ set on, so nothing that worked before stops working. Selecting territory `T001`
 still resolves `T001 → ST001, ST002 → C001, C002, C003`; selecting `ST001`
 resolves `C001, C002` and not `C003`. This is `org.hierarchy`'s
 `resolve_business_entities`, which Data Management scopes on and
-`test_master_data_mapping.py` pins directly — the business map used to be the
-surface that showed it, and its removal changed none of the rule.
+`test_master_data_mapping.py` pins directly — and the rebuilt business map's
+customer layer is attached through the same column, so the rule is still
+stated once.
 
 ### Migration
 
@@ -1553,7 +1660,9 @@ release, which is where they came from.
 What the removed machinery did — point-in-polygon assignment of a placed entity
 to the area containing it, Douglas–Peucker simplification at import, an ETagged
 GeoJSON response, and a `map_area_styles` row per layer — is described in git
-rather than restated here.
+rather than restated here. The rebuilt map draws every business level as
+points; its Boundary and Both view modes are offered only once a level names a
+boundary source, and none does.
 
 ## Phase 4 extension — Master & Transaction Data Management
 
@@ -1589,9 +1698,11 @@ export and its validation with nothing else to change. Eighteen entities today:
 the nine organisational levels, products, customers, sales force, warehouses,
 and the five transaction types.
 
-Map coordinates are no longer held at all: the business map and its
-`map_entity_locations` table were removed in `0033_remove_map`, and nothing
-thing is one too many.
+Map coordinates are held again since `0034_business_map`, in
+`map_entity_locations`, and arrive through the Upload Centre's "Map Locations"
+type rather than through this screen: a coordinate upload re-derives every
+level above the placed ones, and Data Management knows nothing about
+derivation, so offering coordinates here would be one editing path too many.
 
 ### Granular permissions
 

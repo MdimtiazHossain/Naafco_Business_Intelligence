@@ -82,6 +82,7 @@ python scripts/manage_users.py create ceo --role MANAGEMENT --name "..."
 python scripts/ask_agent.py "আজকের sales কত?" --user ceo [--interactive]
 python scripts/migrate_sqlite_to_postgres.py [--dry-run]   # SQLite -> Supabase, one transaction
 python scripts/mine_agent_signals.py [--dry-run] [--limit N]  # sweep stored chats for questions the agent mishandled
+python scripts/reload_map_locations.py [--apply] [--file <csv>]  # restore the pre-0033 coordinate export; dry by default
 python scripts/clear_data.py <groups>        # DESTRUCTIVE — confirm with the user before running
 ```
 
@@ -135,7 +136,7 @@ all of it without needing a server.
 browser / WhatsApp / CLI
   → frontend/src/services/   the only place that calls fetch
   → backend/app/api/routes_*.py     thin; get_current_user + require_section deps
-  → ai/tools.py                     33 typed tools, the sanctioned query surface
+  → ai/tools.py                     34 typed tools, the sanctioned query surface
   → ai/permission_filter.py         role → data scope → filters injected into the SQL
   → ai/queries.py                   the warehouse access layer for this path
   → vw_* reporting views            all filter on is_void
@@ -178,14 +179,16 @@ authenticated & active  →  role (section's role ceiling)  →  user section AL
 
 A lower layer can narrow access, never lift a restriction from above. Sections are declared once in `app/security/sections.py` and consumed by the `require_section(...)` dependency, `GET /api/admin/sections` and the frontend nav — adding a section is one entry. Scope is checked *before* the query runs and re-checked against the individual record on every write. Tokens carry identity only; role and scope are re-read from the database each request.
 
-### The business map was removed (revision `0033_remove_map`)
+### The business map was removed (revision `0033_remove_map`) and rebuilt (`0034_business_map`)
 
-There is no map. `app/map/`, `routes_map.py`, `models_map.py`, the marker
-library, the MapLibre renderer under `frontend/src/components/map/` and the
-`public/geo/` basemap files are all gone, along with eleven database tables and
-the `map` and `map_settings` sections. It is being rebuilt from nothing, so
-nothing here was kept "just in case": a half-removed feature is worse than
-either state, and git holds the old one.
+`0033` removed the map entirely: the old `app/map/`, `routes_map.py`,
+`models_map.py`, the marker library, the MapLibre renderer under
+`frontend/src/components/map/` and the `public/geo/` basemap files, along with
+eleven database tables and the `map` and `map_settings` sections. It is being
+rebuilt from nothing, so nothing was kept "just in case": a half-removed
+feature is worse than either state, and git holds the old one at `HEAD~2` of
+the removal commit. What exists now is described below, in the order it was
+built; `README.md`'s *Business Map (rebuilt)* section is the reference.
 
 **Three things the map owned turned out not to be its own, and they stayed.**
 
@@ -217,6 +220,185 @@ docstring says so rather than leaving it to be discovered, and
 When the map is rebuilt: `GROUP_BY_LEVEL`-style aggregation belongs behind the
 tool layer like every other query, not in a second query surface, and the
 renderer must not be the only thing that knows a marker's design.
+
+**Step 1, schema and coordinates (`0034_business_map`).**
+Four tables, not eleven. `map_entity_locations` is `0008`'s table column for
+column, and `map_designs` / `map_layers` / `map_point_configurations` are
+`0032`'s composition tables with `view_mode` added (Point / Boundary / Both per
+layer, as the specification asks) and `marker_design_id` removed with the
+library it referenced. The seed is one protected system-default design,
+"Business Overview", with seven layers in this order: zone, region, area,
+**unit**, territory, sub-territory, customer — Unit ships hidden but exists,
+because the parent walk breaks without it; Customer ships hidden because 846
+customer points at zoom 7 is the blue mass the old map removed multi-layer
+drawing to avoid. **The seed carries no primary keys**: `0032` inserted
+explicit ids, which leaves a PostgreSQL identity sequence at zero and makes the
+first design an administrator creates collide with the seed. Everything the
+map will read is in `app/map/`: `levels.py` (every drawable level, *derived*
+from `org.hierarchy.org_level` plus customer and sales force — never a
+hand-written list of tables) and `geo.py` (validate, centroid, bounds, upsert,
+coverage, `derive_parents`, `restore_locations`).
+
+**The coordinates came back from the export, not from a guess.** The 0033
+removal exported the table to `reports/map_pre0033_20260903_092802/`, and
+`scripts/reload_map_locations.py` restores only its *authoritative* rows (846
+uploaded customers, 256 uploaded sales-force members) through the same
+`validate` an upload passes, then recomputes every centroid above them. The
+551 derived rows in the export are deliberately skipped: a centroid recomputed
+from today's customer mapping is more honest than a snapshot. It is dry by
+default and prints its target first, because `DATABASE_URL` decides whether it
+writes `data/dev.db` or the PostgreSQL deployment. Both are loaded;
+`data/dev.db.pre0034.bak` and `data/pg_pre0034-*.dump` are beside them.
+
+**A centroid is written only for a code its master holds.** The deployment's
+`dim_sales_force.territory_code` names sub-territory codes on 116 of 266 rows,
+and the first derivation pass wrote 111 "territories" that were nothing of the
+kind. `geo._write_centroids` now skips a parent code absent from the parent
+level's master (logged, never re-filed at the level the code looks like), and
+`derive_parents` first prunes any `DERIVED` row whose entity no longer exists.
+Authoritative rows are never pruned: a coordinate a person placed is theirs to
+remove. Coordinates arrive through the Upload Centre as the "Map Locations"
+master type (`upload.registry.MAP_LOCATION_TYPE`, display group MARKET) whose
+row check refuses an unknown level, an unknown code and null island, and whose
+post-load hook re-derives the parents; they are deliberately **not** a Data
+Management entity, because that screen knows nothing about derivation.
+`test_map_locations.py` pins all of it.
+
+**Step 2, the data (`app/map/metrics.py`, `app/map/data.py`, tool
+`get_map_layer`).** The map has **one query and it is a tool**, registered in
+`ai/tools.py` with **no intents** so the assistant is never offered it — a
+question is answered by the ranked performance tools, and `test_map_data`
+walks every `Intent` to prove the allow-list never contains it. It exists
+because the map is the one reader for which "the top 500" is a wrong answer
+rather than a long one: `queries.aggregate_by` caps at `MAX_ROWS`, and a
+customer layer that silently omitted the 501st customer would draw a coverage
+gap that is not there. So `queries.aggregate_every_group` runs the same
+statement uncapped (`_grouped_statement` is now the one builder both readers
+share), bounded by the master data rather than the facts, and
+`MAP_SALES_MEASURES` adds a distinct-customer count to `SALES_MEASURES.sums`
+*by reference* so the sales-report switch is still one switch. The tool joins
+sales, targets and the comparison period's sales on the group code, the shape
+of `target_vs_actual` without its ranking, and goes through `ctx.scoped` like
+every other tool — a regional manager's map is their region, a user with no
+scope is refused rather than shown an empty map, and asking for another region
+by filter is a `PermissionDeniedError`. **Absent and zero stay apart on every
+row**: an entity with a target and no sales rows sold nothing (`0.0`,
+achievement `0`); an entity with sales and no target has `None` for target,
+achievement and shortfall; an entity with nothing in the comparison window
+has `None` growth, never −100%; volume is `None` where no line stated one.
+`shortfall` is net sales minus target, negative when short — the executive
+brand table's sign, deliberately not `queries.gap`. `metrics.METRICS` declares
+the ten things a layer may draw and names the row column each reads;
+`customer_count` is `unavailable_at=("customer",)` because a customer's
+customer count is one. `data.layer_data` turns the rows into GeoJSON point
+features (longitude first) through `geo.locations_for`, carrying each
+entity's parent code from its own master row; **an entity with data and no
+coordinate is reported in `unplaced`, never hidden**, the `(unassigned)`
+group is handed back as figures rather than drawn, and a level above the
+caller's data scope carries a note saying its figures cover only that scope —
+the same partial number the Performance page shows at that level, now
+labelled. `GROUP_BY_LEVEL` is derived from `levels.MAP_LEVELS`, and
+`test_map_data` pins that the region layer equals `get_region_performance`
+code for code.
+
+**Step 3, what the map can draw (`security/sections.py`, `config.py`,
+`map/basemaps.py`, `map/styles.py`, `GET /api/map/config`).** Two sections
+came back: `map` is reporting, on by default for every role; `map_settings`
+is a permission in its own right — off by default for everyone, on for
+administrators, grantable to whoever owns how the map reads — and is what lets
+somebody change what the map draws for everyone. Every read on
+`/api/map/*` requires the first, every write an action on the second. **The
+basemap is configuration, read once**: `MAP_STYLE_URL` / `MAP_STYLE_URL_DARK`
+default to OpenFreeMap's positron and dark styles (no key, no billing, the
+credit inside its TileJSON), and either may instead be a raster
+`{z}/{x}/{y}` template — `basemaps.classify` tells the two apart, so the
+browser wraps a template in the one-source style MapLibre needs, with
+`MAP_GLYPHS_URL` for its labels, rather than being handed a URL it cannot
+parse. A dark URL of a different kind than the light one is set aside with a
+warning, not mixed; Satellite exists only when `MAP_STYLE_URL_SATELLITE` is
+set, because a Satellite button that fails is worse than none; a design that
+names a basemap the deployment no longer configures resolves to `standard`
+with a note, never silently. `styles.py` declares the three colour modes once
+— achievement bands at 90 / 70 / 50, diverging for a signed metric, quantile
+class breaks for everything else — plus the neutral colour, the radius range
+and the cluster paint, and `effective_style` merges a layer's `style_config`
+over them **refusing any field it does not know**, because a saved setting
+that changes nothing is a setting somebody will trust. Absent is drawn
+neutral, never critical. `levels.MapLevel.boundary_source` is `None` on every
+level (the masters carry no geometry and a division is not a sales region),
+so `view_modes_for` offers Point alone; Boundary and Both appear the day a
+level names a source, and are absent rather than inert until then.
+
+**Step 4, composing (`map/designs.py`, `map/errors.py`, the design
+endpoints).** Everything a design names is checked against the registries at
+write time — a level, a metric *and* the level it is drawn at (a customer's
+customer count is one), a view mode against what the level honours, a basemap
+against the catalogue, a style override against `styles` — so a saved design
+is never one the renderer would have to refuse; `InvalidLayer` names the
+level and the field. A design inherits where it says nothing, and the payload
+carries the effective value beside the stored one so the editor can show
+which is which. Exactly one design is the default; when the default is
+deactivated or deleted, `_hand_default_to_system` returns the flag to the
+seeded design first, so the map never opens on a design that no longer
+exists. The seed is protected from deletion and deactivation and from nothing
+else — duplicate it and change the copy. Deleting a custom design is a real
+delete: it is configuration about how figures are shown, not a figure, and the
+audit trail keeps who removed it (`MAP_DESIGN_*` and `MAP_LAYERS_UPDATED`
+actions, their own rather than `ADMIN_CHANGE`). Layers are matched by level on
+replace so a surviving layer keeps its id. A refusal is a 409 carrying
+`error_code` and the reason; an inactive design is a 404 to a reader who may
+not compose.
+
+**Step 5, drawing (`GET /api/map/data`, `GET /api/map/entities/{level}/
+{code}`).** The data endpoint draws the requested layers of one design over
+one period and filter set through `data.map_data`, adds each layer's
+configuration, its extents and quantile `class_breaks` over the *placed*
+features (the legend explains the points on the map), and a Top / Bottom
+ranking over every entity with data, placed or not — `bottom` is the worst of
+what `top` did not already show, and an entity whose figure is absent is not
+ranked at all. A metric with no meaning at a level ranks that layer by its own
+metric and says so. §70 of the specification is proved over HTTP against
+`/api/pages/performance`: every report row is on the map with the same
+figures, and the one extra row the map may carry is an entity with a target
+and no sale, at zero, never at an invented figure. The entity endpoint returns
+names only — the figures are the point's own properties — and is unscoped like
+the filter options. Viewing is audited as `VIEW_REPORT` on resource `map`.
+
+**Steps 6–8, the browser (`frontend/src/components/map/`,
+`pages/BusinessMapPage.tsx`).** MapLibre GL JS 6.7 is ESM-only and locates its
+worker with a runtime-built `new URL(…)` a bundler cannot see through, so
+`useMapLibre` imports the worker with `?worker&url` and hands it to
+`setWorkerUrl` — without that a production build 404s on the worker and draws
+nothing. **One map instance for the life of the page**: filters and data
+update sources and paint in place, a theme switch swaps the basemap with
+`setStyle`, and the renderer is keyed on the map's style version so it re-adds
+the business layers after every swap. `useLayerRenderer` is the one generic
+renderer — one GeoJSON source and five MapLibre layers (clusters, cluster
+counts, points, labels, selection ring) per business layer, stacked in the
+design's order with labels on top, clustering only above the layer's
+`cluster_at`, `fitBounds` once per data set and never on a toggle — and there
+is no `if (level === …)` anywhere in it. `mapExpressions` turns the declared
+style into MapLibre expressions and invents no threshold or colour. **The page
+fetches one layer per request, in parallel** (`useMapLayers`): five layers in
+one call waited 7.5 s on the PostgreSQL deployment before the first could
+paint, and a toggle would have refetched all five. The reader's state is the
+URL — `design`, `layers` (`layers=none` when every layer is off, because an
+absent parameter means the design's own), `metric`, `selected=level:code` —
+and Reset is one navigation; a composer's changes go through the Map Settings
+drawer (`MapSettingsDrawer`, the `Modal` with `placement="sheet"`) and its
+`DesignEditor` / `LayerEditor`, which send the whole ordered layer list so the
+server validates the design as it will stand and show a refusal as the server
+phrased it. The legend explains the *active* layer and offers the others by
+name rather than stacking four legends over the basemap; the tooltip renders
+the layer's configured `tooltip_fields`; the selected-entity card reads the
+point's own figures and fetches only the ancestry; Top / Bottom are two
+`DataTable`s (`map.top`, `map.bottom`). Tests stub MapLibre with a recorder
+(`test/map.test.tsx`, `test/fakeMapLibre.ts`) — what they pin is what the
+page asks the map to do, never WebGL. **Development `data/dev.db` holds no
+sales rows**, so the map there is correctly empty; the localhost deployment's
+PostgreSQL has the data, and it serves `frontend/dist` directly, so a frontend
+change reaches it only after `cd frontend; npm run build` (no service restart
+— the API service already carries the routes).
 
 ### Agent learning (`ai/feedback.py mining.py vocabulary.py lexicon.py`, migration 0025)
 
@@ -453,7 +635,7 @@ Run against throwaway SQLite files, never PostgreSQL, and build their own workbo
 - **Sales Vol is `SUM(fact_sales.volume)` — the Total Volume the upload stated, never a calculation.** There is no volume unit, UOM or conversion factor in the sales path, and material stock has no volume at all: `etl.volume.from_source(volume, quantity)` stores the file's number and reads the quantity only for the negative-volume sign check. `volume` is therefore in `queries.SALES_MEASURES.sums` and comes back from `aggregate_by` like quantity and net sales; `queries.volume_total`/`volume_by_group` serve the unit-free readers. `fact_sales.volume_unit`/`volume_factor` survive as unwritten historical columns — no migration drops them.
 - **No volume anywhere carries a unit** (`0022`). A target volume used to be the exception: a target named a SKU, so its unit was that SKU's `pack_unit` in the Product Master, and `queries.volume_by_unit`/`volume_totals`/`single_volume_by_group` partitioned on it to refuse adding a kilogram to a litre. Removing that master removed the unit those readers partitioned on — the Material Master states none — so all three are gone rather than left running on a column that would always be NULL and render every target volume as "mixed". `target_volume` is now in `queries.TARGET_MEASURES.sums` beside `target_amount`, and `volume_total`/`volume_by_group` take a `volume_column` and serve both sides. There is no `UNSPECIFIED_UNIT` and no MIXED basis left.
 - Registries are **derived, never hand-written**: upload types come from `master_data.schema.TABLE_SPECS` and `etl.datasets.DATASETS`; the data-management catalogue comes from `app.upload.registry`. Add a column to a dimension and the template, validation, preview, edit form and export follow automatically — so extend the spec, don't add a parallel list.
-- Migrations are `0001`–`0033` under `backend/app/database/migrations/versions/`. **Data is never truncated and no row is ever deleted**; new columns carry server defaults. A column may be dropped only after the data it held has been derived into its replacement in the same migration — 0013 and 0014 both do this on `fact_target`/`stg_target`, back-filling from each row's own `dim_date` entry before removing anything. Do not drop a column whose content cannot be reconstructed from what remains. When a migration rebuilds a view, base it on the body from the revision that **last authored** it (0009 added `WHERE is_void = FALSE` to the fact-reading views) — copying an older body silently resurrects voided rows in every report. `0016_material_stock` is the one exception to "nothing is deleted": it drops the old stock tables because the two models describe different things and neither can be derived from the other, so it **refuses to run while those tables hold rows** rather than discarding them. `0017_admin_layers` is purely additive — `dim_country`, `map_admin_points` and a country row in `map_area_styles` — and `dim_division.country_code` is deliberately **nullable** because divisions imported before any country file exist and the migration will not invent a parent for them. `0019_material_architecture` is the second exception: it drops `dim_material_location` because its rows carry no Material Brand and no Material Description, the two columns that now define a material, so a record derived from one would be incomplete — the rows were exported to `reports/` first and the migration **refuses to run while either stock table holds a row**. `0020_remove_receivables_and_warehouse` is the third: it drops `fact_collection`, `fact_outstanding`, their staging tables, `dim_warehouse`, the two warehouse columns on the sales tables and six views, and it counts every one of them first — a non-zero count anywhere aborts the whole revision rather than destroying part of it. On SQLite that revision also captures every surviving view, drops them and recreates them byte-for-byte around the column drop, because SQLite re-validates the entire schema during a table rewrite and a view two joins away fails just as loudly as a direct reader. `0022_remove_product_architecture` is the fourth: it drops `dim_product` outright after exporting it, because the replacement master is loaded from its own file and deriving one from the other is the exact thing the change exists to prevent. It back-fills `fact_sales`/`fact_target.material_code` from each fact's **own staging row** — the source file's identifier, never the dropped dimension — and counts four ways first (no staging row, ambiguous staging rows, a code the Material Master lacks, a pre-existing `materials` grant); a non-zero count anywhere aborts with the facts intact. It builds temporary indexes on `(source_file, source_row_number)` for that join and drops them afterwards: without them the guard is a nested scan over tens of billions of comparisons and the migration appears to hang. `0023_material_company` and `0024_customer_name_on_views` are both purely additive — one column plus two indexes, and a pair of view rebuilds respectively. `0025_agent_learning` is additive too: four new tables and nothing else touched. Its `active_key` column on the two approved tables is worth knowing about — it holds the natural key while a row is ACTIVE and NULL otherwise, under a plain unique constraint, because "at most one active meaning per phrase, and a retired one may be replaced" needs both halves and a partial unique index is PostgreSQL-only. NULLs are distinct in a unique constraint on both dialects, so the retired rows pile up freely while at most one active row can hold the key. `0026_remove_warehouse_marker` deletes one seeded marker design that outlived the entity type it named, and counts an assignment first. `0027_target_management` is additive: the eight Target Management tables, the seeded approval matrix, and `conversion_factor` / `transfer_price` on `dim_material` — both **nullable with no default and no back-fill**, because a conversion factor of 1.0 does not read as “unknown”, it reads as a claim about the goods. `0028_target_allocation_job` is additive too: one table holding one run of the allocation engine and how far it got. `0029_target_adjustments` adds `target_adjustment` plus four columns on the job row (`projected_rows`, `allocation_level`, `warning_count`, `sales_rows_found`), all additive. `0030_target_revision_node` adds four columns to `target_revision` — `version_id`, `level`, `node_code`, `material_code` — and corrects one piece of seeded configuration: `0027` seeded the approval chain **upside down**, Management at sequence 1 and the Sales Officer at 8, which taken literally means the CEO signs before the regional manager has looked. The correction runs in two passes through a negative holding value (the source and target sequences overlap) and applies **only where the row still holds the value 0027 wrote**, because a deployment whose administrator has already reordered the chain has expressed a decision that a migration fixing its own earlier defect has no business overwriting. `0031_credit_control` is purely additive — `stg_credit_invoice`, `fact_credit_invoice`, twelve indexes and three views — and touches no existing object, so the SQLite view-capture dance 0020 and 0022 needed does not apply. It is *not* built from 0020's `downgrade()`: that rebuilt a table holding a balance somebody else had calculated, and this one holds an invoice, so only the shape of `aging_bucket` carried over. Note that `alembic.ini`'s `sqlalchemy.url` is ignored — `migrations/env.py` resolves `os.getenv("DIRECT_URL") or get_settings().database_url`, and `database_url` is a **property** reading `DATABASE_URL` at access time — so a migration run with neither variable set does not fail, it silently succeeds against whatever `.env` names, which on a developer box is `data/dev.db`. Any test or script that migrates must set the variable *and assert the target*, which is what `test_credit_control._migrate` does. `0032_map_composition` added three map-composition tables and is kept as history rather than deleted — both databases were stamped at it, and a revision removed from the chain strands every database that has applied it. `0033_remove_map` reverses the whole map: eleven tables dropped in foreign-key order, plus the `map` and `map_settings` permission rows, which name sections the application no longer declares. It is the platform's most destructive revision — 1,397 coordinates, 6,284 admin points and 580 boundary rings, none of them recoverable from what remains — and unlike 0016, 0019 and 0020 it does **not** refuse to run on non-empty tables, because destroying those rows is the instruction it carries out rather than an accident it must prevent. The four administrative dimensions are deliberately untouched.
+- Migrations are `0001`–`0034` under `backend/app/database/migrations/versions/`. **Data is never truncated and no row is ever deleted**; new columns carry server defaults. A column may be dropped only after the data it held has been derived into its replacement in the same migration — 0013 and 0014 both do this on `fact_target`/`stg_target`, back-filling from each row's own `dim_date` entry before removing anything. Do not drop a column whose content cannot be reconstructed from what remains. When a migration rebuilds a view, base it on the body from the revision that **last authored** it (0009 added `WHERE is_void = FALSE` to the fact-reading views) — copying an older body silently resurrects voided rows in every report. `0016_material_stock` is the one exception to "nothing is deleted": it drops the old stock tables because the two models describe different things and neither can be derived from the other, so it **refuses to run while those tables hold rows** rather than discarding them. `0017_admin_layers` is purely additive — `dim_country`, `map_admin_points` and a country row in `map_area_styles` — and `dim_division.country_code` is deliberately **nullable** because divisions imported before any country file exist and the migration will not invent a parent for them. `0019_material_architecture` is the second exception: it drops `dim_material_location` because its rows carry no Material Brand and no Material Description, the two columns that now define a material, so a record derived from one would be incomplete — the rows were exported to `reports/` first and the migration **refuses to run while either stock table holds a row**. `0020_remove_receivables_and_warehouse` is the third: it drops `fact_collection`, `fact_outstanding`, their staging tables, `dim_warehouse`, the two warehouse columns on the sales tables and six views, and it counts every one of them first — a non-zero count anywhere aborts the whole revision rather than destroying part of it. On SQLite that revision also captures every surviving view, drops them and recreates them byte-for-byte around the column drop, because SQLite re-validates the entire schema during a table rewrite and a view two joins away fails just as loudly as a direct reader. `0022_remove_product_architecture` is the fourth: it drops `dim_product` outright after exporting it, because the replacement master is loaded from its own file and deriving one from the other is the exact thing the change exists to prevent. It back-fills `fact_sales`/`fact_target.material_code` from each fact's **own staging row** — the source file's identifier, never the dropped dimension — and counts four ways first (no staging row, ambiguous staging rows, a code the Material Master lacks, a pre-existing `materials` grant); a non-zero count anywhere aborts with the facts intact. It builds temporary indexes on `(source_file, source_row_number)` for that join and drops them afterwards: without them the guard is a nested scan over tens of billions of comparisons and the migration appears to hang. `0023_material_company` and `0024_customer_name_on_views` are both purely additive — one column plus two indexes, and a pair of view rebuilds respectively. `0025_agent_learning` is additive too: four new tables and nothing else touched. Its `active_key` column on the two approved tables is worth knowing about — it holds the natural key while a row is ACTIVE and NULL otherwise, under a plain unique constraint, because "at most one active meaning per phrase, and a retired one may be replaced" needs both halves and a partial unique index is PostgreSQL-only. NULLs are distinct in a unique constraint on both dialects, so the retired rows pile up freely while at most one active row can hold the key. `0026_remove_warehouse_marker` deletes one seeded marker design that outlived the entity type it named, and counts an assignment first. `0027_target_management` is additive: the eight Target Management tables, the seeded approval matrix, and `conversion_factor` / `transfer_price` on `dim_material` — both **nullable with no default and no back-fill**, because a conversion factor of 1.0 does not read as “unknown”, it reads as a claim about the goods. `0028_target_allocation_job` is additive too: one table holding one run of the allocation engine and how far it got. `0029_target_adjustments` adds `target_adjustment` plus four columns on the job row (`projected_rows`, `allocation_level`, `warning_count`, `sales_rows_found`), all additive. `0030_target_revision_node` adds four columns to `target_revision` — `version_id`, `level`, `node_code`, `material_code` — and corrects one piece of seeded configuration: `0027` seeded the approval chain **upside down**, Management at sequence 1 and the Sales Officer at 8, which taken literally means the CEO signs before the regional manager has looked. The correction runs in two passes through a negative holding value (the source and target sequences overlap) and applies **only where the row still holds the value 0027 wrote**, because a deployment whose administrator has already reordered the chain has expressed a decision that a migration fixing its own earlier defect has no business overwriting. `0031_credit_control` is purely additive — `stg_credit_invoice`, `fact_credit_invoice`, twelve indexes and three views — and touches no existing object, so the SQLite view-capture dance 0020 and 0022 needed does not apply. It is *not* built from 0020's `downgrade()`: that rebuilt a table holding a balance somebody else had calculated, and this one holds an invoice, so only the shape of `aging_bucket` carried over. Note that `alembic.ini`'s `sqlalchemy.url` is ignored — `migrations/env.py` resolves `os.getenv("DIRECT_URL") or get_settings().database_url`, and `database_url` is a **property** reading `DATABASE_URL` at access time — so a migration run with neither variable set does not fail, it silently succeeds against whatever `.env` names, which on a developer box is `data/dev.db`. Any test or script that migrates must set the variable *and assert the target*, which is what `test_credit_control._migrate` does. `0032_map_composition` added three map-composition tables and is kept as history rather than deleted — both databases were stamped at it, and a revision removed from the chain strands every database that has applied it. `0033_remove_map` reverses the whole map: eleven tables dropped in foreign-key order, plus the `map` and `map_settings` permission rows, which name sections the application no longer declares. It is the platform's most destructive revision — 1,397 coordinates, 6,284 admin points and 580 boundary rings, none of them recoverable from what remains — and unlike 0016, 0019 and 0020 it does **not** refuse to run on non-empty tables, because destroying those rows is the instruction it carries out rather than an accident it must prevent. The four administrative dimensions are deliberately untouched. `0034_business_map` is purely additive: the four rebuilt map tables and one seeded design, inserted **without explicit primary keys** so the PostgreSQL identity sequences advance. It loads no coordinates — a migration whose result depended on what `reports/` happened to contain would not be a migration — and `scripts/reload_map_locations.py` is the separate, dry-by-default step that restores them.
 - **Stock is a dateless position with no volume** (`0016_material_stock`, `0019_material_architecture`). `fact_material_stock` references three masters and nothing else — `dim_plant` (Company + Plant, joined by `models.plant_key()`), `dim_storage_location` (Plant + Storage Location, `models.storage_location_key()`) and `dim_material` (keyed on `material_code` alone) — with no `date_id` and no organisational hierarchy below company. The source states neither, so no report may imply them. The four categories (unrestricted, quality inspection, blocked, in transit) stay four separate numbers because only unrestricted stock is sellable; `total_stock` sums all four including in transit and is defined **once**, in `vw_material_stock_detail`. Risk is measured by shelf life (`EXPIRED` / `EXPIRING_SOON` within `STOCK_EXPIRING_SOON_DAYS` / `VALID` / `NO_EXPIRY`), never by coverage days — that needs a rate of consumption, and a rate needs two readings and the time between them, which a dateless position cannot supply. (Stock and sales *do* share a Material Code since `0022`; it is the rate that cannot be derived, not the join.) A stock row naming a plant, storage location or material its master lacks is rejected, never auto-created, and each failure names the master to correct.
 - **A stock figure is reported as `KG/LTR`, and the unit lives in the label.** A card reads `Unrestricted Stock (KG/LTR)` above `125,500`; a column heading carries the unit and its cells are plain grouped numbers; a chart passes the labelled name as its series (`CategoryBarChart`'s `valueLabel`) so the tooltip says it too; the agent writes `Unrestricted Stock (KG/LTR): 125,500` and never `125,500 KG/LTR`. The unit string is declared once on each side — `ai/queries.STOCK_UNIT` and `utils/format.STOCK_UNIT` — and applied through `stock_label`/`stockLabel` (name) and `format_stock`/`formatStock` (value); `humanizeColumn` adds it to a derived stock heading so a table that names no headers still gets the pairing. **Nothing is ever converted**: the uploaded value *is* the reported value, there is no factor in the source to convert with, and a kilogram is never derived from a litre or the reverse. There is no UOM column, unit column or KG/LTR selector anywhere in the stock surface, and adding one would mean inventing the per-row unit the source does not state. This is display only — `fact_material_stock` has no unit column and must not gain one.
 - **A stock status colours the complete metric — its label and its value — and never one of them alone.** Green for unrestricted stock, the only stock that can be sold; amber for expiring-soon stock, a warning with time left to act on it; red for expired stock, money already lost. The three tokens are declared once as `.stock-status--unrestricted` / `--expiring` / `--expired` in `frontend/src/index.css` and looked up by metric key through `utils/format.stockStatusClass`, which answers to both spellings of each measure — a KPI or column key (`expired_stock`) and a shelf-life bucket code (`EXPIRED`). `KpiCard`, `StatCard`'s `statusKey` and `DataTable` (heading *and* cells) all read that one lookup; a component that spells its own emerald, amber or red has left the standard, and `charts/Charts.STOCK_STATUS_COLORS` is the one deliberate second copy, as fills, because an SVG bar takes a colour and not a class. Anything not in the lookup — a total, quality-inspection or blocked figure, any sales measure — stays neutral, and a card's supporting position count stays neutral under a coloured metric. Green and amber use the 700 weight in light mode rather than 600, because amber-600 on white clears the contrast floor for the large figure but not for the small label above it and the pair has to be legible as one unit; red is the 600 the rest of the application already uses. Colour is never the only signal — the label always names the status in words.

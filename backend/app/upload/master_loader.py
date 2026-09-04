@@ -562,12 +562,69 @@ def load(session: Session, upload_type: UploadType,
 # ---------------------------------------------------------------------------
 # Upload-type specific rules
 # ---------------------------------------------------------------------------
+def _check_map_location(session: Session, upload_type: UploadType,
+                        row: MasterRow) -> None:
+    """Coordinates need checks the generic loader cannot know about.
+
+    Three of them: the entity type must be a level the map draws, the code
+    must exist in the master data (a coordinate for a customer that does not
+    exist would silently never draw), and the latitude/longitude must be a real
+    place — which is where a spreadsheet's ``0`` gets caught.
+    """
+    from ..map.geo import InvalidCoordinate, entity_exists
+    from ..map.geo import validate as validate_coordinate
+    from ..map.levels import LEVEL_BY_KEY
+
+    entity_type = row.values.get("entity_type")
+    if entity_type and entity_type not in LEVEL_BY_KEY:
+        row.issues.append(UploadIssue(
+            row_number=row.row_number, column="Entity Type", value=str(entity_type),
+            error_code=code.INVALID_TYPE,
+            message=f"'{entity_type}' is not a map level.",
+            suggested_fix="Use one of: " + ", ".join(sorted(LEVEL_BY_KEY)),
+        ))
+        entity_type = None
+
+    entity_code = row.values.get("entity_code")
+    if entity_type and entity_code and not entity_exists(session, entity_type,
+                                                         str(entity_code)):
+        row.issues.append(UploadIssue(
+            row_number=row.row_number, column="Entity Code", value=str(entity_code),
+            error_code=code.INVALID_PARENT,
+            message=(f"{entity_type} '{entity_code}' does not exist in the master "
+                     "data."),
+            suggested_fix="Load the master data for this entity first, or correct "
+                          "the code.",
+        ))
+
+    latitude = row.values.get("latitude")
+    longitude = row.values.get("longitude")
+    if latitude is not None and longitude is not None:
+        try:
+            validate_coordinate(float(latitude), float(longitude))
+        except (InvalidCoordinate, TypeError, ValueError) as exc:
+            row.issues.append(UploadIssue(
+                row_number=row.row_number, column="Latitude / Longitude",
+                value=f"{latitude}, {longitude}",
+                error_code=code.INVALID_TYPE, message=str(exc),
+                suggested_fix="Enter decimal degrees, e.g. 23.7808 and 90.4008.",
+            ))
+
+
+def _after_map_locations(session: Session, upload_type: UploadType,
+                         result: "MasterLoadResult") -> None:
+    """Re-derive the parent centroids after coordinates were loaded."""
+    from ..map.geo import derive_parents
+
+    derive_parents(session)
+
+
 #: Extra per-row validation, by upload type. Absent means the generic rules are
 #: the whole story.
-ROW_CHECKS: dict[str, object] = {}
+ROW_CHECKS: dict[str, object] = {"map_entity_locations": _check_map_location}
 
 #: What to do after a successful load, by upload type.
-POST_LOAD: dict[str, object] = {}
+POST_LOAD: dict[str, object] = {"map_entity_locations": _after_map_locations}
 
 
 def _promote_source_status(session: Session, upload_type: UploadType) -> None:

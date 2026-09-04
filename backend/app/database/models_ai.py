@@ -284,6 +284,21 @@ class AuditAction:
     MARKER_CONFIG_IMPORTED = "MARKER_CONFIG_IMPORTED"
     MAP_LOCATION_UPDATED = "MAP_LOCATION_UPDATED"
 
+    # --- Business map: composing what it draws -----------------------------
+    #: Their own actions rather than ``ADMIN_CHANGE``: a design decides what
+    #: every reader of the map sees, and "who changed the map, and to what"
+    #: is a question an administrator asks by name. Written by the rebuilt
+    #: map (``0034_business_map`` onward); the MARKER_* rows above are the
+    #: retired designer's and stay for the trail they already sit in.
+    MAP_DESIGN_CREATED = "MAP_DESIGN_CREATED"
+    MAP_DESIGN_UPDATED = "MAP_DESIGN_UPDATED"
+    MAP_DESIGN_DUPLICATED = "MAP_DESIGN_DUPLICATED"
+    MAP_DESIGN_DELETED = "MAP_DESIGN_DELETED"
+    MAP_DESIGN_ACTIVATED = "MAP_DESIGN_ACTIVATED"
+    MAP_DESIGN_DEACTIVATED = "MAP_DESIGN_DEACTIVATED"
+    MAP_DESIGN_DEFAULT_SET = "MAP_DESIGN_DEFAULT_SET"
+    MAP_LAYERS_UPDATED = "MAP_LAYERS_UPDATED"
+
     # --- Phase 4: master and transaction data management -------------------
     RECORD_CREATED = "RECORD_CREATED"
     RECORD_UPDATED = "RECORD_UPDATED"

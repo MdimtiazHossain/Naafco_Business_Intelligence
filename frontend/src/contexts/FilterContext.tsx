@@ -192,6 +192,15 @@ export const CREDIT_FILTERS: FilterLevel[] = [
 ];
 
 /**
+ * The Business Map filter set: the sales hierarchy, the customer, the sales
+ * force, the material chain and the batch — every filter `vw_sales_detail`
+ * honours, which is what the map's one query reads. The same set the
+ * Performance page draws, declared here so the bar the map page renders and
+ * the query it sends cannot disagree about what narrows the map.
+ */
+export const MAP_FILTERS: FilterLevel[] = [...HIERARCHY_ORDER, ...INDEPENDENT_FILTERS];
+
+/**
  * Every filter the URL may carry.
  *
  * This is what the provider reads out of the query string and what "clear

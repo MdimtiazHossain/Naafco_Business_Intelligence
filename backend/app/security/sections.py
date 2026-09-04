@@ -55,6 +55,8 @@ class SectionKey:
     CUSTOMERS = "customers"
     CREDIT_CONTROL = "credit_control"
     ALERTS = "alerts"
+    MAP = "map"
+    MAP_SETTINGS = "map_settings"
     DATA_QUALITY = "data_quality"
     DATA_UPLOAD = "data_upload"
     MASTER_DATA = "master_data"
@@ -370,6 +372,20 @@ SECTIONS: tuple[Section, ...] = (
         actions=(Action.VIEW,),
     ),
     Section(
+        key=SectionKey.MAP,
+        label="Business Map",
+        route="/map",
+        group=GROUP_REPORTING,
+        description=(
+            "One map, many layers: sales, target, achievement and growth by "
+            "zone, region, area, territory, sub-territory and customer, drawn "
+            "from the same figures every report uses."
+        ),
+        api_prefixes=("/api/map/config", "/api/map/data", "/api/map/entities",
+                      "/api/map/designs"),
+        actions=_REPORT_ACTIONS,
+    ),
+    Section(
         key=SectionKey.DATA_QUALITY,
         label="Data Quality",
         route="/data-quality",
@@ -433,6 +449,28 @@ SECTIONS: tuple[Section, ...] = (
             Action.EDIT: Role.ADMIN_ROLES,
             Action.DELETE: (Role.SUPER_ADMIN,),
         },
+    ),
+    Section(
+        key=SectionKey.MAP_SETTINGS,
+        label="Map Settings",
+        route="/map",
+        group=GROUP_SYSTEM,
+        description=(
+            "Compose the business map: create, edit, duplicate and delete map "
+            "designs, and decide which layers each draws, in what order and "
+            "measured by which metric. Opened from the map's Settings drawer."
+        ),
+        api_prefixes=("/api/map/designs",),
+        actions=(Action.VIEW, Action.CREATE, Action.EDIT, Action.DELETE),
+        # A permission in its own right rather than a synonym for
+        # "administrator": off by default for everyone, on by default for
+        # administrators, and grantable to a marketing or MIS lead who owns how
+        # the map reads. The ``map`` section beside it is what lets a reader
+        # *open* the map; this is what lets somebody change what it draws for
+        # everyone, which is why the two are separate. Deleting a design
+        # defaults to administrators alone, as DELETE does everywhere.
+        default_allow=False,
+        default_roles=Role.ADMIN_ROLES,
     ),
     Section(
         key=SectionKey.AGENT_LEARNING,

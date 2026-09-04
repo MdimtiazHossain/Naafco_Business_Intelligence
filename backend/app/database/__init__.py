@@ -18,6 +18,7 @@ from . import models_ai  # noqa: F401  (registers the Phase 3 tables)
 from . import models_admin  # noqa: F401  (registers the Phase 4 tables)
 from . import models_geo  # noqa: F401  (registers the administrative geography)
 from . import models_learning  # noqa: F401  (registers the agent-learning tables)
+from . import models_map  # noqa: F401  (registers the business-map tables)
 from . import models_target  # noqa: F401  (registers the target-management tables)
 
 __all__ = [

@@ -29,6 +29,7 @@ const PerformancePage = lazy(() => import('./pages/PerformancePage'));
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
 const CustomersPage = lazy(() => import('./pages/CustomersPage'));
 const CreditControlPage = lazy(() => import('./pages/CreditControlPage'));
+const BusinessMapPage = lazy(() => import('./pages/BusinessMapPage'));
 const AiAssistantPage = lazy(() => import('./pages/AiAssistantPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const DataQualityPage = lazy(() => import('./pages/DataQualityPage'));
@@ -277,6 +278,14 @@ function AppRoutes() {
           element={
             <Guarded section="credit_control">
               <CreditControlPage />
+            </Guarded>
+          }
+        />
+        <Route
+          path="/map"
+          element={
+            <Guarded section="map">
+              <BusinessMapPage />
             </Guarded>
           }
         />

@@ -38,6 +38,7 @@ from .schemas import (
     GroupBy,
     GroupedToolInput,
     GrowthToolInput,
+    MapLayerToolInput,
     Intent,
     RootCauseToolInput,
     ScopeFilters,
@@ -819,6 +820,129 @@ _performance_tool("get_customer_performance", GroupBy.CUSTOMER,
 _performance_tool("get_salesforce_performance", GroupBy.SALES_FORCE,
                   "Sales performance by sales officer / sales force code.",
                   Intent.SALES_FORCE_PERFORMANCE)
+
+
+#: The measures one map row carries, in the order a table would list them.
+#: ``app.map.metrics`` names which of these a layer may draw and
+#: ``test_map_data`` pins that every metric it declares is a column here.
+MAP_ROW_FIELDS: tuple[str, ...] = (
+    "code", "label", "net_sales", "quantity", "volume", "customer_count",
+    "target_amount", "target_quantity", "target_volume", "achievement_percent",
+    "shortfall", "previous_net_sales", "growth_percent",
+)
+
+
+@register("get_map_layer",
+          "Every entity at one organisational level with the measures the "
+          "business map draws: sales, target, achievement, shortfall, growth "
+          "and customer count. Uncapped, because a map that omitted the 501st "
+          "customer would draw a gap that is not there. Not offered to the "
+          "assistant — a question is answered by the ranked performance tools.",
+          MapLayerToolInput, [])
+def get_map_layer(ctx: ToolContext, arguments: MapLayerToolInput) -> ToolResult:
+    """The map's one query, through the same scope gate as every other tool.
+
+    Three aggregates joined in Python on the group code — sales for the
+    period, targets for the period, and sales for the comparison period — the
+    same shape as ``queries.target_vs_actual``, which this deliberately does
+    not call: that reader ranks and caps, and a map wants every entity.
+
+    **Absent and zero stay apart.** An entity with a target and no sales rows
+    sold nothing in a window the sales fact covers completely, so its net
+    sales are ``0.0`` and its achievement is ``0``. An entity with sales and no
+    target has *no* target — ``target_amount``, ``achievement_percent`` and
+    ``shortfall`` are ``None``, never zero — and an entity with no sales in the
+    comparison window has undefined growth rather than −100%. Volume is
+    ``None`` where no line stated one, exactly as the sales report has it.
+
+    ``shortfall`` is net sales minus target: negative when short, the same
+    sign the executive brand table uses and deliberately not ``queries.gap``,
+    which is the reverse.
+    """
+    filters = ctx.scoped(arguments.filters)
+    group = arguments.group_by
+    result = _base("get_map_layer", arguments, filters, "net_sales")
+    _note_unsupported(result, ctx.session, q.SALES_VIEW, filters)
+
+    try:
+        sales = q.aggregate_every_group(
+            ctx.session, q.MAP_SALES_MEASURES, filters, arguments.date_from,
+            arguments.date_to, group,
+        )
+        targets = q.aggregate_every_group(
+            ctx.session, q.TARGET_MEASURES, filters, arguments.date_from,
+            arguments.date_to, group,
+        )
+        previous: list[dict[str, Any]] = []
+        if arguments.compare_from is not None and arguments.compare_to is not None:
+            previous = q.aggregate_every_group(
+                ctx.session, q.MAP_SALES_MEASURES, filters, arguments.compare_from,
+                arguments.compare_to, group,
+            )
+    except ValueError as exc:
+        raise ToolExecutionError(str(exc), user_message=(
+            f"The map cannot be drawn by {group.value.replace('_', ' ')}."
+        )) from exc
+
+    def _blank(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "code": row["code"], "label": row.get("label") or row["code"],
+            "net_sales": 0.0, "quantity": 0.0, "volume": None,
+            "customer_count": 0,
+            "target_amount": None, "target_quantity": None, "target_volume": None,
+            "achievement_percent": None, "shortfall": None,
+            "previous_net_sales": None, "growth_percent": None,
+        }
+
+    combined: dict[Any, dict[str, Any]] = {}
+    for row in sales:
+        entry = combined.setdefault(row["code"], _blank(row))
+        entry["net_sales"] = row.get("net_sales") or 0.0
+        entry["quantity"] = row.get("quantity") or 0.0
+        entry["volume"] = row.get("volume")
+        entry["customer_count"] = row.get("customer_count") or 0
+    for row in targets:
+        entry = combined.setdefault(row["code"], _blank(row))
+        entry["target_amount"] = row.get("target_amount") or 0.0
+        entry["target_quantity"] = row.get("target_quantity")
+        entry["target_volume"] = row.get("target_volume")
+    for row in previous:
+        # Only entities of the current period are drawn; a previous-period
+        # figure for an entity with nothing now would be a point with no
+        # current measure to size it by.
+        entry = combined.get(row["code"])
+        if entry is not None:
+            entry["previous_net_sales"] = row.get("net_sales") or 0.0
+
+    for entry in combined.values():
+        if entry["target_amount"] is not None:
+            entry["achievement_percent"] = _percent(
+                achievement_percent(entry["net_sales"], entry["target_amount"])
+            )
+            entry["shortfall"] = entry["net_sales"] - entry["target_amount"]
+        if entry["previous_net_sales"] is not None:
+            entry["growth_percent"] = _percent(
+                growth_percent(entry["net_sales"], entry["previous_net_sales"])
+            )
+
+    rows = sorted(combined.values(),
+                  key=lambda entry: entry["net_sales"], reverse=True)
+    result.sources = [q.SALES_VIEW, q.TARGET_VIEW]
+    result.values = {
+        "group_by": group.value,
+        "entities": len(rows),
+        "compared": bool(previous) or arguments.compare_from is not None,
+    }
+    if not rows:
+        return _empty(result)
+    result.rows = rows
+    result.row_count = len(rows)
+    result.value = sum(entry["net_sales"] for entry in rows)
+    result.facts.append(
+        f"{len(rows)} {group.value.replace('_', ' ')} entities with sales or a "
+        f"target in the period."
+    )
+    return result
 
 
 #: What a brand ranking reports. Deliberately the three transactional measures

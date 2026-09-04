@@ -64,6 +64,9 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "transactions": (*DATASET_TABLES, "etl_rejected_records", "etl_import_batches"),
     "uploads": ("upload_errors", "upload_batches"),
     "masters": (
+        # Coordinates are keyed on master codes, so they go with the codes
+        # rather than being left pointing at nothing.
+        "map_entity_locations",
         # Administrative geography, deepest first.
         "dim_upazila", "dim_district", "dim_division",
         # Dimensions with no children of their own. The material masters are
@@ -97,11 +100,9 @@ FILES_BY_GROUP: dict[str, tuple[str, ...]] = {
 PROTECTED: dict[str, str] = {
     "dim_date": "generated calendar; the ETL cannot load a row without it",
     "etl_master_source_status": "registry the ETL pipeline maintains itself",
-    "map_marker_designs": "application configuration, re-seeded at startup",
-    "map_marker_design_versions": "history of that configuration",
-    "map_marker_assets": "uploaded marker artwork",
-    "map_marker_assignments": "which design each entity type uses",
-    "map_area_styles": "how administrative areas are drawn",
+    "map_designs": "map composition: configuration, not data",
+    "map_layers": "the layers of each map design",
+    "map_point_configurations": "how each layer's points are labelled",
     "role_section_permissions": "role defaults, not data",
     "alembic_version": "schema revision",
 }

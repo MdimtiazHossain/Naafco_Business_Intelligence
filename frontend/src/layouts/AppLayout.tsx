@@ -33,6 +33,7 @@ import {
   UploadCloud,
   User as UserIcon,
   UserCog,
+  Map as MapIcon,
   Users,
   X,
 } from 'lucide-react';
@@ -79,6 +80,9 @@ const MAIN_NAV: NavItem[] = [
     icon: <ReceiptText size={18} />,
     section: 'credit_control',
   },
+  // Its own section, on by default for every role like the reports above it:
+  // one map, every level of the hierarchy as a layer.
+  { to: '/map', labelKey: 'nav.map', icon: <MapIcon size={18} />, section: 'map' },
   { to: '/alerts', labelKey: 'nav.alerts', icon: <AlertTriangle size={18} />, section: 'alerts' },
   { to: '/data-quality', labelKey: 'nav.dataQuality', icon: <ClipboardCheck size={18} />, section: 'data_quality' },
 ];

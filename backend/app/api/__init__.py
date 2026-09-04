@@ -15,6 +15,7 @@ from .routes_etl import router as etl_router
 from .routes_export import router as export_router
 from .routes_import import router as import_router
 from .routes_learning import router as learning_router
+from .routes_map import router as map_router
 from .routes_masterdata import router as master_data_router
 from .routes_pages import router as pages_router
 from .routes_credit import router as credit_router
@@ -38,6 +39,7 @@ ALL_ROUTERS = (
     chat_router,
     dashboard_router,
     pages_router,
+    map_router,
     master_data_router,
     # After the page routers: its ``/api/master/{entity}`` paths must not be
     # confused with ``/api/master-data/*``, and registering it later keeps the
@@ -62,6 +64,7 @@ __all__ = [
     "chat_router",
     "dashboard_router",
     "pages_router",
+    "map_router",
     "master_data_router",
     "admin_router",
     "target_management_router",

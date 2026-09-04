@@ -362,6 +362,22 @@ SALES_MEASURES = MeasureSet(
     nullable_sums=("volume",),
 )
 
+#: What the business map aggregates per entity: the sales measures, plus how
+#: many distinct customers stood behind them.
+#:
+#: The sums are ``SALES_MEASURES.sums`` by reference rather than restated, so
+#: the switch that decides what a sales report says (see that set's comment)
+#: is still one switch. The count is the one thing a map layer needs that a
+#: sales table does not: "128 customers" beside a sub-territory's figure is
+#: how a reader tells a large territory from a large customer.
+MAP_SALES_MEASURES = MeasureSet(
+    view_name=SALES_VIEW,
+    sums=SALES_MEASURES.sums,
+    default_sort=SALES_MEASURES.default_sort,
+    counts=(("customer_count", "customer_code"),),
+    nullable_sums=SALES_MEASURES.nullable_sums,
+)
+
 #: The four stock categories, summed independently, plus the total the view
 #: computes. They stay four measures on every report: unrestricted stock is what
 #: can be sold, and the other three are each held back for a different reason, so
@@ -448,6 +464,51 @@ def aggregate_by(session: Session, measures: MeasureSet, filters: ScopeFilters,
     ``extra_conditions`` is the same narrowing-only hook
     :func:`aggregate_totals` documents.
     """
+    statement, year_column = _grouped_statement(
+        session, measures, filters, date_from, date_to, group_by,
+        direction=direction, sort_field=sort_field, date_column=date_column,
+        extra_conditions=extra_conditions,
+    )
+    bounded = max(1, min(limit, MAX_ROWS))
+    rows = _rows(session.execute(statement.limit(bounded + 1)))
+    truncated = len(rows) > bounded
+    return _finish_grouped_rows(rows[:bounded], group_by, year_column), truncated
+
+
+def aggregate_every_group(session: Session, measures: MeasureSet,
+                          filters: ScopeFilters, date_from: dt.date,
+                          date_to: dt.date, group_by: GroupBy,
+                          date_column: str = "full_date",
+                          ) -> list[dict[str, Any]]:
+    """Totals for **every** group at one dimension, uncapped.
+
+    The same statement :func:`aggregate_by` runs, without its ``MAX_ROWS``
+    ceiling. That ceiling exists because a table or an answer stops being
+    readable past a few hundred rows; a map is the one reader for which "the
+    top 500" is a wrong answer rather than a long one — a customer layer that
+    silently omitted the 501st customer would draw a coverage gap that is not
+    there. The result is bounded by the master data, not by the facts: there
+    are only as many groups as there are entities at the level.
+    """
+    statement, year_column = _grouped_statement(
+        session, measures, filters, date_from, date_to, group_by,
+        date_column=date_column,
+    )
+    rows = _rows(session.execute(statement))
+    return _finish_grouped_rows(rows, group_by, year_column)
+
+
+def _grouped_statement(session: Session, measures: MeasureSet,
+                       filters: ScopeFilters, date_from: dt.date,
+                       date_to: dt.date, group_by: GroupBy, *,
+                       direction: str = "desc", sort_field: str | None = None,
+                       date_column: str = "full_date",
+                       extra_conditions: Sequence[Any] | None = None):
+    """The grouped, filtered, ordered statement both readers above run.
+
+    Returns ``(statement, year_column)``: the caller decides whether to cap it,
+    and needs the year column to fold a period grouping back into one code.
+    """
     table = view(session, measures.view_name)
     if group_by not in GROUP_COLUMNS:
         raise ValueError(f"Unsupported grouping: {group_by}")
@@ -487,12 +548,13 @@ def aggregate_by(session: Session, measures: MeasureSet, filters: ScopeFilters,
     order = desc(func.sum(table.c[order_field])) if direction == "desc" else asc(
         func.sum(table.c[order_field])
     )
-    bounded = max(1, min(limit, MAX_ROWS))
-    statement = statement.order_by(order).limit(bounded + 1)
+    return statement.order_by(order), year_column
 
-    rows = _rows(session.execute(statement))
-    truncated = len(rows) > bounded
-    kept = [_label_unassigned(row) for row in rows[:bounded]]
+
+def _finish_grouped_rows(rows: list[dict[str, Any]], group_by: GroupBy,
+                         year_column: str | None) -> list[dict[str, Any]]:
+    """Label the NULL group and fold a period's year into its code."""
+    kept = [_label_unassigned(row) for row in rows]
     if year_column:
         for row in kept:
             year = row.pop("period_year", None)
@@ -500,7 +562,7 @@ def aggregate_by(session: Session, measures: MeasureSet, filters: ScopeFilters,
                 continue
             row["label"] = _period_label(group_by, row["code"], row["label"], year)
             row["code"] = f"{year}|{row['code']}"
-    return kept, truncated
+    return kept
 
 
 # ---------------------------------------------------------------------------

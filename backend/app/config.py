@@ -165,9 +165,47 @@ class Settings:
         os.getenv("TARGET_ALLOCATION_WORKER_COUNT", "1")
     )
 
-    # --- Administrative area layer ------------------------------------------
-
-    # --- Basemap ------------------------------------------------------------
+    # --- Business map -------------------------------------------------------
+    #: MapLibre style documents for the standard basemap, one per theme.
+    #:
+    #: OpenFreeMap by default: it serves the OpenStreetMap basemap with no API
+    #: key, no token and no per-view billing, and its TileJSON carries the
+    #: attribution MapLibre renders, so nothing here has to restate it. Both
+    #: defaults are deliberately muted designs — a business map is read for
+    #: what is drawn *on* it, and a vivid basemap competes with the data.
+    #:
+    #: Either value may instead be a raster tile template (``{z}/{x}/{y}``)
+    #: for a plain OpenStreetMap-compatible tile server; ``app.map.basemaps``
+    #: tells the two apart, so the browser wraps a template in the one-source
+    #: style MapLibre needs rather than being handed a URL it cannot parse.
+    map_style_url: str = os.getenv(
+        "MAP_STYLE_URL", "https://tiles.openfreemap.org/styles/positron"
+    )
+    map_style_url_dark: str = os.getenv(
+        "MAP_STYLE_URL_DARK", "https://tiles.openfreemap.org/styles/dark"
+    )
+    #: A satellite basemap, offered only when a provider is configured. None
+    #: ships by default: no free satellite provider has terms this platform can
+    #: promise to keep, and a Satellite button that fails is worse than none.
+    map_style_url_satellite: str = os.getenv("MAP_STYLE_URL_SATELLITE", "")
+    #: Where MapLibre fetches the glyphs a label is drawn with. A style
+    #: document names its own; a raster tile template names nothing, so a
+    #: raster basemap borrows this one — without it every point label and
+    #: every cluster count would be silently dropped.
+    map_glyphs_url: str = os.getenv(
+        "MAP_GLYPHS_URL", "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf"
+    )
+    #: Credit added to the map's attribution control, for a provider whose
+    #: tiles state none of their own. Added to what the style carries, never
+    #: replacing it — a required credit is not this platform's to remove.
+    map_attribution: str = os.getenv("MAP_ATTRIBUTION", "")
+    map_attribution_satellite: str = os.getenv("MAP_ATTRIBUTION_SATELLITE", "")
+    #: Where the map opens before any layer has answered: the centre of
+    #: Bangladesh at a zoom that shows the whole country. Once a layer arrives
+    #: the map fits its bounds, so this only ever decides the first frame.
+    map_default_latitude: float = float(os.getenv("MAP_DEFAULT_LATITUDE", "23.685"))
+    map_default_longitude: float = float(os.getenv("MAP_DEFAULT_LONGITUDE", "90.356"))
+    map_default_zoom: float = float(os.getenv("MAP_DEFAULT_ZOOM", "6.5"))
 
     # --- Presentation -------------------------------------------------------
     company_name: str = os.getenv("COMPANY_NAME", "Example Industries Ltd.")

@@ -43,6 +43,14 @@ import type {
   GlobalFilters,
   LevelsResponse,
   LoginResponse,
+  MapConfig,
+  MapDataResponse,
+  MapDesign,
+  MapDesignInput,
+  MapDesignUpdate,
+  MapDesignsResponse,
+  MapEntity,
+  MapLayerInput,
   MaterialsPage,
   NotificationsResponse,
   OptionsResponse,
@@ -617,6 +625,61 @@ export const targetManagementService = {
       method: 'PUT',
       body: { lines },
     }),
+};
+
+/**
+ * The Business Map.
+ *
+ * `data` is asked for **one layer per call**: the page fetches the visible
+ * layers in parallel, so the first layer paints while the rest are still
+ * aggregating, and a reader toggling a layer refetches that layer alone. A
+ * layer's figures come from the same tool every report calls, so a number on
+ * the map is the number on the Performance page.
+ */
+export interface MapDataQuery extends ReportQuery {
+  design_id?: number;
+  levels?: string[];
+  metric?: string;
+  rank_limit?: number;
+}
+
+export const mapService = {
+  config: () => request<MapConfig>('/api/map/config'),
+  designs: (includeInactive = false) =>
+    request<MapDesignsResponse>('/api/map/designs', {
+      params: includeInactive ? { include_inactive: true } : undefined,
+    }),
+  design: (designId: number) => request<MapDesign>(`/api/map/designs/${designId}`),
+  createDesign: (body: MapDesignInput) =>
+    request<MapDesign>('/api/map/designs', { method: 'POST', body }),
+  updateDesign: (designId: number, body: MapDesignUpdate) =>
+    request<MapDesign>(`/api/map/designs/${designId}`, { method: 'PUT', body }),
+  replaceLayers: (designId: number, layers: MapLayerInput[]) =>
+    request<MapDesign>(`/api/map/designs/${designId}/layers`, {
+      method: 'PUT',
+      body: { layers },
+    }),
+  duplicateDesign: (designId: number, name?: string) =>
+    request<MapDesign>(`/api/map/designs/${designId}/duplicate`, {
+      method: 'POST',
+      body: name ? { name } : {},
+    }),
+  setDefault: (designId: number) =>
+    request<MapDesign>(`/api/map/designs/${designId}/default`, { method: 'POST' }),
+  activate: (designId: number) =>
+    request<MapDesign>(`/api/map/designs/${designId}/activate`, { method: 'POST' }),
+  deactivate: (designId: number) =>
+    request<MapDesign>(`/api/map/designs/${designId}/deactivate`, { method: 'POST' }),
+  deleteDesign: (designId: number) =>
+    request<{ deleted_design_id: number; name: string; layers_removed: number; default_design_id: number | null }>(
+      `/api/map/designs/${designId}`,
+      { method: 'DELETE' },
+    ),
+  data: (query: MapDataQuery) => request<MapDataResponse>('/api/map/data', { params: query }),
+  entity: (level: string, code: string) =>
+    request<MapEntity>(
+      `/api/map/entities/${encodeURIComponent(level)}/${encodeURIComponent(code)}`,
+    ),
 };
 
 export const performanceService = {

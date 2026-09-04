@@ -345,7 +345,11 @@ def _name_field(upload_type: UploadType) -> str | None:
 
 def _master_entity(upload_type: UploadType) -> ManagedEntity | None:
     model = MASTER_MODEL_BY_TABLE.get(upload_type.table or "")
-    if model is None:
+    if model is None or upload_type.table == "map_entity_locations":
+        # Coordinates are loaded through the Upload Centre and derived by the
+        # map's own module, which knows about centroid derivation; the row has
+        # no soft-delete columns and no record history. Offering it here would
+        # give two places to change one thing, with only one of them re-deriving.
         return None
 
     fields = tuple(
