@@ -295,6 +295,60 @@ _PROMOTED_SUFFIXES = ("_code", "_name", "_description", "status",
                       "designation", "territory_code",
                       "conversion_factor", "transfer_price")
 
+#: Columns promoted for one table only, where the suffix rule cannot reach them.
+#:
+#: ``longitude`` is the case that forced this. The rule above promotes the first
+#: three columns and anything matching a suffix; a coordinate row is entity type,
+#: entity code, latitude, longitude, label, so longitude falls one place outside
+#: the window and would start hidden — a coordinate table with no longitude
+#: column in it. It is promoted here rather than by adding ``longitude`` to the
+#: suffix list because the administrative dimensions carry those columns too, and
+#: which of *their* columns a reader wants by default is a separate question that
+#: nobody has asked.
+_PROMOTED_BY_TABLE: dict[str, frozenset[str]] = {
+    "map_entity_locations": frozenset({"longitude", "label"}),
+}
+
+#: Where a record's human label lives when it is not a ``*_name`` column.
+#:
+#: A coordinate's label is what the map prints beside the point, so it is the
+#: nearest thing the row has to a name, and it is what the change log should
+#: carry beside the key.
+_LABEL_FIELD_BY_TABLE: dict[str, str] = {
+    "map_entity_locations": "label",
+}
+
+#: Tables whose rows are physically removed rather than retired.
+#:
+#: ``map_entity_locations`` has no ``is_deleted``/``deleted_at``/``deleted_by``:
+#: revision 0034 recreated 0008's table column for column and neither had them.
+#: That is the right shape for what the row *is* — a coordinate is placement
+#: about an entity, not the entity, and removing one leaves the customer,
+#: territory or region it pointed at completely untouched. The change log still
+#: keeps the whole record, so what was removed is still readable afterwards.
+_HARD_DELETE_TABLES: frozenset[str] = frozenset({"map_entity_locations"})
+
+
+def _entity_type_choices() -> tuple[str, ...]:
+    """The levels the map can draw, as the values ``entity_type`` may take.
+
+    Imported lazily and read from the map's own registry rather than restated,
+    so a level added to :data:`app.map.levels.MAP_LEVELS` becomes selectable
+    here with nothing to keep in step — and a value this form offers is always
+    one the coordinate loader would accept.
+    """
+    from ..map.levels import LEVEL_BY_KEY
+
+    return tuple(sorted(LEVEL_BY_KEY))
+
+
+def _choices_for(table: str, column: str) -> tuple[str, ...]:
+    if column == "status":
+        return STATUS_VALUES
+    if table == "map_entity_locations" and column == "entity_type":
+        return _entity_type_choices()
+    return ()
+
 
 def _master_field(column: UploadColumn, upload_type: UploadType,
                   index: int) -> ManagedField:
@@ -313,10 +367,12 @@ def _master_field(column: UploadColumn, upload_type: UploadType,
         if column.target == upload_type.parent_column
         else (lookup.target_column if lookup else None)
     )
+    table = upload_type.table or ""
     promoted = (
         is_key
         or index < 3
         or any(column.target.endswith(suffix) for suffix in _PROMOTED_SUFFIXES)
+        or column.target in _PROMOTED_BY_TABLE.get(table, frozenset())
     )
     return ManagedField(
         name=column.target,
@@ -332,7 +388,7 @@ def _master_field(column: UploadColumn, upload_type: UploadType,
         references_table=references_table,
         references_column=references_column,
         default_visible=promoted,
-        choices=STATUS_VALUES if column.target == "status" else (),
+        choices=_choices_for(table, column.target),
     )
 
 
@@ -344,12 +400,20 @@ def _name_field(upload_type: UploadType) -> str | None:
 
 
 def _master_entity(upload_type: UploadType) -> ManagedEntity | None:
+    """One manageable entity per master upload type, or ``None`` for no model.
+
+    ``map_entity_locations`` used to be excluded here, on the reasoning that
+    coordinates are loaded through the Upload Centre and re-derived by the map's
+    own module, so a second screen would be a second place to change one thing.
+    The first half of that was true and the second half was the problem: the
+    Upload Centre could load a coordinate and *nothing anywhere* could show one,
+    correct one, or say which entities had been placed. A bulk overwrite was the
+    only edit available. It is a management table now, and the derivation it was
+    protecting is preserved by routing the write through the map's own module —
+    see ``service._AFTER_MASTER_WRITE`` — rather than by hiding the rows.
+    """
     model = MASTER_MODEL_BY_TABLE.get(upload_type.table or "")
-    if model is None or upload_type.table == "map_entity_locations":
-        # Coordinates are loaded through the Upload Centre and derived by the
-        # map's own module, which knows about centroid derivation; the row has
-        # no soft-delete columns and no record history. Offering it here would
-        # give two places to change one thing, with only one of them re-deriving.
+    if model is None:
         return None
 
     fields = tuple(
@@ -367,12 +431,13 @@ def _master_entity(upload_type: UploadType) -> ManagedEntity | None:
         section=SectionKey.MASTER_DATA,
         table=table,
         model=model,
-        label_field=_name_field(upload_type),
+        label_field=_LABEL_FIELD_BY_TABLE.get(table) or _name_field(upload_type),
         parent_table=upload_type.parent_table,
         parent_column=upload_type.parent_column,
         scope_level=_SCOPE_LEVEL_BY_TABLE.get(table),
         fact_scope_type=_FACT_SCOPED_TABLES.get(table),
         status_field=_STATUS_FIELD.get(table),
+        soft_delete=table not in _HARD_DELETE_TABLES,
     )
 
 

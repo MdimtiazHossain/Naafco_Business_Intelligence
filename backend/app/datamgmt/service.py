@@ -28,7 +28,7 @@ from ..ai.permission_filter import UserContext
 from ..database.models_admin import ChangeAction
 from . import dependencies, history, scope
 from .catalogue import STATUS_VALUES, ManagedEntity
-from .query import get_master_record, get_transaction_record
+from .query import KEY_SEPARATOR, get_master_record, get_transaction_record
 from .validation import ValidationFailed, clean_and_validate
 
 
@@ -84,7 +84,21 @@ def _label_of(entity: ManagedEntity, record: Any) -> str | None:
 
 
 def _code_of(entity: ManagedEntity, record: Any) -> str:
-    return str(getattr(record, entity.key_fields[0]))
+    """The record's identity as one string — every key column, not just the first.
+
+    This is what addresses the record in a URL, in the change log and in the
+    audit trail, so for a composite-key entity it has to name the whole key or
+    two different records would share one history.
+    """
+    return KEY_SEPARATOR.join(
+        str(getattr(record, name)) for name in entity.key_fields
+    )
+
+
+def _code_from_values(entity: ManagedEntity, cleaned: dict[str, Any]) -> str:
+    return KEY_SEPARATOR.join(
+        str(cleaned.get(name, "")) for name in entity.key_fields
+    )
 
 
 def _snapshot(entity: ManagedEntity, record: Any) -> dict[str, Any]:
@@ -95,6 +109,63 @@ def _as_row(entity: ManagedEntity, record: Any) -> dict[str, Any]:
     from .query import master_row
 
     return master_row(entity, record)
+
+
+# ---------------------------------------------------------------------------
+# Per-table work that another module owns
+# ---------------------------------------------------------------------------
+
+
+def _after_location_write(session: Session, record: Any, user: UserContext,
+                          action: str, changed: list[str]) -> None:
+    """Keep a hand-edited coordinate hand-edited, then re-derive the levels above.
+
+    Two things the generic write cannot know, both owned by :mod:`app.map.geo`.
+
+    **Provenance.** ``derive_parents`` recomputes every ``DERIVED`` row and
+    leaves the rest alone, which is what lets somebody place a region's real
+    head office and keep it. A coordinate corrected on this screen was placed by
+    a person, so it is marked ``MANUAL`` and its ``derived_from`` count cleared —
+    without that, a row that arrived as a centroid would be edited here and
+    silently recomputed back on the next upload, and the reader would have no
+    way to tell why their correction kept disappearing.
+
+    **Derivation.** Everything above the placed levels is a centroid of what
+    sits below, so moving, adding or removing one coordinate changes the ones
+    above it. This is the same call ``upload.master_loader.POST_LOAD`` makes
+    after a coordinate file lands, for the same reason.
+    """
+    from ..map.geo import derive_parents
+    from ..database.models_map import GeoSource
+
+    if action != ChangeAction.DELETED:
+        moved = {"latitude", "longitude"} & set(changed)
+        if moved or action == ChangeAction.CREATED:
+            record.source = GeoSource.MANUAL
+            record.derived_from = None
+        record.updated_by = user.username
+        session.flush()
+
+    derive_parents(session, actor=user.username)
+
+
+#: Work to run after a master write, by table.
+#:
+#: Hand-written and deliberately small: it exists for the case where another
+#: module owns a rule about the row that the generic write path cannot infer
+#: from the column list. Mirrors ``upload.master_loader.POST_LOAD``, which does
+#: the same job on the same table for the upload path — the two entry points
+#: into a coordinate therefore leave the warehouse in the same state.
+_AFTER_MASTER_WRITE: dict[str, Any] = {
+    "map_entity_locations": _after_location_write,
+}
+
+
+def _after_write(session: Session, entity: ManagedEntity, record: Any,
+                 user: UserContext, action: str, changed: list[str]) -> None:
+    hook = _AFTER_MASTER_WRITE.get(entity.table or "")
+    if hook is not None:
+        hook(session, record, user, action, changed)
 
 
 def _check_parent_scope(session: Session, user: UserContext,
@@ -144,7 +215,7 @@ def create_master(session: Session, user: UserContext, entity: ManagedEntity,
                   ) -> WriteResult:
     """Create one master record."""
     cleaned = clean_and_validate(session, entity, values, creating=True)
-    code = str(cleaned.get(entity.key_fields[0]))
+    code = _code_from_values(entity, cleaned)
 
     if not scope.check_record(session, user, entity, code):
         raise ScopeDenied(
@@ -157,6 +228,8 @@ def create_master(session: Session, user: UserContext, entity: ManagedEntity,
     record = entity.model(**cleaned)
     session.add(record)
     session.flush()
+    _after_write(session, entity, record, user, ChangeAction.CREATED,
+                 sorted(cleaned))
 
     history.record(
         session, entity=entity, record_key=code, label=_label_of(entity, record),
@@ -195,6 +268,8 @@ def update_master(session: Session, user: UserContext, entity: ManagedEntity,
     for name in change.fields:
         setattr(record, name, cleaned[name])
     session.flush()
+    _after_write(session, entity, record, user, ChangeAction.UPDATED,
+                 change.fields)
 
     history.record(
         session, entity=entity, record_key=code, label=_label_of(entity, record),
@@ -211,35 +286,64 @@ def update_master(session: Session, user: UserContext, entity: ManagedEntity,
 def delete_master(session: Session, user: UserContext, entity: ManagedEntity,
                   code: str, *, reason: str | None = None,
                   ip_address: str | None = None) -> WriteResult:
-    """Retire one master record. Never a physical delete."""
+    """Retire one master record — or remove it, for the few that model no retirement.
+
+    Retiring is the rule and the flag is what keeps every fact that references
+    the record resolvable. ``map_entity_locations`` is the exception, and it is
+    a coherent one rather than an oversight: the row is a coordinate *about* an
+    entity, nothing references it, and removing one leaves the customer or
+    territory it pointed at exactly as it was. It has no ``is_deleted`` column
+    to set — revision 0034 recreated 0008's table column for column — so the row
+    goes, and the change log keeps the whole of it so what was removed is still
+    readable afterwards.
+    """
     record = load_master(session, user, entity, code)
-    if getattr(record, "is_deleted", False):
+    if entity.soft_delete and getattr(record, "is_deleted", False):
         raise OperationRefused(f"{entity.label} '{code}' is already retired.")
 
-    record.is_deleted = True
-    record.deleted_at = history.now()
-    record.deleted_by = user.username
-    session.flush()
-
+    # Read before the row goes: a snapshot of a deleted instance is empty.
+    snapshot = _snapshot(entity, record)
+    label = _label_of(entity, record)
+    row = _as_row(entity, record)
     dependants = dependencies.for_master(session, entity, code)
+
+    if entity.soft_delete:
+        record.is_deleted = True
+        record.deleted_at = history.now()
+        record.deleted_by = user.username
+        session.flush()
+        verb, changed = "retired", ["is_deleted"]
+    else:
+        session.delete(record)
+        session.flush()
+        verb, changed = "removed", sorted(snapshot)
+    _after_write(session, entity, record, user, ChangeAction.DELETED, changed)
+
     history.record(
-        session, entity=entity, record_key=code, label=_label_of(entity, record),
+        session, entity=entity, record_key=code, label=label,
         action=ChangeAction.DELETED, user=user,
         # The whole record is kept on a delete, not just a flag: this is the
         # copy someone reads when they need to know what was retired.
-        change=history.Change(ChangeAction.DELETED, _snapshot(entity, record), {}),
+        change=history.Change(ChangeAction.DELETED, snapshot, {}),
         reason=reason, ip_address=ip_address,
     )
     note = f" It still has {dependants.describe()}." if dependants.any else ""
     return WriteResult(
-        record=_as_row(entity, record), action=ChangeAction.DELETED,
-        changed_fields=["is_deleted"],
-        message=f"{entity.label} '{code}' retired.{note}",
+        record=row, action=ChangeAction.DELETED,
+        changed_fields=changed,
+        message=f"{entity.label} '{code}' {verb}.{note}",
     )
 
 
 def restore_master(session: Session, user: UserContext, entity: ManagedEntity,
                    code: str, *, ip_address: str | None = None) -> WriteResult:
+    if not entity.soft_delete:
+        # Nothing to restore *to*: this entity's delete removed the row, so the
+        # honest answer is that it must be created again, not un-retired.
+        raise OperationRefused(
+            f"{entity.label} records are removed rather than retired, so there "
+            "is nothing to restore. Create the record again."
+        )
     record = load_master(session, user, entity, code)
     if not getattr(record, "is_deleted", False):
         raise OperationRefused(f"{entity.label} '{code}' is not retired.")

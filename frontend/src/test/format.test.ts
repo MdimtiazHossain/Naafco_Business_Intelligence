@@ -7,6 +7,7 @@ import {
   formatBytes,
   formatCell,
   formatDays,
+  formatFieldValue,
   formatPercent,
   formatQuantity,
   formatStock,
@@ -193,5 +194,27 @@ describe('file sizes', () => {
   it('says n/a for a size it cannot state', () => {
     expect(formatBytes(Number.NaN)).toBe('n/a');
     expect(formatBytes(-1)).toBe('n/a');
+  });
+});
+
+describe('coordinates in a managed record', () => {
+  // A latitude is stored as a decimal, so it would otherwise go through
+  // `formatQuantity` — which caps at two decimal places. Two places is about
+  // 1.1 km, rendered as though it were the value that is stored.
+  it('keeps the six decimal places the warehouse holds', () => {
+    expect(formatFieldValue('decimal', 23.7808, 'latitude')).toBe('23.7808');
+    expect(formatFieldValue('decimal', 90.400812, 'longitude')).toBe('90.400812');
+  });
+
+  it('does not group a coordinate, which has no thousands', () => {
+    expect(formatFieldValue('decimal', 90.4008, 'longitude')).not.toContain(',');
+  });
+
+  it('still reads an ordinary decimal as a quantity', () => {
+    expect(formatFieldValue('decimal', 1234.567, 'transfer_price')).toBe('1,234.57');
+  });
+
+  it('reports a missing coordinate rather than rendering 0', () => {
+    expect(formatFieldValue('decimal', null, 'latitude')).toBe('—');
   });
 });

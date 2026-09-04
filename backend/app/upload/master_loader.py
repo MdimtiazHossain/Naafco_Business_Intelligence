@@ -38,7 +38,7 @@ from ..master_data.schema import FieldKind
 from ..utils.cleaning import _clean_value
 from ..utils.progress import MASTER_SCALE, Phase, ProgressReporter
 from ..utils.text import is_blank, snake_case
-from .errors import UploadIssue, code
+from .errors import LOCATION_ERROR_CODE, UploadIssue, code
 from .registry import MASTER_MODEL_BY_TABLE, UploadColumn, UploadType
 
 #: Master upload keys whose model is a Phase 1 hierarchy dimension with a parent.
@@ -566,49 +566,33 @@ def _check_map_location(session: Session, upload_type: UploadType,
                         row: MasterRow) -> None:
     """Coordinates need checks the generic loader cannot know about.
 
-    Three of them: the entity type must be a level the map draws, the code
-    must exist in the master data (a coordinate for a customer that does not
-    exist would silently never draw), and the latitude/longitude must be a real
-    place — which is where a spreadsheet's ``0`` gets caught.
+    The rules are :func:`app.map.geo.location_problems`, shared with the Data
+    Management edit form so a file and a hand correction are held to exactly the
+    same standard. This adds only what a *file* has and a form does not: the row
+    number, the offending value, and the error code it is counted under.
     """
-    from ..map.geo import InvalidCoordinate, entity_exists
-    from ..map.geo import validate as validate_coordinate
-    from ..map.levels import LEVEL_BY_KEY
+    from ..map.geo import location_problems
 
-    entity_type = row.values.get("entity_type")
-    if entity_type and entity_type not in LEVEL_BY_KEY:
+    values = row.values
+    shown = {
+        "Entity Type": str(values.get("entity_type")),
+        "Entity Code": str(values.get("entity_code")),
+        "Latitude / Longitude":
+            f"{values.get('latitude')}, {values.get('longitude')}",
+    }
+    for problem in location_problems(
+        session,
+        entity_type=values.get("entity_type"),
+        entity_code=values.get("entity_code"),
+        latitude=values.get("latitude"),
+        longitude=values.get("longitude"),
+    ):
         row.issues.append(UploadIssue(
-            row_number=row.row_number, column="Entity Type", value=str(entity_type),
-            error_code=code.INVALID_TYPE,
-            message=f"'{entity_type}' is not a map level.",
-            suggested_fix="Use one of: " + ", ".join(sorted(LEVEL_BY_KEY)),
+            row_number=row.row_number, column=problem.column,
+            value=shown[problem.column],
+            error_code=LOCATION_ERROR_CODE[problem.column],
+            message=problem.message, suggested_fix=problem.suggested_fix,
         ))
-        entity_type = None
-
-    entity_code = row.values.get("entity_code")
-    if entity_type and entity_code and not entity_exists(session, entity_type,
-                                                         str(entity_code)):
-        row.issues.append(UploadIssue(
-            row_number=row.row_number, column="Entity Code", value=str(entity_code),
-            error_code=code.INVALID_PARENT,
-            message=(f"{entity_type} '{entity_code}' does not exist in the master "
-                     "data."),
-            suggested_fix="Load the master data for this entity first, or correct "
-                          "the code.",
-        ))
-
-    latitude = row.values.get("latitude")
-    longitude = row.values.get("longitude")
-    if latitude is not None and longitude is not None:
-        try:
-            validate_coordinate(float(latitude), float(longitude))
-        except (InvalidCoordinate, TypeError, ValueError) as exc:
-            row.issues.append(UploadIssue(
-                row_number=row.row_number, column="Latitude / Longitude",
-                value=f"{latitude}, {longitude}",
-                error_code=code.INVALID_TYPE, message=str(exc),
-                suggested_fix="Enter decimal degrees, e.g. 23.7808 and 90.4008.",
-            ))
 
 
 def _after_map_locations(session: Session, upload_type: UploadType,

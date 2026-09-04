@@ -125,7 +125,7 @@ export default function RecordDetailPage({ kind }: { kind: 'master' | 'transacti
                   onClick={() => setConfirming(true)}
                 >
                   {kind === 'master' ? <Trash2 size={14} /> : <Ban size={14} />}
-                  {kind === 'master' ? t('action.retire') : t('action.void')}
+                  {kind === 'master' ? removeLabel(entity, t) : t('action.void')}
                 </button>
               ))}
           </div>
@@ -253,12 +253,21 @@ export default function RecordDetailPage({ kind }: { kind: 'master' | 'transacti
           tone={kind === 'master' ? 'warning' : 'danger'}
           title={
             kind === 'master'
-              ? t('confirm.retireTitle', { entity: entity.label })
+              ? t(
+                  entity.soft_delete
+                    ? 'confirm.retireTitle'
+                    : 'confirm.removeTitle',
+                  { entity: entity.label },
+                )
               : t('confirm.voidTitle', { entity: entity.label })
           }
           consequence={
             kind === 'master'
-              ? t('confirm.retireConsequence')
+              ? t(
+                  entity.soft_delete
+                    ? 'confirm.retireConsequence'
+                    : 'confirm.removeConsequence',
+                )
               : t('confirm.voidConsequence')
           }
           recordLabel={title(entity, record)}
@@ -266,7 +275,9 @@ export default function RecordDetailPage({ kind }: { kind: 'master' | 'transacti
           entityLabel={entity.label}
           dependants={detail.data?.dependants ?? null}
           reason={kind === 'master' ? 'optional' : 'required'}
-          confirmLabel={kind === 'master' ? t('action.retire') : t('action.void')}
+          confirmLabel={
+            kind === 'master' ? removeLabel(entity, t) : t('action.void')
+          }
           busy={removeOrVoid.isPending}
           error={removeOrVoid.error ? (removeOrVoid.error as ApiError).message : null}
           onConfirm={(reason) => removeOrVoid.mutate(reason)}
@@ -280,10 +291,32 @@ export default function RecordDetailPage({ kind }: { kind: 'master' | 'transacti
   );
 }
 
+/**
+ * What the destructive control on a master record is called.
+ *
+ * Almost every dimension retires: the row stays, hidden, and comes back. Map
+ * Locations has no retired state to move to — the row is removed — so calling
+ * it "Retire" would promise a reversal that is not on offer.
+ */
+function removeLabel(
+  entity: ManagedEntity | undefined,
+  t: (key: string) => string,
+): string {
+  // Undefined only while the record is still loading, when the button is not
+  // on screen yet; the retiring wording is the right default for every
+  // dimension but one.
+  return entity && !entity.soft_delete ? t('action.remove') : t('action.retire');
+}
+
 function title(entity?: ManagedEntity, record?: ManagedRow): string {
   if (!entity || !record) return '';
   const label = entity.label_field ? record[entity.label_field] : null;
-  const code = record[entity.key_fields[0]];
+  // Every key column, so a composite-key record is named by what identifies it:
+  // "customer CUST-001", not "customer".
+  const code = entity.key_fields
+    .map((name) => record[name])
+    .filter((value) => value !== null && value !== undefined && value !== '')
+    .join(' ');
   return String(label || code || '');
 }
 
@@ -311,7 +344,7 @@ function FieldGrid({
         <div key={field.name} className="flex justify-between gap-3 border-b border-slate-100 py-1 last:border-0 dark:border-slate-800">
           <dt className="shrink-0 text-slate-500">{field.label}</dt>
           <dd className="truncate text-right font-medium">
-            {formatFieldValue(field.kind, record[field.name]) || '—'}
+            {formatFieldValue(field.kind, record[field.name], field.name) || '—'}
           </dd>
         </div>
       ))}

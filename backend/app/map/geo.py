@@ -176,6 +176,70 @@ def entity_exists(session: Session, entity_type: str, entity_code: str) -> bool:
     ).scalar_one())
 
 
+@dataclass(frozen=True)
+class LocationProblem:
+    """One thing wrong with a proposed coordinate.
+
+    Held as data rather than raised, because a coordinate arrives from two
+    places that report a fault differently — an uploaded file names the row it
+    was on, an edited record names the field on the form — and both need *all*
+    the faults, not the first one. The wording lives here so the two cannot come
+    to describe the same rule in two ways.
+    """
+
+    column: str
+    message: str
+    suggested_fix: str
+
+
+def location_problems(session: Session, *, entity_type: Any, entity_code: Any,
+                      latitude: Any, longitude: Any) -> list[LocationProblem]:
+    """Everything wrong with one proposed coordinate, in reading order.
+
+    Three rules, none of which the generic validators can know: the entity type
+    must be a level the map draws, the code must exist in that level's master
+    (a coordinate for a customer that does not exist would silently never draw),
+    and the position must be a real place — which is where a spreadsheet's ``0``
+    is caught, in the Atlantic.
+
+    The code check is skipped when the level is already wrong, so one mistake
+    produces one message rather than two.
+    """
+    from .levels import LEVEL_BY_KEY
+
+    problems: list[LocationProblem] = []
+
+    known_level = entity_type in LEVEL_BY_KEY if entity_type else False
+    if entity_type and not known_level:
+        problems.append(LocationProblem(
+            column="Entity Type",
+            message=f"'{entity_type}' is not a map level.",
+            suggested_fix="Use one of: " + ", ".join(sorted(LEVEL_BY_KEY)),
+        ))
+
+    if known_level and entity_code and not entity_exists(
+            session, str(entity_type), str(entity_code)):
+        problems.append(LocationProblem(
+            column="Entity Code",
+            message=(f"{entity_type} '{entity_code}' does not exist in the "
+                     "master data."),
+            suggested_fix="Load the master data for this entity first, or "
+                          "correct the code.",
+        ))
+
+    if latitude is not None and longitude is not None:
+        try:
+            validate(float(latitude), float(longitude))
+        except (InvalidCoordinate, TypeError, ValueError) as exc:
+            problems.append(LocationProblem(
+                column="Latitude / Longitude",
+                message=str(exc),
+                suggested_fix="Enter decimal degrees, e.g. 23.7808 and 90.4008.",
+            ))
+
+    return problems
+
+
 def upsert_location(session: Session, *, entity_type: str, entity_code: str,
                     latitude: float, longitude: float,
                     source: str = GeoSource.UPLOAD,

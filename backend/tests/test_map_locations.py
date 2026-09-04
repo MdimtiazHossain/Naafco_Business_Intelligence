@@ -642,8 +642,237 @@ def test_an_upload_with_bad_coordinates_reports_row_and_reason(upload_client):
         assert issue["row"] and issue["suggested_fix"]
 
 
-def test_coordinates_are_not_a_data_management_entity():
-    """They are loaded through the Upload Centre and derived by the map."""
-    from app.datamgmt.catalogue import MASTER_ENTITIES
+# ==========================================================================
+# Coordinates in Data Management
+# ==========================================================================
 
-    assert "map_entity_locations" not in {entity.key for entity in MASTER_ENTITIES}
+
+@pytest.fixture
+def datamgmt_client(agent_engine, monkeypatch):
+    """A signed-in administrator against the Data Management API."""
+    import app.database.connection as connection
+
+    monkeypatch.setattr(connection, "get_engine", lambda *a, **k: agent_engine)
+
+    with Session(agent_engine) as session:
+        session.add(AppUser(username="root", display_name="Administrator",
+                            role=Role.SUPER_ADMIN, is_active=True,
+                            status=UserStatus.ACTIVE,
+                            password_hash=hash_password(PASSWORD)))
+        session.commit()
+
+    def _session_override():
+        session = Session(bind=agent_engine, expire_on_commit=False, future=True)
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_session] = _session_override
+    try:
+        client = TestClient(app)
+        yield client, login(client)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def seeded(agent_engine):
+    """Two customers, one of them placed, and the centroids that follow.
+
+    Placing a customer and deriving is what produces a ``DERIVED``
+    sub-territory, which is the row the provenance tests need: they are about
+    what happens when somebody corrects a centroid by hand.
+    """
+    with Session(agent_engine) as session:
+        add_customers(session,
+                      ("CUST-A", "Dhiren & Brothers", "STR001"),
+                      ("CUST-B", "Rahim Stores", "STR001"))
+        geo.upsert_location(session, entity_type="customer", entity_code="CUST-A",
+                            latitude=23.75, longitude=90.40)
+        geo.derive_parents(session)
+        session.commit()
+#
+# They were deliberately excluded from this screen until the Upload Centre
+# turned out to be the *only* way to reach one: a coordinate could be loaded and
+# then never seen, corrected or removed, and a bulk overwrite was the only edit
+# available. The tests below hold the two things that exclusion was protecting —
+# the derivation and the provenance — now that the rows are visible.
+
+
+def test_coordinates_are_a_data_management_entity():
+    """Listed under Market, keyed on the pair, and removed rather than retired."""
+    from app.datamgmt.catalogue import MASTER_ENTITIES, get_master
+
+    assert "map_entity_locations" in {entity.key for entity in MASTER_ENTITIES}
+
+    entity = get_master("map_entity_locations")
+    assert entity.to_dict()["group"] == "MARKET"
+    assert entity.key_fields == ("entity_type", "entity_code")
+    # No is_deleted column to set, so the row goes and the change log keeps it.
+    assert entity.soft_delete is False
+    # Every column of a five-column table is worth seeing; longitude in
+    # particular falls outside the generic "first three" promotion.
+    assert entity.to_dict()["default_columns"] == [
+        "entity_type", "entity_code", "latitude", "longitude", "label",
+    ]
+
+
+def test_the_entity_type_choices_come_from_the_map_itself():
+    """Offered values are exactly the levels the coordinate loader accepts."""
+    from app.datamgmt.catalogue import get_master
+
+    entity = get_master("map_entity_locations")
+    assert set(entity.field_by_name["entity_type"].choices) == set(levels.LEVEL_BY_KEY)
+
+
+def test_the_table_lists_every_placed_coordinate(datamgmt_client, seeded):
+    client, token = datamgmt_client
+    body = client.get("/api/master/map_entity_locations",
+                      headers=auth(token)).json()
+
+    rows = {(row["entity_type"], row["entity_code"]): row for row in body["rows"]}
+    assert ("customer", "CUST-A") in rows
+    assert rows[("customer", "CUST-A")]["latitude"] == pytest.approx(23.75)
+    # The composite key is what addresses the row, not its first column.
+    assert rows[("customer", "CUST-A")]["_key"] == "customer|CUST-A"
+
+
+def test_one_coordinate_is_addressed_by_its_whole_key(datamgmt_client, seeded):
+    """`customer` alone names 2 rows; only the pair names one."""
+    client, token = datamgmt_client
+
+    response = client.get("/api/master/map_entity_locations/customer%7CCUST-A",
+                          headers=auth(token))
+    assert response.status_code == 200, response.text
+    assert response.json()["record"]["entity_code"] == "CUST-A"
+
+    # The first key column on its own is not a record.
+    assert client.get("/api/master/map_entity_locations/customer",
+                      headers=auth(token)).status_code == 422
+
+
+def test_editing_a_derived_centroid_makes_it_manual_and_it_then_survives(
+        datamgmt_client, seeded, agent_engine):
+    """The provenance rule the map owns, kept on the Data Management path.
+
+    A centroid corrected by hand must stop being a centroid, or the next
+    derivation silently recomputes it back and the reader has no way to see why
+    their correction keeps disappearing.
+    """
+    client, token = datamgmt_client
+    with Session(agent_engine) as session:
+        assert placed(session, "sub_territory", "STR001").source == GeoSource.DERIVED
+
+    response = client.put("/api/master/map_entity_locations/sub_territory%7CSTR001",
+                          headers=auth(token),
+                          json={"values": {"latitude": 24.5, "longitude": 91.5}})
+    assert response.status_code == 200, response.text
+
+    with Session(agent_engine) as session:
+        row = placed(session, "sub_territory", "STR001")
+        assert row.source == GeoSource.MANUAL
+        assert row.derived_from is None
+        assert row.latitude == pytest.approx(24.5)
+
+    # And a later derivation leaves the hand-placed figure alone.
+    with Session(agent_engine) as session:
+        geo.derive_parents(session)
+        session.commit()
+    with Session(agent_engine) as session:
+        assert placed(session, "sub_territory", "STR001").latitude == pytest.approx(24.5)
+
+
+def test_moving_a_customer_re_derives_the_levels_above_it(datamgmt_client, seeded,
+                                                          agent_engine):
+    """The other half of what the exclusion protected: parents follow children."""
+    client, token = datamgmt_client
+    with Session(agent_engine) as session:
+        before = placed(session, "sub_territory", "STR001").latitude
+
+    response = client.put("/api/master/map_entity_locations/customer%7CCUST-A",
+                          headers=auth(token),
+                          json={"values": {"latitude": 25.0, "longitude": 91.0}})
+    assert response.status_code == 200, response.text
+
+    with Session(agent_engine) as session:
+        after = placed(session, "sub_territory", "STR001")
+        assert after.source == GeoSource.DERIVED
+        assert after.latitude != pytest.approx(before)
+
+
+def test_removing_a_coordinate_takes_the_row_and_keeps_the_record(
+        datamgmt_client, seeded, agent_engine):
+    client, token = datamgmt_client
+    response = client.request(
+        "DELETE", "/api/master/map_entity_locations/customer%7CCUST-A",
+        headers=auth(token), json={"reason": "placed on the wrong side of the river"})
+    assert response.status_code == 200, response.text
+    assert "removed" in response.json()["message"]
+
+    with Session(agent_engine) as session:
+        assert placed(session, "customer", "CUST-A") is None
+        # The whole record survives in the change log, which is what makes a
+        # physical delete acceptable for this one table.
+        from app.database.models_admin import DataChangeLog
+
+        entry = session.execute(
+            select(DataChangeLog).where(
+                DataChangeLog.record_key == "customer|CUST-A")
+        ).scalars().first()
+        assert entry is not None
+
+
+def test_a_removed_coordinate_cannot_be_restored(datamgmt_client, seeded):
+    """There is nothing to un-retire; the honest answer is to create it again."""
+    client, token = datamgmt_client
+    client.request("DELETE", "/api/master/map_entity_locations/customer%7CCUST-A",
+                   headers=auth(token), json={})
+    response = client.post(
+        "/api/master/map_entity_locations/customer%7CCUST-A/restore",
+        headers=auth(token))
+    assert response.status_code == 409
+    assert "create the record again" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("values,expected", [
+    ({"entity_type": "wormhole", "entity_code": "X1",
+      "latitude": 23.0, "longitude": 90.0}, "not a map level"),
+    ({"entity_type": "territory", "entity_code": "TR-NOPE",
+      "latitude": 23.0, "longitude": 90.0}, "does not exist in the master data"),
+    ({"entity_type": "territory", "entity_code": "TR001",
+      "latitude": 0, "longitude": 0}, "Atlantic"),
+])
+def test_the_form_is_held_to_the_same_rules_as_a_file(datamgmt_client, seeded,
+                                                      values, expected):
+    """One definition of the coordinate rules, reached from both entry points."""
+    client, token = datamgmt_client
+    response = client.post("/api/master/map_entity_locations", headers=auth(token),
+                           json={"values": values})
+    assert response.status_code == 422, response.text
+    assert expected in str(response.json()["detail"])
+
+
+def test_a_second_coordinate_for_one_entity_is_refused_on_the_pair(
+        datamgmt_client, seeded):
+    """The duplicate check reads the whole key, not just the entity type.
+
+    Reading the first column alone would refuse the *second* territory anybody
+    placed, which is the ordinary case rather than the error.
+    """
+    client, token = datamgmt_client
+
+    # A different territory is fine even though the entity type is taken.
+    ok = client.post("/api/master/map_entity_locations", headers=auth(token),
+                     json={"values": {"entity_type": "customer",
+                                      "entity_code": "CUST-B",
+                                      "latitude": 23.9, "longitude": 90.1}})
+    assert ok.status_code in (200, 201), ok.text
+
+    # The same pair twice is not.
+    clash = client.post("/api/master/map_entity_locations", headers=auth(token),
+                        json={"values": {"entity_type": "customer",
+                                         "entity_code": "CUST-B",
+                                         "latitude": 24.0, "longitude": 90.2}})
+    assert clash.status_code == 422
+    assert "already exists" in str(clash.json()["detail"])

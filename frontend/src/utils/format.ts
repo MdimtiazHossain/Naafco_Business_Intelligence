@@ -217,7 +217,17 @@ export function formatByKind(
  * heuristic. It matters most for codes — `formatCell` would see a numeric-
  * looking customer code and render it as a number, losing leading zeros.
  */
-export function formatFieldValue(kind: string, value: unknown): string {
+/**
+ * Fields that are a position on Earth rather than a quantity.
+ *
+ * They are stored as decimals and would otherwise go through `formatQuantity`,
+ * which caps at two decimal places and adds grouping separators. Both are wrong
+ * here: two places is about 1.1 km of error rendered as though it were the
+ * stored value, and a coordinate has no thousands to group.
+ */
+const COORDINATE_FIELDS = new Set(['latitude', 'longitude']);
+
+export function formatFieldValue(kind: string, value: unknown, name?: string): string {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   switch (kind) {
@@ -229,12 +239,20 @@ export function formatFieldValue(kind: string, value: unknown): string {
       return formatDate(String(value));
     case 'decimal':
     case 'numeric':
-      return formatQuantity(Number(value));
+      return name && COORDINATE_FIELDS.has(name)
+        ? formatCoordinate(Number(value))
+        : formatQuantity(Number(value));
     case 'integer':
       return formatCount(Number(value));
     default:
       return String(value);
   }
+}
+
+/** A latitude or longitude, at the six decimal places the warehouse stores. */
+export function formatCoordinate(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return String(Number(value.toFixed(6)));
 }
 
 /** Column name -> a sensible formatter, used by tables and charts. */

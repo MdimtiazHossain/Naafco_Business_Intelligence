@@ -119,7 +119,7 @@ def list_master(session: Session, user: UserContext, entity: ManagedEntity,
         else select(func.count()).select_from(model.__table__)
     ).scalar_one()
 
-    statement = statement.order_by(_master_order(entity, request))
+    statement = statement.order_by(*_master_order(entity, request))
     records = session.execute(
         statement.limit(request.page_size).offset(request.offset)
     ).scalars().all()
@@ -149,13 +149,16 @@ def _master_conditions(entity: ManagedEntity, request: ListRequest,
             # that still runs as SQL, so the count and the page agree.
             conditions[-1] = key.is_(None)
 
-    if not request.include_deleted:
+    # Only for an entity that models retirement. A coordinate has no
+    # ``is_deleted`` column — it is removed outright — and asking for one would
+    # be an AttributeError rather than an empty table.
+    if entity.soft_delete and not request.include_deleted:
         conditions.append(model.is_deleted.is_(False))
 
     if request.codes:
-        conditions.append(
-            getattr(model, entity.key_fields[0]).in_(list(request.codes))
-        )
+        conditions.append(or_(*(
+            and_(*key_conditions(entity, code)) for code in request.codes
+        )))
 
     if request.search:
         needle = f"%{request.search.strip()}%"
@@ -196,10 +199,21 @@ def _master_column(entity: ManagedEntity, name: str):
     return getattr(entity.model, name)
 
 
-def _master_order(entity: ManagedEntity, request: ListRequest):
-    name = request.sort_by or entity.key_fields[0]
-    column = _master_column(entity, name)
-    return desc(column) if request.sort_dir == "desc" else asc(column)
+def _master_order(entity: ManagedEntity, request: ListRequest) -> list:
+    """How the page is ordered, always down to something unique.
+
+    A composite-key entity ordered by its first key column alone has no stable
+    order at all — every coordinate of a customer shares the entity type
+    ``customer`` — and an unstable order under LIMIT/OFFSET repeats rows on one
+    page and drops them from another. So the remaining key columns are always
+    appended as the tie-break, including behind a column the reader chose to
+    sort by.
+    """
+    direction = desc if request.sort_dir == "desc" else asc
+    chosen = request.sort_by
+    names = [chosen] if chosen else []
+    names += [name for name in entity.key_fields if name != chosen]
+    return [direction(_master_column(entity, name)) for name in names]
 
 
 def master_row(entity: ManagedEntity, record: Any) -> dict[str, Any]:
@@ -214,16 +228,52 @@ def master_row(entity: ManagedEntity, record: Any) -> dict[str, Any]:
     return row
 
 
+#: What joins the parts of a composite business key into one URL segment.
+#:
+#: A single character that appears in no business code in this warehouse, so
+#: splitting is unambiguous, and one that survives ``encodeURIComponent`` as
+#: ``%7C`` rather than being mistaken for a path separator.
+KEY_SEPARATOR = "|"
+
+
 def _record_key(entity: ManagedEntity, record: Any) -> str:
-    return "|".join(str(getattr(record, name)) for name in entity.key_fields)
+    return KEY_SEPARATOR.join(
+        str(getattr(record, name)) for name in entity.key_fields
+    )
+
+
+def split_record_key(entity: ManagedEntity, code: str) -> dict[str, str]:
+    """One URL segment back into the key columns it names.
+
+    Most dimensions are keyed on a single code and this is the identity. Three
+    are not — ``dim_plant`` on company + plant, ``dim_storage_location`` on
+    plant + location, and ``map_entity_locations`` on entity type + entity code
+    — and for those, reading only the first part would silently answer with
+    *some* record sharing it rather than the one asked for.
+    """
+    parts = str(code).split(KEY_SEPARATOR)
+    if len(parts) != len(entity.key_fields):
+        expected = KEY_SEPARATOR.join(entity.key_fields)
+        raise QueryProblem(
+            f"'{entity.label}' is identified by {expected}, so "
+            f"'{code}' does not name one record."
+        )
+    return dict(zip(entity.key_fields, parts))
+
+
+def key_conditions(entity: ManagedEntity, code: str) -> list:
+    """The WHERE clauses that address exactly one record."""
+    values = split_record_key(entity, code)
+    return [getattr(entity.model, name) == value
+            for name, value in values.items()]
 
 
 def get_master_record(session: Session, entity: ManagedEntity, code: str,
                       include_deleted: bool = True) -> Any:
     """One master record by its business code, or ``None``."""
     model = entity.model
-    conditions = [getattr(model, entity.key_fields[0]) == code]
-    if not include_deleted:
+    conditions = key_conditions(entity, code)
+    if entity.soft_delete and not include_deleted:
         conditions.append(model.is_deleted.is_(False))
     return session.execute(
         select(model).where(and_(*conditions))

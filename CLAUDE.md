@@ -260,9 +260,64 @@ Authoritative rows are never pruned: a coordinate a person placed is theirs to
 remove. Coordinates arrive through the Upload Centre as the "Map Locations"
 master type (`upload.registry.MAP_LOCATION_TYPE`, display group MARKET) whose
 row check refuses an unknown level, an unknown code and null island, and whose
-post-load hook re-derives the parents; they are deliberately **not** a Data
-Management entity, because that screen knows nothing about derivation.
-`test_map_locations.py` pins all of it.
+post-load hook re-derives the parents. `test_map_locations.py` pins all of it.
+
+**Coordinates are also a Data Management entity, and the objection that kept
+them out is what shaped how they got in.** They were excluded because that
+screen "knows nothing about derivation" — true, and the wrong conclusion: the
+Upload Centre was then the *only* way to reach a coordinate, so one could be
+loaded and never afterwards seen, corrected or removed, and a bulk overwrite of
+the whole file was the only edit available. Hiding the rows did not protect the
+derivation; **routing the write through the map's own module does**.
+`service._AFTER_MASTER_WRITE` is that route, and it mirrors
+`upload.master_loader.POST_LOAD` on the same table so a file and a hand
+correction leave the warehouse in the same state: an edited row becomes
+`MANUAL` with its `derived_from` cleared (or the next derivation would
+recompute the correction away, with nothing on screen to explain why), and
+every level above is re-derived. The coordinate rules themselves live once, in
+`geo.location_problems`, and both entry points read them — the upload adds a row
+number and an error code, the form adds nothing. **It is the one master that is
+removed rather than retired**: the row has no `is_deleted` (0034 recreated
+0008's table column for column), nothing references a coordinate, and deleting
+one leaves the customer or territory it pointed at untouched — the change log
+keeps the whole record, and restore is refused with "create it again" rather
+than pretending there is something to un-retire.
+
+Three generic assumptions had to go for it, each a single-key assumption that
+had never been challenged. **A master may be keyed on more than one column** —
+`entity_type + entity_code` here, and `dim_plant`/`dim_storage_location` were
+already composite and already silently broken by it: every lookup read
+`key_fields[0]`, so `/api/master/dim_plant/C001` meant "some plant of that
+company". `query.split_record_key` and `key_conditions` address the whole key,
+joined by `KEY_SEPARATOR` (`|`, which is what `_record_key` always emitted and
+what the browser sends back as `_key`). **A master may model no retirement**, so
+the `is_deleted` predicate is asked for only when `entity.soft_delete`. And **a
+page needs a total order**: ordering by the first key column alone is no order
+at all when 846 rows share `customer`, and LIMIT/OFFSET over it repeats rows on
+one page and drops them from another, so the remaining key columns are always
+appended as the tie-break.
+
+**`audit.sanitize` must return something the JSON encoder accepts, and the
+reason is worse than tidiness.** Both its callers write the result into a JSON
+column — `audit_logs.detail` and `data_change_log.old_values`/`new_values` — and
+it used to pass unknown types straight through. A `Decimal` (what SQLAlchemy
+returns for every NUMERIC column, and what the upload cleaner produces for a
+`decimal` field) therefore raised inside `audit.record`'s flush, which is
+wrapped in the `except` that exists so auditing cannot break a request — and
+that handler calls **`session.rollback()`**, discarding the caller's own write
+along with the audit entry. The route then committed a clean session and
+answered **201 with the record in the body**, so creating the record silently
+did nothing and reported success. This was live before the map locations work
+and reachable from `dim_material.conversion_factor` / `transfer_price` and
+`dim_upazila.latitude` / `longitude`; coordinates are just what made somebody
+finally run it. `Decimal` now becomes `float` (matching
+`queries.normalize_value`, so the change log and the reports state a figure the
+same way), dates become ISO strings, and anything else unrecognised becomes its
+`str` — closing the class rather than the two instances of it. Only *creates*
+and *deletes* were exposed: `history.diff` already sent the update path through
+`normalize_value`. `test_platform_api` pins the encoding and
+`test_data_management` pins that a created record with a decimal field is
+actually there afterwards.
 
 **Step 2, the data (`app/map/metrics.py`, `app/map/data.py`, tool
 `get_map_layer`).** The map has **one query and it is a tool**, registered in

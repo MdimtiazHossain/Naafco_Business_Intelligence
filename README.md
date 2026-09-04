@@ -1508,8 +1508,19 @@ reader who may not compose the map.
   MARKET), whose row check refuses an unknown level, an unknown code and null
   island, and whose post-load hook re-derives every level above the placed
   ones as centroids (`DERIVED`, pruned when the entity goes; an authoritative
-  coordinate is never pruned). They are deliberately not a Data Management
-  entity, because that screen knows nothing about derivation.
+  coordinate is never pruned).
+* **They are a Data Management entity too**, listed under Market as "Map
+  Locations" and keyed on entity type + entity code. This screen was once
+  refused them on the grounds that it knows nothing about derivation; the
+  effect was that a coordinate could be loaded and then never seen, corrected
+  or removed, with a bulk re-upload as the only edit. The derivation is
+  protected by *routing the write through the map's own module* instead —
+  editing a centroid by hand marks it `MANUAL` so the next pass leaves it
+  alone, and every write re-derives the levels above. The coordinate rules are
+  shared with the upload (`geo.location_problems`), so a typed correction and a
+  file are held to the same standard. It is the one master **removed rather
+  than retired**: the row carries no `is_deleted`, nothing references a
+  coordinate, and the change log keeps the whole record.
 * **Designs inherit where they say nothing** — a layer with no metric draws
   the design's default; no colour metric means Achievement %, no size metric
   Sales Amount, no tooltip fields the standard six — and the payload carries

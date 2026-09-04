@@ -30,7 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..etl.mapping import BINDING_BY_LEVEL, MasterDataIndex
-from ..upload.errors import UploadIssue, code
+from ..upload.errors import LOCATION_ERROR_CODE, UploadIssue, code
 from ..upload.master_loader import clean_value
 from ..upload.registry import MASTER_MODEL_BY_TABLE, UploadColumn
 from ..utils.text import is_blank
@@ -134,6 +134,7 @@ def clean_and_validate(session: Session, entity: ManagedEntity,
                               existing=existing)
     issues += _check_choices(entity, cleaned)
     issues += _check_coordinates(cleaned)
+    issues += _check_map_location(session, entity, cleaned, existing)
 
     if creating:
         issues += _check_duplicate(session, entity, cleaned)
@@ -217,23 +218,79 @@ def _check_coordinates(cleaned: dict[str, Any]) -> list[UploadIssue]:
     return issues
 
 
+def _check_map_location(session: Session, entity: ManagedEntity,
+                        cleaned: dict[str, Any],
+                        existing: Any) -> list[UploadIssue]:
+    """The coordinate rules, for the one entity that has them.
+
+    Shared with the upload path rather than restated — see
+    :func:`app.map.geo.location_problems` — so a coordinate typed into this form
+    is held to exactly the standard a file is. The key columns fall back to the
+    stored record, because an edit that changes only the latitude still has to
+    be checked against the entity the row names.
+    """
+    if entity.table != "map_entity_locations":
+        return []
+
+    from ..map.geo import location_problems
+
+    def value_of(name: str) -> Any:
+        if name in cleaned:
+            return cleaned[name]
+        return getattr(existing, name, None) if existing is not None else None
+
+    shown = {
+        "Entity Type": _text(value_of("entity_type")),
+        "Entity Code": _text(value_of("entity_code")),
+        "Latitude / Longitude": (
+            f"{value_of('latitude')}, {value_of('longitude')}"
+        ),
+    }
+    return [
+        UploadIssue(
+            row_number=None, column=problem.column,
+            value=shown[problem.column],
+            error_code=LOCATION_ERROR_CODE[problem.column],
+            message=problem.message, suggested_fix=problem.suggested_fix,
+        )
+        for problem in location_problems(
+            session,
+            entity_type=value_of("entity_type"),
+            entity_code=value_of("entity_code"),
+            latitude=value_of("latitude"),
+            longitude=value_of("longitude"),
+        )
+    ]
+
+
 def _check_duplicate(session: Session, entity: ManagedEntity,
                      cleaned: dict[str, Any]) -> list[UploadIssue]:
-    key_field = entity.key_fields[0]
-    value = cleaned.get(key_field)
-    if is_blank(value):
+    """Refuse a record whose whole business key is already taken.
+
+    Every key column, not just the first. ``map_entity_locations`` is keyed on
+    entity type *and* entity code, so testing the first alone would refuse the
+    second territory anybody placed — the key is the pair, and one coordinate
+    per entity is exactly what it is there to guarantee.
+    """
+    values = {name: cleaned.get(name) for name in entity.key_fields}
+    if any(is_blank(value) for value in values.values()):
         return []
     exists = session.execute(
         select(func.count()).select_from(entity.model.__table__)
-        .where(getattr(entity.model, key_field) == value)
+        .where(*(getattr(entity.model, name) == value
+                 for name, value in values.items()))
     ).scalar_one()
     if not exists:
         return []
+    # Reported against the last key column: for a composite key that is the one
+    # the user can most usefully change, and for a single key it is the only one.
+    key_field = entity.key_fields[-1]
     field = entity.field_by_name[key_field]
+    shown = " + ".join(str(value) for value in values.values())
     return [UploadIssue(
-        row_number=None, column=field.label, value=_text(value),
+        row_number=None, column=field.label, value=_text(values[key_field]),
         error_code=code.ALREADY_EXISTS,
-        message=f"{field.label} '{value}' already exists.",
+        message=f"{field.label} '{shown}' already exists.",
         # Including the retired case, because a code taken by a retired record
         # is still taken, and "restore it" is the right advice.
         suggested_fix="Use a different code, or open the existing record — it "

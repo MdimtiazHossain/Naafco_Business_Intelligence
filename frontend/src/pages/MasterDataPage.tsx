@@ -191,7 +191,7 @@ export default function MasterDataPage() {
                   )}
                 </span>
               )
-            : (row) => <>{formatFieldValue(field.kind, row[field.name])}</>,
+            : (row) => <>{formatFieldValue(field.kind, row[field.name], field.name)}</>,
     }));
   }, [entity, mayEdit, setStatus, t]);
 
@@ -227,7 +227,11 @@ export default function MasterDataPage() {
             }
           : {
               key: 'delete',
-              label: t('action.retire'),
+              // "Retire" would be a lie for an entity that has no retired
+              // state to move to. Map Locations is the one: the row is removed
+              // and there is nothing to restore afterwards, so the control has
+              // to say so before it is pressed rather than in the result.
+              label: entity.soft_delete ? t('action.retire') : t('action.remove'),
               icon: <Trash2 size={14} />,
               danger: true,
               onSelect: () => void askToRemove(row),
@@ -401,8 +405,19 @@ export default function MasterDataPage() {
         <ConfirmDialog
           open
           tone="warning"
-          title={t('confirm.retireTitle', { entity: entity.label })}
-          consequence={t('confirm.retireConsequence')}
+          // The standard consequence promises the record "can be restored at
+          // any time" and that "nothing is deleted". For an entity with no
+          // retired state that is simply untrue, and this is the last screen
+          // before the record goes.
+          title={t(
+            entity.soft_delete ? 'confirm.retireTitle' : 'confirm.removeTitle',
+            { entity: entity.label },
+          )}
+          consequence={t(
+            entity.soft_delete
+              ? 'confirm.retireConsequence'
+              : 'confirm.removeConsequence',
+          )}
           recordLabel={
             entity.label_field ? String(removing[entity.label_field] ?? '') : null
           }
@@ -410,7 +425,7 @@ export default function MasterDataPage() {
           entityLabel={entity.label}
           dependants={dependants}
           reason="optional"
-          confirmLabel={t('action.retire')}
+          confirmLabel={entity.soft_delete ? t('action.retire') : t('action.remove')}
           busy={remove.isPending}
           error={remove.error ? (remove.error as ApiError).message : null}
           onConfirm={(reason) => remove.mutate({ code: removingCode, reason })}
@@ -424,8 +439,19 @@ export default function MasterDataPage() {
   );
 }
 
+/**
+ * How one row is addressed in a URL.
+ *
+ * A dimension keyed on a single code is that code. Three are not — Plant on
+ * company + plant, Storage Location on plant + location, Map Locations on
+ * entity type + entity code — and for those the server sends the whole key,
+ * joined, as `_key`. Sending only the first column would address *some* record
+ * sharing it rather than the one the reader clicked: every coordinate of a
+ * customer shares the entity type `customer`.
+ */
 function keyOf(entity: ManagedEntity | undefined, row: ManagedRow): string {
   if (!entity) return String(row._key ?? '');
+  if (entity.key_fields.length > 1) return String(row._key ?? '');
   return String(row[entity.key_fields[0]] ?? row._key ?? '');
 }
 

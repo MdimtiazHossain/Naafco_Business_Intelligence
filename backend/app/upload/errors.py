@@ -135,6 +135,23 @@ SUGGESTED_FIX_BY_CODE: dict[str, str] = {
 }
 
 
+#: What each coordinate fault is counted as, keyed on the column
+#: :class:`app.map.geo.LocationProblem` names.
+#:
+#: The rule and its wording live in ``map.geo.location_problems``; this is the
+#: one thing that module has no business knowing, because an error code belongs
+#: to the upload vocabulary. It lives here rather than in either caller so a
+#: coordinate rejected from a file and the same coordinate rejected from the
+#: Data Management form are filed under the same code — two maps would let one
+#: fault be an INVALID_TYPE on one screen and an INVALID_PARENT_CODE on the
+#: other.
+LOCATION_ERROR_CODE: dict[str, str] = {
+    "Entity Type": code.INVALID_TYPE,
+    "Entity Code": code.INVALID_PARENT,
+    "Latitude / Longitude": code.INVALID_TYPE,
+}
+
+
 def suggested_fix(error_code: str) -> str | None:
     return SUGGESTED_FIX_BY_CODE.get(error_code)
 
