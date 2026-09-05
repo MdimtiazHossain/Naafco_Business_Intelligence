@@ -92,6 +92,28 @@ Write-Host "API process before : $(if ($before) { $before } else { '(nothing lis
 Stop-Service $Service -Force
 $deadline = (Get-Date).AddSeconds(30)
 while ((Get-ApiProcessId) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+
+# The stop does not always take the server with it, and when it does not the
+# failure is silent and total. nssm launches `.venv\Scripts\python.exe`, which
+# runs the real interpreter as a child, and that child is the process holding
+# port 8000. `AppKillProcessTree` is set, but nssm allows only 1500 ms per stop
+# method, so the parent dies first, the server is reparented, and the tree walk
+# no longer finds it. It then keeps the socket: the service restarts, the new
+# server cannot bind, it exits, and the ORPHAN goes on answering requests with
+# whatever code it started with.
+#
+# That is not a hypothetical. It cost a deployment four restarts that all
+# appeared to succeed — `Get-Service` said Running throughout — while the API
+# served code from hours earlier. So the port is checked, and an orphan holding
+# it is ended by hand rather than left to defeat the restart.
+$orphan = Get-ApiProcessId
+if ($orphan) {
+    Write-Host "Port $Port still held by PID $orphan after the stop - orphaned; ending it." `
+        -ForegroundColor Yellow
+    Stop-Process -Id $orphan -Force -ErrorAction SilentlyContinue
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-ApiProcessId) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+}
 $stopped = -not (Get-ApiProcessId)
 Write-Host "Port $Port released  : $stopped"
 

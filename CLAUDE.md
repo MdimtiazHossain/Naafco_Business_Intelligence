@@ -496,6 +496,18 @@ the keyboard has to. Check `upload_batches` for a `QUEUED`/`VALIDATING`/
 `IMPORTING` row first — that is the import the missing `--reload` exists to
 protect.
 
+**And a restart can fail without failing.** nssm starts
+`.venv\Scripts\python.exe`, which runs the real interpreter as a child, and it
+is the child that holds port 8000; `AppKillProcessTree` is set, but nssm allows
+each stop method only 1500 ms, so the parent dies first and the reparented child
+outlives the tree walk. It keeps the socket, the restarted service cannot bind
+and exits, and the orphan carries on answering with the code it started with —
+four restarts in a row have "succeeded" this way while the API served hours-old
+code, `Get-Service` reporting Running throughout. So the symptom has two causes,
+the restart not run and the restart not taken, and
+`deploy/local/restart-api.ps1` is what separates them: it ends whatever still
+holds the port after the stop, then proves the process id changed.
+
 ### Agent learning (`ai/feedback.py mining.py vocabulary.py lexicon.py`, migration 0025)
 
 Intent classification reads hand-written keyword tables in `ai/intent.py` and entity resolution matches master-data names, and **neither guesses** — which is what makes an answer reproducible, and also why a word nobody has written down is a word the agent cannot understand. This subsystem is the way to write one down, and its whole surface is *interpretation*: which tool runs, which entity a word names, which period is meant. **Nothing learned ever reaches a number.** Aggregation, filtering, scope and permission are untouched, so an approved alias changes *which question gets answered* and never *what the answer is* (`test_agent_learning_guarantees.py` pins this, and that a learned alias cannot widen a user's scope).

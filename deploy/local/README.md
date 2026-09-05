@@ -127,15 +127,28 @@ Get-Service postgresql-x64-17, AIBusinessAgentAPI, AIBusinessAgentWeb
 Restart-Service AIBusinessAgentAPI
 
 # …or, when you want it checked rather than assumed. Same restart, but it
-# asserts elevation first, refuses while an import is running, and then proves
-# the process actually changed — `Restart-Service` fails quietly if the shell
-# is not elevated, and `Get-Service` says Running either way.
+# asserts elevation first, refuses while an import is running, ends a server
+# left holding port 8000, and then proves the process actually changed —
+# `Restart-Service` fails quietly if the shell is not elevated, `Get-Service`
+# says Running either way, and an orphan holding the port defeats both.
 .\deploy\local\restart-api.ps1
 
 # Reload nginx after editing nginx.conf (no dropped connections)
 powershell -ExecutionPolicy Bypass -File deploy\local\start-nginx.ps1 -Test
 Restart-Service AIBusinessAgentWeb
 ```
+
+**A stopped service does not always stop the server.** nssm starts
+`.venv\Scripts\python.exe`, which runs the real interpreter as a child, and it
+is that child which holds port 8000. `AppKillProcessTree` is set, but nssm
+allows each stop method only 1500 ms, so the parent dies first, the child is
+reparented and the tree walk no longer finds it. The orphan keeps the socket,
+the restarting service cannot bind and exits, and the orphan goes on answering
+requests with the code it started with — `Get-Service` reports Running for the
+service that never came up. Four restarts in a row have "succeeded" this way
+while the API served hours-old code. `restart-api.ps1` ends whatever still
+holds the port after the stop; by hand, find it with `Get-NetTCPConnection
+-State Listen -LocalPort 8000` and stop that process.
 
 Logs: `deploy/local/run/logs/` — `api-stdout.log`, `api-stderr.log`,
 `nginx-stderr.log` from NSSM, plus nginx's own `access.log` and `error.log`.
