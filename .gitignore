@@ -85,7 +85,13 @@ reports/*
 Business_Map.png
 
 # --- Editor / local tooling -------------------------------------------------
-.claude/settings.local.json
+# `.claude/` is Claude Code's state for this machine, not source: worktrees/
+# holds entire checkouts of this repository, settings.local.json is one
+# machine's permissions, and launch.json pins ports and a Windows interpreter
+# path for one person's checkout. Ignoring the directory rather than naming
+# files inside it is what stops a `git add -A` committing the repository into
+# itself.
+.claude/
 .vscode/
 
 # --- Local production deployment --------------------------------------------
