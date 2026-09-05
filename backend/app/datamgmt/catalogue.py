@@ -328,6 +328,39 @@ _LABEL_FIELD_BY_TABLE: dict[str, str] = {
 #: keeps the whole record, so what was removed is still readable afterwards.
 _HARD_DELETE_TABLES: frozenset[str] = frozenset({"map_entity_locations"})
 
+#: Columns the record carries, nobody uploads, and the reader needs anyway.
+#:
+#: An upload type describes what a *file* states, so provenance is absent from
+#: it — you cannot upload the fact that a coordinate was computed. On this table
+#: that leaves the two rows a reader most needs to tell apart looking identical:
+#: a coordinate somebody placed and a centroid the system derives are the same
+#: five columns, and only the first is theirs to move or remove. Showing
+#: ``source`` is what makes the removal rule predictable instead of arbitrary,
+#: and ``derived_from`` says how many coordinates below produced the figure.
+#: Both are read-only here for the same reason the business code is: provenance
+#: is a record of what happened, and editing it would be a claim rather than a
+#: correction.
+_SYSTEM_FIELDS_BY_TABLE: dict[str, tuple[ManagedField, ...]] = {
+    "map_entity_locations": (
+        ManagedField(
+            name="source", label="Source", kind="code", editable=False,
+            description=(
+                "How the coordinate was obtained. UPLOAD and MANUAL were set by "
+                "a person and are authoritative; DERIVED is the centroid of the "
+                "coordinates below it and is recomputed automatically."
+            ),
+            default_visible=True,
+        ),
+        ManagedField(
+            name="derived_from", label="Derived From", kind="integer",
+            editable=False,
+            description=("How many coordinates below this one a derived "
+                         "centroid was computed from."),
+            default_visible=False,
+        ),
+    ),
+}
+
 
 def _entity_type_choices() -> tuple[str, ...]:
     """The levels the map can draw, as the values ``entity_type`` may take.
@@ -416,11 +449,12 @@ def _master_entity(upload_type: UploadType) -> ManagedEntity | None:
     if model is None:
         return None
 
-    fields = tuple(
-        _master_field(column, upload_type, index)
-        for index, column in enumerate(upload_type.columns)
-    )
     table = upload_type.table or ""
+    fields = (
+        *(_master_field(column, upload_type, index)
+          for index, column in enumerate(upload_type.columns)),
+        *_SYSTEM_FIELDS_BY_TABLE.get(table, ()),
+    )
     return ManagedEntity(
         key=table,
         label=upload_type.label,

@@ -216,6 +216,36 @@ def _master_order(entity: ManagedEntity, request: ListRequest) -> list:
     return [direction(_master_column(entity, name)) for name in names]
 
 
+def _derived_coordinate_refusal(record: Any) -> str | None:
+    from ..map.geo import removal_refusal
+
+    return removal_refusal(record)
+
+
+#: Rows a table will not part with, and why — by table, evaluated per row.
+#:
+#: Distinct from ``entity.soft_delete``, which is a property of the *entity*:
+#: this is a property of the individual **record**, because one Map Locations
+#: row can be a coordinate somebody placed and the next can be a centroid the
+#: system computed, and only the first is anybody's to remove.
+_REMOVAL_REFUSAL: dict[str, Any] = {
+    "map_entity_locations": _derived_coordinate_refusal,
+}
+
+
+def removal_refusal(entity: ManagedEntity, record: Any) -> str | None:
+    """Why this record may not be removed, or ``None`` if it may be.
+
+    Read by both paths on purpose. ``service.delete_master`` is what actually
+    enforces it, and ``master_row`` publishes the same answer as ``_removable``
+    so the table can leave the control off a row that would only ever refuse —
+    the same rule Target Management follows, and for the same reason: a button
+    that never works teaches people to ignore buttons.
+    """
+    check = _REMOVAL_REFUSAL.get(entity.table or "")
+    return check(record) if check is not None else None
+
+
 def master_row(entity: ManagedEntity, record: Any) -> dict[str, Any]:
     row = {f.name: q.normalize_value(getattr(record, f.name, None))
            for f in entity.fields}
@@ -225,6 +255,7 @@ def master_row(entity: ManagedEntity, record: Any) -> dict[str, Any]:
     row["deleted_at"] = getattr(record, "deleted_at", None)
     row["deleted_by"] = getattr(record, "deleted_by", None)
     row["_key"] = _record_key(entity, record)
+    row["_removable"] = removal_refusal(entity, record) is None
     return row
 
 

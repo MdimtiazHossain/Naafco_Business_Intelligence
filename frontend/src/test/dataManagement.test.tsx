@@ -254,6 +254,24 @@ describe('MasterDataPage', () => {
     expect(actions.getByText('Retire')).toBeInTheDocument();
   });
 
+  it('leaves the remove control off a row the server will not part with', async () => {
+    // `_removable` is per row, not per entity: a Map Locations table holds
+    // coordinates somebody placed beside centroids the system recomputes, and
+    // only the first can be removed. A control whose only outcome is a refusal
+    // is absent rather than drawn inert.
+    const response = listResponse();
+    response.rows[0] = { ...response.rows[0], _removable: false };
+    await renderMasterTable(response);
+
+    const refused = rowMenu(0);
+    expect(refused.getByText('View')).toBeInTheDocument();
+    expect(refused.getByText('Edit')).toBeInTheDocument();
+    expect(refused.queryByText('Retire')).not.toBeInTheDocument();
+
+    // The row beside it says nothing, which means removable.
+    expect(rowMenu(1).getByText('Retire')).toBeInTheDocument();
+  });
+
   it('hides the actions the backend would refuse', async () => {
     await renderMasterTable(
       listResponse({ permissions: { VIEW: true, EDIT: false, DELETE: false } }),
@@ -406,6 +424,51 @@ describe('MasterDataPage', () => {
     expect(bulk.mock.calls[0].slice(0, 3)).toEqual([
       'dim_customer', 'DEACTIVATE', ['C001'],
     ]);
+  });
+
+  it('reports what a bulk action refused instead of answering with silence', async () => {
+    // The endpoint answers 200 whether every record applied or none did, and
+    // reports each outcome in the body. Discarding that is how a bulk remove
+    // over derived Map Locations rows came to look like a broken button: the
+    // request succeeded, every record was refused, and the page said nothing.
+    vi.spyOn(services.masterRecordService, 'bulk').mockResolvedValue({
+      succeeded: ['C001'],
+      failed: [
+        { code: 'C002', reason: 'This coordinate is the centroid of the 3 coordinate(s) below it.' },
+        { code: 'C003', reason: 'This coordinate is the centroid of the 3 coordinate(s) below it.' },
+      ],
+      success_count: 1,
+      failure_count: 2,
+    } as never);
+    await renderMasterTable();
+
+    fireEvent.click(screen.getAllByLabelText('Select row')[0]);
+    // Scoped to the bulk bar: the row menu offers a Retire of its own.
+    const bar = screen.getByText('1 selected').parentElement as HTMLElement;
+    fireEvent.click(within(bar).getByRole('button', { name: 'Retire' }));
+
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent('1 applied, 2 refused.');
+    // Grouped by reason, not one line per record: two rows refused for one
+    // reason is one thing to read.
+    expect(notice).toHaveTextContent('2×');
+    expect(notice).toHaveTextContent(/centroid of the 3 coordinate/);
+  });
+
+  it('says nothing after a bulk action that refused nothing', async () => {
+    vi.spyOn(services.masterRecordService, 'bulk').mockResolvedValue({
+      succeeded: ['C001'], failed: [], success_count: 1, failure_count: 0,
+    } as never);
+    await renderMasterTable();
+
+    fireEvent.click(screen.getAllByLabelText('Select row')[0]);
+    // Scoped to the bulk bar: the row menu offers a Retire of its own.
+    const bar = screen.getByText('1 selected').parentElement as HTMLElement;
+    fireEvent.click(within(bar).getByRole('button', { name: 'Retire' }));
+
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent('1 applied, 0 refused.');
+    expect(notice).not.toHaveTextContent('×');
   });
 
   it('selecting the header checkbox selects the page, not the whole table', async () => {

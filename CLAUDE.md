@@ -283,6 +283,33 @@ one leaves the customer or territory it pointed at untouched — the change log
 keeps the whole record, and restore is refused with "create it again" rather
 than pretending there is something to un-retire.
 
+**Removing a coordinate is refused when the row is `DERIVED`, and the first
+attempt at this screen got it wrong in the worst available way.** The delete
+committed, the after-write hook re-derived, `_write_centroids` wrote a centroid
+for every parent whose children are still placed — and the caller was told the
+row was gone while looking at it. A derived row is not a record, it is a
+**computation**, so `geo.removal_refusal` refuses it and names the lever that
+does work. That refusal was itself a dead end until the other half landed:
+`derive_parents` only ever *wrote*, so a centroid whose inputs had all been
+removed survived forever, and being derived it could not be removed either.
+`_prune_stale_centroids` is the companion to `_prune_orphaned_centroids` — one
+catches an entity the master dropped, the other an entity that still exists with
+nothing placed below it — and it runs **per level as the pass climbs**, before a
+parent reads that level as its input, or a parent would be derived from a
+centroid removed later in the same pass. Removing a *placed* coordinate from a
+level with children below it succeeds and is **not** a failure, but it looks
+like one, because the derivation immediately hands the entity its children's
+centroid; `_after_location_write` returns a note saying exactly that and
+`delete_master` puts it in the message.
+
+Which of those a row is, is now **visible**: `source` and `derived_from` are on
+the entity as read-only fields through `_SYSTEM_FIELDS_BY_TABLE`, even though
+neither is an upload column — you cannot upload provenance, and without it the
+two rows a reader most needs to tell apart are the same five columns. And
+`master_row` publishes `_removable`, the server's answer **for that row rather
+than for the entity**, so the table leaves the control off a row that would only
+refuse: the same rule Target Management follows, for the same reason.
+
 Three generic assumptions had to go for it, each a single-key assumption that
 had never been challenged. **A master may be keyed on more than one column** —
 `entity_type + entity_code` here, and `dim_plant`/`dim_storage_location` were
@@ -453,7 +480,21 @@ page asks the map to do, never WebGL. **Development `data/dev.db` holds no
 sales rows**, so the map there is correctly empty; the localhost deployment's
 PostgreSQL has the data, and it serves `frontend/dist` directly, so a frontend
 change reaches it only after `cd frontend; npm run build` (no service restart
-— the API service already carries the routes).
+— nginx reads the bundle off disk).
+
+**A backend change reaches that deployment only on a service restart, and this
+sentence used to imply otherwise.** "No service restart" above is true of the
+*frontend* and was read as covering both, which cost a round trip: a Map
+Locations fix was reported as done, tested on the deployment and found still
+broken, because `AIBusinessAgentAPI` runs uvicorn **deliberately without
+`--reload`** (a file watcher would restart the process mid-import, which
+`deploy/local/start-backend.ps1` explains) and so was still executing the code
+it started with. Editing anything under `backend/` and rebuilding the bundle is
+half a deployment. `Restart-Service AIBusinessAgentAPI` is the other half, it
+**requires an elevated shell** so Claude Code cannot run it, and the person at
+the keyboard has to. Check `upload_batches` for a `QUEUED`/`VALIDATING`/
+`IMPORTING` row first — that is the import the missing `--reload` exists to
+protect.
 
 ### Agent learning (`ai/feedback.py mining.py vocabulary.py lexicon.py`, migration 0025)
 

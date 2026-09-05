@@ -166,6 +166,37 @@ def location_payload(row: MapEntityLocation) -> dict[str, Any]:
     }
 
 
+def removal_refusal(row: MapEntityLocation) -> str | None:
+    """Why this coordinate may not be removed by hand, or ``None`` if it may.
+
+    A ``DERIVED`` row is not a record, it is a **computation**: the centroid of
+    whatever is placed below it, rewritten by :func:`derive_parents` on every
+    coordinate change. Removing one therefore cannot work — the next derivation
+    puts an identical row straight back, because ``_write_centroids`` writes a
+    centroid for every parent whose children are still placed. It is not a
+    delete that fails, it is a delete that *succeeds and is then undone*, which
+    is the worst of the three possible behaviours: the caller is told the row
+    is gone and it is still there.
+
+    So it is refused, and the refusal names the one thing that does work:
+    remove the coordinates below it, after which :func:`_prune_stale_centroids`
+    takes this one with them. Placing the entity by hand is deliberately *not*
+    offered as a way out — it makes the row ``MANUAL`` and so removable, but
+    removing it then falls straight back to the centroid, because the children
+    are still placed. Advice that ends where it started is worse than none.
+    """
+    if row.source != GeoSource.DERIVED:
+        return None
+    below = (f"the {row.derived_from} coordinate(s) below it"
+             if row.derived_from else "the coordinates below it")
+    return (
+        f"This coordinate is the centroid of {below}, not a position anybody "
+        "placed, and it is recomputed whenever those change — removing it "
+        f"would put an identical one straight back. Remove {below} instead: "
+        "once nothing below it is placed, this one goes with them."
+    )
+
+
 def entity_exists(session: Session, entity_type: str, entity_code: str) -> bool:
     """Whether the master data holds a record with this code at this level."""
     level = get_level(entity_type)
@@ -333,7 +364,7 @@ def _codes_at(session: Session, level_key: str) -> set[str]:
 
 def _write_centroids(session: Session, level_key: str,
                      grouped: Mapping[str, list[tuple[float, float]]],
-                     actor: str | None) -> int:
+                     actor: str | None) -> set[str]:
     """Store one level's centroids, leaving anything a person placed alone.
 
     A parent code the master does not hold at this level gets no row. The
@@ -354,7 +385,7 @@ def _write_centroids(session: Session, level_key: str,
             len(unknown), level_key, level_key, ", ".join(unknown[:5]),
         )
     existing = locations_for(session, level_key)
-    count = 0
+    written: set[str] = set()
     for code, points in grouped.items():
         if code not in known:
             continue
@@ -374,13 +405,16 @@ def _write_centroids(session: Session, level_key: str,
         current.precision = GeoPrecision.CENTROID
         current.derived_from = len(points)
         current.updated_by = actor
-        count += 1
+        written.add(code)
     session.flush()
-    return count
+    # The codes, not a count: :func:`derive_parents` needs to know *which*
+    # entities this pass still supports so it can remove the derived rows it
+    # no longer produces.
+    return written
 
 
 def _derive_from_business(session: Session, level_key: str,
-                          actor: str | None) -> int:
+                          actor: str | None) -> set[str]:
     """Place a business level's parent at the centroid of its placed members.
 
     Customer and sales force are not rungs of ``LEVEL_BINDINGS`` — they are
@@ -397,7 +431,7 @@ def _derive_from_business(session: Session, level_key: str,
     level = LEVEL_BY_KEY[level_key]
     placed = locations_for(session, level_key)
     if not placed or level.parent is None or level.parent_code_field is None:
-        return 0
+        return set()
 
     code_column = getattr(level.model, level.code_field)
     parent_column = getattr(level.model, level.parent_code_field)
@@ -446,6 +480,47 @@ def _prune_orphaned_centroids(session: Session) -> int:
     return removed
 
 
+def _prune_stale_centroids(session: Session,
+                           written: Mapping[str, set[str]]) -> int:
+    """Remove derived rows this pass no longer produces.
+
+    The companion to :func:`_prune_orphaned_centroids`, for the other way a
+    centroid's inputs can disappear. That one catches an entity the master data
+    dropped; this one catches an entity that still exists but has nothing placed
+    below it any more — every customer coordinate under a sub-territory removed,
+    or the last child re-parented elsewhere. Both leave a position that nothing
+    supports, which is the invention this module refuses.
+
+    Without it, removing a coordinate could not be undone at the level above:
+    the parent kept a centroid derived from a point that no longer existed, and
+    because a derived row is refused by the management screen there was no way
+    to reach it at all.
+
+    ``written`` is every level this pass *considered* as a parent mapped to the
+    codes it produced there, so a level whose children are all unplaced arrives
+    with an empty set and is cleared. Only ``DERIVED`` rows are touched — a
+    coordinate a person placed is theirs to remove, and is never inferred to be
+    stale.
+    """
+    removed = 0
+    for level_key, codes in written.items():
+        rows = session.execute(
+            select(MapEntityLocation).where(
+                MapEntityLocation.entity_type == level_key,
+                MapEntityLocation.source == GeoSource.DERIVED,
+            )
+        ).scalars().all()
+        for row in rows:
+            if row.entity_code not in codes:
+                session.delete(row)
+                removed += 1
+    if removed:
+        session.flush()
+        logger.info("map derivation: removed %d centroid(s) with nothing "
+                    "placed below them", removed)
+    return removed
+
+
 def derive_parents(session: Session, *, actor: str | None = None) -> dict[str, int]:
     """Give every organisational level above the placed ones a centroid.
 
@@ -458,8 +533,15 @@ def derive_parents(session: Session, *, actor: str | None = None) -> dict[str, i
     A coordinate somebody set by hand is never overwritten — only ``DERIVED``
     rows are recomputed — so this is safe to re-run whenever locations change.
     Returns how many rows were derived at each level.
+
+    The pass records which codes it produced at each level rather than only how
+    many, because deriving is not only about writing: a centroid whose children
+    have all been unplaced has to *go*, or the level above keeps a position that
+    nothing supports. :func:`_prune_stale_centroids` is that half.
     """
     created: dict[str, int] = {}
+    #: Every level considered as a parent -> the codes still supported there.
+    written: dict[str, set[str]] = {}
     _prune_orphaned_centroids(session)
 
     # Sub-territory from customers and territory from the sales force. The two
@@ -467,10 +549,11 @@ def derive_parents(session: Session, *, actor: str | None = None) -> dict[str, i
     # then replaced by the centroid of its sub-territories in the pass below,
     # which is the deliberate order — a sub-territory is the finer placement.
     for business in ("customer", "sales_force"):
+        parent = LEVEL_BY_KEY[business].parent or business
         seeded = _derive_from_business(session, business, actor)
+        written.setdefault(parent, set()).update(seeded)
         if seeded:
-            parent = LEVEL_BY_KEY[business].parent or business
-            created[parent] = created.get(parent, 0) + seeded
+            created[parent] = created.get(parent, 0) + len(seeded)
 
     # Deepest first: each pass can consume what the previous one produced.
     for binding in reversed(LEVEL_BINDINGS):
@@ -479,6 +562,18 @@ def derive_parents(session: Session, *, actor: str | None = None) -> dict[str, i
             continue
         child_level = binding.code_field.removesuffix("_code")
         parent_level = parent_field.removesuffix("_code")
+        # Recorded before the early exit below: a level whose children are all
+        # unplaced supports nothing, and an absent entry would be read as
+        # "not considered" and leave its stale rows in place.
+        written.setdefault(parent_level, set())
+
+        # The child level is finished by now — the loop runs deepest first, so
+        # everything that writes it has already run — and it is about to be
+        # read as this level's input. Clearing its stale rows *first* is what
+        # stops a parent being derived from a centroid that is removed later in
+        # the same pass, which would leave the parent standing on nothing.
+        if child_level in written:
+            _prune_stale_centroids(session, {child_level: written[child_level]})
 
         child_locations = locations_for(session, child_level)
         if not child_locations:
@@ -499,10 +594,12 @@ def derive_parents(session: Session, *, actor: str | None = None) -> dict[str, i
                 (location.latitude, location.longitude)
             )
 
-        count = _write_centroids(session, parent_level, grouped, actor)
-        if count:
-            created[parent_level] = count
+        codes = _write_centroids(session, parent_level, grouped, actor)
+        written[parent_level] |= codes
+        if codes:
+            created[parent_level] = len(codes)
 
+    _prune_stale_centroids(session, written)
     return created
 
 

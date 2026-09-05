@@ -33,7 +33,12 @@ import { useDebounced } from '../hooks/useDebounced';
 import { ApiError, masterRecordService, type RecordQuery } from '../services';
 import { DataTable, type Column } from '../tables/DataTable';
 import { formatFieldValue } from '../utils/format';
-import type { Dependants, ManagedEntity, ManagedRow } from '../types/api';
+import type {
+  BulkResponse,
+  Dependants,
+  ManagedEntity,
+  ManagedRow,
+} from '../types/api';
 
 const PAGE_SIZES = [10, 25, 50, 100];
 
@@ -60,6 +65,7 @@ export default function MasterDataPage() {
   const [creating, setCreating] = useState(false);
   const [removing, setRemoving] = useState<ManagedRow | null>(null);
   const [dependants, setDependants] = useState<Dependants | null>(null);
+  const [bulkOutcome, setBulkOutcome] = useState<BulkResponse | null>(null);
 
   const debouncedSearch = useDebounced(search, 350);
 
@@ -131,7 +137,13 @@ export default function MasterDataPage() {
   const bulk = useMutation({
     mutationFn: ({ action, codes }: { action: string; codes: string[] }) =>
       masterRecordService.bulk(entityKey, action, codes),
-    onSuccess: () => {
+    // The server attempts each record independently and answers 200 with what
+    // happened to each — a bulk action is *expected* to succeed partly. Keeping
+    // that outcome is the whole point: dropping it and refetching left a reader
+    // pressing the button, seeing the rows unchanged and being told nothing at
+    // all, which is indistinguishable from the feature being broken.
+    onSuccess: (outcome) => {
+      setBulkOutcome(outcome);
       setSelected(new Set());
       invalidate();
     },
@@ -216,7 +228,13 @@ export default function MasterDataPage() {
         onSelect: () => setEditing(row),
       });
     }
-    if (mayDelete) {
+    // `_removable` is the server's answer for *this row*, not this entity:
+    // one Map Locations row is a coordinate somebody placed and the next is a
+    // centroid the system recomputes, and only the first can be removed. A
+    // control whose only outcome is a refusal is left off rather than drawn
+    // inert, the same rule Target Management follows.
+    const removable = row._removable !== false;
+    if (mayDelete && (retired || removable)) {
       actions.push(
         retired
           ? {
@@ -379,6 +397,11 @@ export default function MasterDataPage() {
                   }
                   onClear={() => setSelected(new Set())}
                 />
+              ) : bulkOutcome ? (
+                <BulkOutcomeNotice
+                  outcome={bulkOutcome}
+                  onDismiss={() => setBulkOutcome(null)}
+                />
               ) : null
             }
           />
@@ -449,6 +472,63 @@ export default function MasterDataPage() {
  * sharing it rather than the one the reader clicked: every coordinate of a
  * customer shares the entity type `customer`.
  */
+/**
+ * What a bulk action actually did, once it has done it.
+ *
+ * A bulk action answers 200 whether every record applied or none did — the
+ * server attempts each one independently and reports them, because partial
+ * success is the honest result of a partial request. Rendering that is not a
+ * nicety: without it the reader presses the button, sees the rows unchanged and
+ * is told nothing, which reads as the feature being broken. It is exactly how a
+ * silent refusal on Map Locations went unexplained.
+ *
+ * Reasons are grouped rather than listed per record: sixty rows refused for one
+ * reason is one thing to understand, not sixty, and the codes are already on
+ * screen in the table.
+ */
+function BulkOutcomeNotice({
+  outcome,
+  onDismiss,
+}: {
+  outcome: BulkResponse;
+  onDismiss: () => void;
+}) {
+  const t = useT();
+  const byReason = new Map<string, number>();
+  for (const failure of outcome.failed) {
+    byReason.set(failure.reason, (byReason.get(failure.reason) ?? 0) + 1);
+  }
+  const failed = outcome.failure_count > 0;
+
+  return (
+    <div
+      role="status"
+      className={`flex flex-wrap items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+        failed
+          ? 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40'
+          : 'border-emerald-300 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/40'
+      }`}
+    >
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="font-medium">
+          {t('bulk.outcome', {
+            done: String(outcome.success_count),
+            failed: String(outcome.failure_count),
+          })}
+        </p>
+        {[...byReason.entries()].map(([reason, count]) => (
+          <p key={reason} className="text-xs text-slate-600 dark:text-slate-300">
+            <span className="font-medium">{count}×</span> {reason}
+          </p>
+        ))}
+      </div>
+      <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={onDismiss}>
+        {t('action.dismiss')}
+      </button>
+    </div>
+  );
+}
+
 function keyOf(entity: ManagedEntity | undefined, row: ManagedRow): string {
   if (!entity) return String(row._key ?? '');
   if (entity.key_fields.length > 1) return String(row._key ?? '');
@@ -616,7 +696,7 @@ function BulkBar({
           // than swallowed.
           onClick={() => onAction('DELETE')}
         >
-          {t('bulk.retire')}
+          {entity.soft_delete ? t('bulk.retire') : t('bulk.remove')}
         </button>
       )}
       <button type="button" className="btn-ghost ml-auto px-2 py-1 text-xs" onClick={onClear}>

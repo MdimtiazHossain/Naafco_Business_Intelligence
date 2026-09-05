@@ -1,6 +1,7 @@
 {
   "action.correct": "সংশোধন",
   "action.create": "নতুন রেকর্ড",
+  "action.dismiss": "বন্ধ করুন",
   "action.edit": "সম্পাদনা",
   "action.export": "এক্সপোর্ট",
   "action.reinstate": "পুনর্বহাল",
@@ -105,6 +106,8 @@
   "bulk.activate": "সক্রিয় করুন",
   "bulk.clear": "নির্বাচন বাতিল",
   "bulk.deactivate": "নিষ্ক্রিয় করুন",
+  "bulk.outcome": "{done}টি সম্পন্ন, {failed}টি বাতিল।",
+  "bulk.remove": "মুছে ফেলুন",
   "bulk.retire": "অবসর",
   "bulk.selected": "{count}টি নির্বাচিত",
   "common.actions": "অ্যাকশন",

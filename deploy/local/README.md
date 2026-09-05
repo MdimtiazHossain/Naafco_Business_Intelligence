@@ -121,8 +121,16 @@ terminal left open.
 # Status of the whole chain
 Get-Service postgresql-x64-17, AIBusinessAgentAPI, AIBusinessAgentWeb
 
-# Restart the API (elevated) — e.g. after editing .env.production
+# Restart the API (elevated) — after editing .env.production or anything
+# under backend/. The service runs uvicorn without --reload, so a code change
+# reaches it only this way.
 Restart-Service AIBusinessAgentAPI
+
+# …or, when you want it checked rather than assumed. Same restart, but it
+# asserts elevation first, refuses while an import is running, and then proves
+# the process actually changed — `Restart-Service` fails quietly if the shell
+# is not elevated, and `Get-Service` says Running either way.
+.\deploy\local\restart-api.ps1
 
 # Reload nginx after editing nginx.conf (no dropped connections)
 powershell -ExecutionPolicy Bypass -File deploy\local\start-nginx.ps1 -Test

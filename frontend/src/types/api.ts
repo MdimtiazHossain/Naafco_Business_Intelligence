@@ -160,7 +160,19 @@ export interface DataCatalogue {
   groups: EntityGroup[];
 }
 
-export type ManagedRow = Record<string, unknown> & { _key: string };
+/**
+ * One row of a management table.
+ *
+ * `_key` addresses the record in a URL — the whole business key, joined, for
+ * the dimensions keyed on more than one column. `_removable` is the server's
+ * answer for *this row* rather than for the entity: a Map Locations row can be
+ * a coordinate somebody placed or a centroid the system recomputes, and only
+ * the first is anybody's to remove. Absent means removable.
+ */
+export type ManagedRow = Record<string, unknown> & {
+  _key: string;
+  _removable?: boolean;
+};
 
 export interface RecordListResponse {
   entity: ManagedEntity;

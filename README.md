@@ -1521,6 +1521,17 @@ reader who may not compose the map.
   file are held to the same standard. It is the one master **removed rather
   than retired**: the row carries no `is_deleted`, nothing references a
   coordinate, and the change log keeps the whole record.
+* **A derived coordinate cannot be removed, and the table says which rows are
+  which.** A `DERIVED` row is the centroid of what is placed below it, so
+  removing one is meaningless — the next derivation writes an identical row
+  back. It is refused with a message naming what does work: remove the
+  coordinates below it, after which the centroid goes with them (`derive_parents`
+  now clears a centroid whose inputs have all gone, not only one whose entity
+  the master dropped). Removing a *placed* coordinate from a level with
+  children succeeds and falls back to their centroid, and the message says so —
+  the entity stays on the map, which is correct and otherwise looks like the
+  removal having failed. `source` is a column on the table and `_removable`
+  travels with each row, so the control is absent where it would only refuse.
 * **Designs inherit where they say nothing** — a layer with no metric draws
   the design's default; no colour metric means Achievement %, no size metric
   Sales Amount, no tooltip fields the standard six — and the payload carries

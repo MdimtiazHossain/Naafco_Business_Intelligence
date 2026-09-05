@@ -22,13 +22,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..ai.permission_filter import UserContext
 from ..database.models_admin import ChangeAction
 from . import dependencies, history, scope
 from .catalogue import STATUS_VALUES, ManagedEntity
-from .query import KEY_SEPARATOR, get_master_record, get_transaction_record
+from .query import (
+    KEY_SEPARATOR,
+    get_master_record,
+    get_transaction_record,
+    removal_refusal,
+)
 from .validation import ValidationFailed, clean_and_validate
 
 
@@ -117,7 +123,7 @@ def _as_row(entity: ManagedEntity, record: Any) -> dict[str, Any]:
 
 
 def _after_location_write(session: Session, record: Any, user: UserContext,
-                          action: str, changed: list[str]) -> None:
+                          action: str, changed: list[str]) -> str | None:
     """Keep a hand-edited coordinate hand-edited, then re-derive the levels above.
 
     Two things the generic write cannot know, both owned by :mod:`app.map.geo`.
@@ -134,9 +140,16 @@ def _after_location_write(session: Session, record: Any, user: UserContext,
     sits below, so moving, adding or removing one coordinate changes the ones
     above it. This is the same call ``upload.master_loader.POST_LOAD`` makes
     after a coordinate file lands, for the same reason.
+
+    Removing a placed coordinate from a level that has coordinates *below* it
+    does not leave the entity unplaced — the derivation immediately gives it
+    the centroid of its children, which is the right answer and looks exactly
+    like the delete having failed. So the note this returns says so, and the
+    caller puts it in the message: the alternative is a reader watching a row
+    they just removed still sitting in the table with no explanation.
     """
     from ..map.geo import derive_parents
-    from ..database.models_map import GeoSource
+    from ..database.models_map import GeoSource, MapEntityLocation
 
     if action != ChangeAction.DELETED:
         moved = {"latitude", "longitude"} & set(changed)
@@ -145,8 +158,26 @@ def _after_location_write(session: Session, record: Any, user: UserContext,
             record.derived_from = None
         record.updated_by = user.username
         session.flush()
+        derive_parents(session, actor=user.username)
+        return None
 
+    entity_type, entity_code = record.entity_type, record.entity_code
     derive_parents(session, actor=user.username)
+
+    replacement = session.execute(
+        select(MapEntityLocation).where(
+            MapEntityLocation.entity_type == entity_type,
+            MapEntityLocation.entity_code == entity_code,
+        )
+    ).scalars().first()
+    if replacement is None:
+        return None
+    return (
+        f" {entity_type.replace('_', ' ')} '{entity_code}' is still on the map: "
+        f"with the placed coordinate gone it falls back to the centroid of the "
+        f"{replacement.derived_from or 0} coordinate(s) below it. Remove those "
+        "to take it off entirely."
+    )
 
 
 #: Work to run after a master write, by table.
@@ -162,10 +193,13 @@ _AFTER_MASTER_WRITE: dict[str, Any] = {
 
 
 def _after_write(session: Session, entity: ManagedEntity, record: Any,
-                 user: UserContext, action: str, changed: list[str]) -> None:
+                 user: UserContext, action: str,
+                 changed: list[str]) -> str | None:
+    """Run the table's hook, and hand back anything it needs the caller to say."""
     hook = _AFTER_MASTER_WRITE.get(entity.table or "")
-    if hook is not None:
-        hook(session, record, user, action, changed)
+    if hook is None:
+        return None
+    return hook(session, record, user, action, changed)
 
 
 def _check_parent_scope(session: Session, user: UserContext,
@@ -301,6 +335,14 @@ def delete_master(session: Session, user: UserContext, entity: ManagedEntity,
     if entity.soft_delete and getattr(record, "is_deleted", False):
         raise OperationRefused(f"{entity.label} '{code}' is already retired.")
 
+    # Before anything is written. A record another module recomputes is not
+    # this screen's to remove: deleting it would succeed, the after-write hook
+    # would derive it again, and the caller would be told a row was gone while
+    # looking at it.
+    refusal = removal_refusal(entity, record)
+    if refusal is not None:
+        raise OperationRefused(f"'{code}' cannot be removed. {refusal}")
+
     # Read before the row goes: a snapshot of a deleted instance is empty.
     snapshot = _snapshot(entity, record)
     label = _label_of(entity, record)
@@ -317,7 +359,8 @@ def delete_master(session: Session, user: UserContext, entity: ManagedEntity,
         session.delete(record)
         session.flush()
         verb, changed = "removed", sorted(snapshot)
-    _after_write(session, entity, record, user, ChangeAction.DELETED, changed)
+    followed = _after_write(session, entity, record, user,
+                            ChangeAction.DELETED, changed)
 
     history.record(
         session, entity=entity, record_key=code, label=label,
@@ -331,7 +374,7 @@ def delete_master(session: Session, user: UserContext, entity: ManagedEntity,
     return WriteResult(
         record=row, action=ChangeAction.DELETED,
         changed_fields=changed,
-        message=f"{entity.label} '{code}' {verb}.{note}",
+        message=f"{entity.label} '{code}' {verb}.{note}{followed or ''}",
     )
 
 

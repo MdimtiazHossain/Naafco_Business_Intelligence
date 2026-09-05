@@ -348,6 +348,61 @@ def test_an_orphaned_centroid_is_removed_on_re_derivation(seeded_engine):
         assert placed(session, "territory", "TR-KEPT") is not None
 
 
+def test_a_centroid_goes_when_the_coordinates_it_was_computed_from_do(
+        seeded_engine):
+    """The other way a centroid's inputs disappear.
+
+    ``_prune_orphaned_centroids`` catches an entity the master data dropped.
+    This catches an entity that still exists with nothing placed below it any
+    more, which is what removing the last customer coordinate under a
+    sub-territory does. Both leave a position nothing supports. It cascades,
+    because a territory derived from that sub-territory is standing on the same
+    nothing — and the prune runs per level as the pass climbs precisely so the
+    parent is not re-derived from a centroid removed later in the same pass.
+    """
+    with Session(seeded_engine) as session:
+        add_customers(session, ("CUST-A", "Dhiren & Brothers", "STR001"))
+        geo.upsert_location(session, entity_type="customer", entity_code="CUST-A",
+                            latitude=DHAKA[0], longitude=DHAKA[1])
+        geo.derive_parents(session)
+        assert placed(session, "sub_territory", "STR001") is not None
+        assert placed(session, "territory", "TR001") is not None
+
+        session.delete(placed(session, "customer", "CUST-A"))
+        session.flush()
+        geo.derive_parents(session)
+
+        assert placed(session, "sub_territory", "STR001") is None
+        assert placed(session, "territory", "TR001") is None
+
+
+def test_re_deriving_changes_nothing_when_nothing_below_has_moved(seeded_engine):
+    """The prune must remove stale rows without touching supported ones.
+
+    Guards the obvious way to get the new pruning wrong — a level whose codes
+    were not recorded during the pass would have every one of its centroids
+    deleted and rebuilt, or deleted and not rebuilt.
+    """
+    with Session(seeded_engine) as session:
+        add_customers(session, ("CUST-A", "Dhiren & Brothers", "STR001"),
+                      ("CUST-B", "Anis & Sons", "STR001"))
+        for code, (lat, lon) in (("CUST-A", DHAKA), ("CUST-B", KHULNA)):
+            geo.upsert_location(session, entity_type="customer", entity_code=code,
+                                latitude=lat, longitude=lon)
+        geo.derive_parents(session)
+        session.flush()
+        first = {(r.entity_type, r.entity_code): (r.latitude, r.longitude)
+                 for r in session.execute(select(MapEntityLocation)).scalars()}
+
+        geo.derive_parents(session)
+        session.flush()
+        second = {(r.entity_type, r.entity_code): (r.latitude, r.longitude)
+                  for r in session.execute(select(MapEntityLocation)).scalars()}
+
+    assert first == second
+    assert first, "the fixture should have produced some coordinates"
+
+
 def test_coverage_separates_placed_from_derived(seeded_engine):
     with Session(seeded_engine) as session:
         add_customers(session, ("CUST-A", "Dhiren & Brothers", "STR001"),
@@ -711,11 +766,16 @@ def test_coordinates_are_a_data_management_entity():
     assert entity.key_fields == ("entity_type", "entity_code")
     # No is_deleted column to set, so the row goes and the change log keeps it.
     assert entity.soft_delete is False
-    # Every column of a five-column table is worth seeing; longitude in
-    # particular falls outside the generic "first three" promotion.
+    # Every column of the table is worth seeing; longitude in particular falls
+    # outside the generic "first three" promotion. ``source`` is not an upload
+    # column at all — nobody uploads provenance — but it is what tells a placed
+    # coordinate from a computed one, which is what decides whether the row can
+    # be removed, so a reader cannot do without it.
     assert entity.to_dict()["default_columns"] == [
-        "entity_type", "entity_code", "latitude", "longitude", "label",
+        "entity_type", "entity_code", "latitude", "longitude", "label", "source",
     ]
+    assert entity.field_by_name["source"].editable is False
+    assert entity.field_by_name["derived_from"].editable is False
 
 
 def test_the_entity_type_choices_come_from_the_map_itself():
@@ -821,6 +881,106 @@ def test_removing_a_coordinate_takes_the_row_and_keeps_the_record(
                 DataChangeLog.record_key == "customer|CUST-A")
         ).scalars().first()
         assert entry is not None
+
+
+def test_removing_a_derived_centroid_is_refused_rather_than_undone(
+        datamgmt_client, seeded, agent_engine):
+    """Regression: the delete used to succeed and the derivation put it back.
+
+    ``_after_location_write`` re-derives after every write, and
+    ``_write_centroids`` writes a centroid for every parent whose children are
+    still placed — so removing a derived row committed the delete and then
+    recreated an identical row in the same transaction. The caller was told the
+    coordinate was gone while looking at it, which is the worst of the three
+    possible outcomes.
+    """
+    client, token = datamgmt_client
+    with Session(agent_engine) as session:
+        assert placed(session, "sub_territory", "STR001").source == GeoSource.DERIVED
+
+    response = client.request(
+        "DELETE", "/api/master/map_entity_locations/sub_territory%7CSTR001",
+        headers=auth(token), json={})
+    assert response.status_code == 409, response.text
+    detail = str(response.json()["detail"])
+    assert "centroid" in detail
+    # The refusal has to say what *does* remove it, or it is a dead end.
+    assert "below it" in detail
+
+    with Session(agent_engine) as session:
+        assert placed(session, "sub_territory", "STR001") is not None
+
+
+def test_the_table_says_which_rows_can_be_removed(datamgmt_client, seeded):
+    """So the screen can leave the control off a row that would only refuse."""
+    client, token = datamgmt_client
+    body = client.get("/api/master/map_entity_locations",
+                      headers=auth(token)).json()
+
+    by_key = {row["_key"]: row for row in body["rows"]}
+    assert by_key["customer|CUST-A"]["_removable"] is True
+    assert by_key["customer|CUST-A"]["source"] == GeoSource.UPLOAD
+    assert by_key["sub_territory|STR001"]["_removable"] is False
+    assert by_key["sub_territory|STR001"]["source"] == GeoSource.DERIVED
+
+
+def test_a_derived_centroid_goes_when_the_coordinates_below_it_do(
+        datamgmt_client, seeded, agent_engine):
+    """The other half, and what makes the refusal's advice true.
+
+    A centroid whose inputs have all been removed is a position nothing
+    supports — the same wrongness ``_prune_orphaned_centroids`` catches for an
+    entity the master dropped, reached by a different route. Without this, the
+    advice "remove the coordinates below it" led nowhere: the parent kept a
+    centroid derived from a point that no longer existed, and being derived it
+    could not be removed either.
+    """
+    client, token = datamgmt_client
+    with Session(agent_engine) as session:
+        assert placed(session, "sub_territory", "STR001") is not None
+
+    # CUST-A is the only placed coordinate under STR001.
+    response = client.request(
+        "DELETE", "/api/master/map_entity_locations/customer%7CCUST-A",
+        headers=auth(token), json={})
+    assert response.status_code == 200, response.text
+
+    with Session(agent_engine) as session:
+        assert placed(session, "customer", "CUST-A") is None
+        assert placed(session, "sub_territory", "STR001") is None
+        # And every level the chain carried up from it.
+        assert placed(session, "territory", "TR001") is None
+
+
+def test_removing_a_placed_parent_says_it_falls_back_to_a_centroid(
+        datamgmt_client, seeded, agent_engine):
+    """Succeeding and leaving a row behind is not a failure, but it looks like one.
+
+    An entity with coordinates below it is never unplaced by removing its own:
+    the derivation immediately gives it their centroid, which is the right
+    answer and indistinguishable on screen from the delete not working. So the
+    message says what happened and what would take it off the map.
+    """
+    client, token = datamgmt_client
+    # Place the sub-territory by hand, which makes it the caller's to remove.
+    edit = client.put("/api/master/map_entity_locations/sub_territory%7CSTR001",
+                      headers=auth(token),
+                      json={"values": {"latitude": 24.1, "longitude": 90.9}})
+    assert edit.status_code == 200, edit.text
+    with Session(agent_engine) as session:
+        assert placed(session, "sub_territory", "STR001").source == GeoSource.MANUAL
+
+    response = client.request(
+        "DELETE", "/api/master/map_entity_locations/sub_territory%7CSTR001",
+        headers=auth(token), json={})
+    assert response.status_code == 200, response.text
+    message = response.json()["message"]
+    assert "still on the map" in message
+    assert "falls back to the centroid" in message
+
+    with Session(agent_engine) as session:
+        # The hand-placed coordinate is genuinely gone; what stands is derived.
+        assert placed(session, "sub_territory", "STR001").source == GeoSource.DERIVED
 
 
 def test_a_removed_coordinate_cannot_be_restored(datamgmt_client, seeded):

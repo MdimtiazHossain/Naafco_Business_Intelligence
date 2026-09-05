@@ -1,6 +1,7 @@
 {
   "action.correct": "Correct",
   "action.create": "New record",
+  "action.dismiss": "Dismiss",
   "action.edit": "Edit",
   "action.export": "Export",
   "action.reinstate": "Reinstate",
@@ -105,6 +106,8 @@
   "bulk.activate": "Activate",
   "bulk.clear": "Clear selection",
   "bulk.deactivate": "Deactivate",
+  "bulk.outcome": "{done} applied, {failed} refused.",
+  "bulk.remove": "Remove",
   "bulk.retire": "Retire",
   "bulk.selected": "{count} selected",
   "common.actions": "Actions",

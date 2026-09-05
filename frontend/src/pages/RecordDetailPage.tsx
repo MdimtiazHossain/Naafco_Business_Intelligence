@@ -109,6 +109,7 @@ export default function RecordDetailPage({ kind }: { kind: 'master' | 'transacti
               </button>
             )}
             {permissions.DELETE &&
+              (inactive || record?._removable !== false) &&
               (inactive ? (
                 <button
                   type="button"
