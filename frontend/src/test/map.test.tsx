@@ -13,7 +13,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../contexts/I18nContext';
@@ -257,6 +257,27 @@ async function loadedMap() {
   return map;
 }
 
+/**
+ * A map event, raised the way the engine raises one — inside `act`.
+ *
+ * MapLibre calls its handlers from outside React, so what a handler sets is
+ * *scheduled* rather than applied, and a click schedules three things in
+ * three different places: the page's own selection state, the router's — which
+ * react-router raises as a transition, the lowest priority React has — and
+ * then, once the card is on screen, the passive effect that asks for the
+ * entity's ancestry. Unwrapped, each lands whenever the scheduler next gets
+ * the thread; measured under the full suite that was 2.5 seconds after the
+ * click, well past the second at which `findBy*` gives up, and the assertion
+ * on `mapService.entity` could observe the committed DOM before the effect
+ * that fetches had run at all. `act` flushes all three before returning,
+ * which is what the act warning an unwrapped `fire` prints is asking for.
+ */
+function fireOnMap(map: InstanceType<typeof FakeMap>, event: string, payload?: unknown): void {
+  act(() => {
+    map.fire(event, payload);
+  });
+}
+
 function regionHit() {
   return {
     properties: { ...REGIONS[0].properties },
@@ -393,7 +414,7 @@ describe('Business Map page', () => {
     expect(screen.getByText('Select a point on the map, or a row in the tables below, to see its figures.')).toBeInTheDocument();
 
     map.queryHits = [regionHit()];
-    map.fire('click', { point: { x: 10, y: 10 } });
+    fireOnMap(map, 'click', { point: { x: 10, y: 10 } });
 
     expect(await screen.findByRole('heading', { name: 'Dhaka' })).toBeInTheDocument();
     expect(screen.getByText('Selected: Region')).toBeInTheDocument();
@@ -453,7 +474,7 @@ describe('Business Map page', () => {
     wrap();
     const map = await loadedMap();
     map.queryHits = [regionHit()];
-    map.fire('mousemove', { point: { x: 20, y: 20 } });
+    fireOnMap(map, 'mousemove', { point: { x: 20, y: 20 } });
     const tooltip = await screen.findByRole('tooltip');
     expect(within(tooltip).getByText('Dhaka')).toBeInTheDocument();
     expect(within(tooltip).getByText('Sales Amount')).toBeInTheDocument();
@@ -461,7 +482,7 @@ describe('Business Map page', () => {
     expect(within(tooltip).getByText('+11.1%')).toBeInTheDocument();
     expect(map.canvas.style.cursor).toBe('pointer');
 
-    map.fire('movestart');
+    fireOnMap(map, 'movestart');
     await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
   });
 
