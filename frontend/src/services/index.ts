@@ -49,6 +49,8 @@ import type {
   MapDesignInput,
   MapDesignUpdate,
   MapDesignsResponse,
+  MapLocationsResponse,
+  MapPurpose,
   MapEntity,
   MapLayerInput,
   MaterialsPage,
@@ -645,10 +647,25 @@ export interface MapDataQuery extends ReportQuery {
 
 export const mapService = {
   config: () => request<MapConfig>('/api/map/config'),
-  designs: (includeInactive = false) =>
+  /**
+   * One map's designs. `purpose` is not optional in practice — the analysis
+   * tab and the demarcation tab must never offer each other's designs — but it
+   * defaults server-side to `analysis`, so an omitted one is the safe answer
+   * rather than every design.
+   */
+  designs: (includeInactive = false, purpose: MapPurpose = 'analysis') =>
     request<MapDesignsResponse>('/api/map/designs', {
-      params: includeInactive ? { include_inactive: true } : undefined,
+      params: { purpose, ...(includeInactive ? { include_inactive: true } : {}) },
     }),
+  /**
+   * Every placed coordinate of the requested layers, with no figure attached.
+   *
+   * One call for every level, unlike `data` below: this is an index scan over
+   * a four-figure table, so splitting it would buy a round trip per level to
+   * save nothing.
+   */
+  locations: (query: { design_id?: number; levels?: string[] } = {}) =>
+    request<MapLocationsResponse>('/api/map/locations', { params: query }),
   design: (designId: number) => request<MapDesign>(`/api/map/designs/${designId}`),
   createDesign: (body: MapDesignInput) =>
     request<MapDesign>('/api/map/designs', { method: 'POST', body }),

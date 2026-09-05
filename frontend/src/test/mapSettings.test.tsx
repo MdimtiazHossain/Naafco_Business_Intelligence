@@ -86,7 +86,7 @@ describe('Map settings drawer', () => {
     designList = [DESIGN];
     vi.spyOn(services.mapService, 'config').mockResolvedValue(CONFIG);
     vi.spyOn(services.mapService, 'designs').mockImplementation(() =>
-      Promise.resolve({ designs: designList, default_design_id: 1 }));
+      Promise.resolve({ purpose: 'analysis' as const, designs: designList, default_design_id: 1 }));
     vi.spyOn(services.mapService, 'entity').mockResolvedValue({
       level: 'region', label: 'Region', code: 'REG001', name: 'Dhaka', ancestors: [], location: null,
     });

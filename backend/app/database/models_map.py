@@ -142,6 +142,29 @@ class LayerViewMode:
     ALL = (POINT, BOUNDARY, BOTH)
 
 
+class DesignPurpose:
+    """Which map a design composes.
+
+    The two tabs of the Business Map page are different maps, not two views of
+    one: ``ANALYSIS`` draws figures — sized and coloured by a metric, over a
+    period, inside the reader's data scope — and ``DEMARCATION`` draws
+    coordinates and nothing else, so an area can be judged by eye.
+
+    They are told apart by a column rather than by convention because a design
+    is *offered* to a reader: without this, an analysis reader could pick the
+    demarcation design from the same dropdown and get a map that is neither.
+    Everything else about the two is genuinely shared — validation, ordering,
+    permissions, the audit actions, per-layer zoom and clustering — which is why
+    this is one table with a discriminator and not two.
+    """
+
+    ANALYSIS = "analysis"
+    DEMARCATION = "demarcation"
+
+    ALL = (ANALYSIS, DEMARCATION)
+    DEFAULT = ANALYSIS
+
+
 class MapDesign(Base, TimestampMixin):
     """One saved map: a name, a basemap, a default metric and its layers.
 
@@ -150,6 +173,10 @@ class MapDesign(Base, TimestampMixin):
     other design is ordinary, editable, deletable data. ``is_default`` is which
     design the page opens with — a system design is the default until an
     administrator promotes another one.
+
+    ``is_default`` is unique **within a purpose**, not across the table: each
+    tab has to have a design to open on, so making a demarcation design the
+    default must not leave the analysis map with none.
     """
 
     __tablename__ = "map_designs"
@@ -158,6 +185,12 @@ class MapDesign(Base, TimestampMixin):
                                            autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(String(512))
+    #: Which map this design composes — see :class:`DesignPurpose`. Carries a
+    #: server default so every design written before ``0035`` is an analysis
+    #: design without the migration having to update a single row.
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False,
+                                         default=DesignPurpose.DEFAULT,
+                                         server_default=DesignPurpose.DEFAULT)
     #: A named basemap style, resolved against the configured providers.
     basemap: Mapped[str] = mapped_column(String(32), nullable=False,
                                          default="standard")
@@ -182,6 +215,7 @@ class MapDesign(Base, TimestampMixin):
         UniqueConstraint("name", name="uq_map_designs_name"),
         Index("ix_map_designs_active", "is_active"),
         Index("ix_map_designs_default", "is_default"),
+        Index("ix_map_designs_purpose", "purpose"),
     )
 
 
@@ -272,6 +306,7 @@ class MapPointConfiguration(Base, TimestampMixin):
 
 
 __all__ = [
+    "DesignPurpose",
     "GeoPrecision",
     "GeoSource",
     "LayerViewMode",

@@ -14,7 +14,11 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { mapService, type MapDataQuery } from '../../services';
-import type { MapLayerData, MapDataResponse } from '../../types/api';
+import type {
+  MapDataResponse,
+  MapLayerData,
+  MapPurpose,
+} from '../../types/api';
 
 export function useMapConfig() {
   return useQuery({
@@ -24,10 +28,32 @@ export function useMapConfig() {
   });
 }
 
-export function useMapDesigns(includeInactive = false) {
+export function useMapDesigns(includeInactive = false,
+                              purpose: MapPurpose = 'analysis') {
   return useQuery({
-    queryKey: ['map-designs', includeInactive],
-    queryFn: () => mapService.designs(includeInactive),
+    queryKey: ['map-designs', includeInactive, purpose],
+    queryFn: () => mapService.designs(includeInactive, purpose),
+  });
+}
+
+/**
+ * Every placed coordinate of the requested layers — the Area Demarcation tab.
+ *
+ * **One request for every level**, which is the opposite of `useMapLayers`
+ * below and deliberately so: that one splits because each layer is three
+ * aggregates over the sales and target facts, and this one reads an index over
+ * a table with a four-figure row count. Splitting it would buy a round trip per
+ * level to save nothing, and a layer toggle would refetch what is already held.
+ *
+ * The query key carries the level list for that reason: toggling a layer is a
+ * different request here, where on the analysis map it is one more request
+ * beside the ones already cached.
+ */
+export function useMapLocations(designId: number | undefined, levels: string[]) {
+  return useQuery({
+    queryKey: ['map-locations', designId ?? null, [...levels].sort()],
+    queryFn: () => mapService.locations({ design_id: designId, levels }),
+    enabled: designId !== undefined && levels.length > 0,
   });
 }
 

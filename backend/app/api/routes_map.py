@@ -36,8 +36,10 @@ from ..auth import audit
 from ..auth.permissions import FORBIDDEN_MESSAGE, can, require_action, require_section
 from ..config import get_settings
 from ..database.models_ai import AuditAction
+from ..database.models_map import DesignPurpose
 from ..map import basemaps, designs, entities, geo, levels, metrics, styles
 from ..map import data as map_data
+from ..map import locations as map_locations
 from ..map.errors import DesignNotFound, MapError
 from ..security.sections import Action, SectionKey
 from .deps import get_session, internal_error
@@ -109,6 +111,9 @@ class DesignRequest(BaseModel):
                                     max_length=designs.MAX_DESCRIPTION_LENGTH)
     basemap: str = Field(default=basemaps.DEFAULT_BASEMAP, max_length=32)
     default_metric: str = Field(default=metrics.DEFAULT_METRIC, max_length=32)
+    #: Which map this design composes. Settable at creation and never
+    #: afterwards — see :func:`app.map.designs.update_design`.
+    purpose: str = Field(default=DesignPurpose.DEFAULT, max_length=16)
     layers: list[LayerRequest] = Field(min_length=1)
 
     def to_spec(self) -> designs.DesignSpec:
@@ -117,6 +122,7 @@ class DesignRequest(BaseModel):
             description=self.description,
             basemap=self.basemap,
             default_metric=self.default_metric,
+            purpose=self.purpose,
             layers=tuple(layer.to_spec() for layer in self.layers),
         )
 
@@ -253,10 +259,19 @@ def map_config(session: Session = Depends(get_session),
             "promoted_levels": list(levels.PROMOTED_LEVELS),
             "view_modes": [dict(mode) for mode in levels.VIEW_MODES],
             "metrics": metrics.catalogue(),
+            # Shapes travel with their geometry, so the browser rasterises what
+            # it is sent rather than keeping a catalogue of its own — the rule
+            # 0033's removal recorded, read as strictly as it can be.
+            "shapes": styles.shape_catalogue(),
+            "purposes": list(DesignPurpose.ALL),
             "defaults": {
                 "metric": metrics.DEFAULT_METRIC,
                 "color_metric": metrics.DEFAULT_COLOR_METRIC,
                 "size_metric": metrics.DEFAULT_SIZE_METRIC,
+                # Shape and point colour are deliberately *not* here: they are
+                # style, and ``style`` below already carries them. "defaults"
+                # is what a layer inherits when it names no metric or tooltip,
+                # and a second copy of a value is a second thing to keep true.
                 "tooltip_fields": list(designs.DEFAULT_TOOLTIP_FIELDS),
             },
             "style": styles.default_style(),
@@ -272,10 +287,19 @@ def map_config(session: Session = Depends(get_session),
 
 
 def _design_for_reader(session: Session, user: UserContext,
-                       design_id: int | None):
-    """The design to draw: the one asked for, or the one the page opens with."""
+                       design_id: int | None,
+                       purpose: str = DesignPurpose.DEFAULT):
+    """The design to draw: the one asked for, or the one the page opens with.
+
+    A design of the wrong purpose is a 404 rather than a 409: from this
+    endpoint's point of view there is no such design, and saying "that design
+    exists but belongs to the other map" would be an error message about the
+    caller's mistake rather than about the resource. The analysis endpoints
+    therefore cannot be handed a demarcation design and made to draw figures
+    over a composition that named none.
+    """
     if design_id is None:
-        design = designs.default_design(session)
+        design = designs.default_design(session, purpose)
         if design is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, {
                 "error_code": "MAP_DESIGN_NOT_FOUND",
@@ -283,6 +307,8 @@ def _design_for_reader(session: Session, user: UserContext,
             })
         return design
     design = designs.get_design(session, design_id)
+    if design.purpose != purpose:
+        raise DesignNotFound(design_id)
     if not design.is_active and not _may_compose(session, user):
         raise DesignNotFound(design_id)
     return design
@@ -421,6 +447,92 @@ def map_data_endpoint(
     return payload
 
 
+@router.get("/locations")
+def map_locations_endpoint(
+    request: Request,
+    design_id: int | None = Query(
+        None, description="The demarcation design to draw. Defaults to the "
+                          "one the Area Demarcation tab opens with."),
+    layer_levels: list[str] | None = Query(
+        None, alias="levels",
+        description="Which of the design's layers to draw, repeated. Defaults "
+                    "to the layers the design shows."),
+    session: Session = Depends(get_session),
+    user: UserContext = Depends(_VIEW),
+) -> dict[str, Any]:
+    """Every placed coordinate of the requested layers, and no figure at all.
+
+    What the Area Demarcation tab draws. Each layer carries its GeoJSON points
+    and the configuration that says how to draw them — shape, colour, the zoom
+    it appears at, the count it clusters above — so the renderer reads one
+    object per layer and decides nothing itself.
+
+    **Unscoped, deliberately**, and :mod:`app.map.locations` carries the
+    reasoning at length: you judge a boundary by seeing both sides of it, so a
+    demarcation map clipped to the reader's own region cannot answer the
+    question it exists for. No figure is disclosed — a code, a name, a
+    coordinate and its provenance — and the same rows are already readable one
+    at a time from ``/api/map/entities/{level}/{code}``.
+
+    Viewing is audited like every other report read, so the bulk disclosure is
+    on the record even though it is permitted.
+    """
+    settings = get_settings()
+
+    def work() -> dict[str, Any]:
+        design = _design_for_reader(session, user, design_id,
+                                    DesignPurpose.DEMARCATION)
+        by_level = {layer.point_level: layer for layer in design.layers}
+        if layer_levels:
+            unknown = [level for level in layer_levels if level not in by_level]
+            if unknown:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"'{unknown[0]}' is not a layer of the design "
+                    f'"{design.name}". Its layers: {", ".join(by_level)}.',
+                )
+            requested = list(dict.fromkeys(layer_levels))
+        else:
+            requested = [layer.point_level for layer in design.layers
+                         if layer.is_visible]
+
+        result = map_locations.demarcation_data(session, requested)
+        layers_payload = []
+        for layer_data in result.layers:
+            payload = layer_data.to_dict()
+            payload["layer"] = designs.layer_to_dict(by_level[layer_data.level],
+                                                     design)
+            layers_payload.append(payload)
+        return {
+            "design": designs.design_to_dict(design, settings=settings),
+            "levels": requested,
+            "empty": result.empty,
+            "layers": layers_payload,
+        }
+
+    try:
+        payload = work()
+    except MapError as exc:
+        raise _refusal(exc) from exc
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise internal_error(exc, "map locations") from exc
+
+    audit.record(
+        session, action=AuditAction.VIEW_REPORT, user_id=user.user_id,
+        username=user.username, resource="map",
+        ip_address=audit.client_ip(request),
+        detail={"view": "demarcation",
+                "design_id": payload["design"]["design_id"],
+                "levels": payload["levels"]},
+    )
+    session.commit()
+    return payload
+
+
 @router.get("/entities/{level}/{code}")
 def map_entity(level: str, code: str, session: Session = Depends(get_session),
                _: UserContext = Depends(_VIEW)) -> dict[str, Any]:
@@ -455,17 +567,28 @@ def list_designs(
     include_inactive: bool = Query(
         False, description="Also list designs taken off the shelf. Needs the "
                            "Map Settings section."),
+    purpose: str = Query(
+        DesignPurpose.DEFAULT,
+        description="Which map's designs to list: analysis (figures) or "
+                    "demarcation (coordinates only)."),
     session: Session = Depends(get_session),
     user: UserContext = Depends(_VIEW),
 ) -> dict[str, Any]:
-    """Every design a reader may pick from, with its layers, the default first."""
+    """Every design a reader may pick from, with its layers, the default first.
+
+    One purpose at a time, defaulting to ``analysis``. The two tabs are
+    different maps and each has its own default, so a combined list would let
+    a reader choose a design the screen in front of them cannot draw.
+    """
     def work() -> dict[str, Any]:
         if include_inactive and not _may_compose(session, user):
             raise HTTPException(status.HTTP_403_FORBIDDEN, FORBIDDEN_MESSAGE)
         settings = get_settings()
-        rows = designs.list_designs(session, include_inactive=include_inactive)
-        default = designs.default_design(session)
+        rows = designs.list_designs(session, include_inactive=include_inactive,
+                                    purpose=purpose)
+        default = designs.default_design(session, purpose)
         return {
+            "purpose": purpose,
             "designs": [designs.design_to_dict(design, settings=settings)
                         for design in rows],
             "default_design_id": default.design_id if default else None,

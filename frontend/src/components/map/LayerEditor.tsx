@@ -12,6 +12,7 @@
 import { Loader2, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useT } from '../../contexts/I18nContext';
+import { ShapeSwatch } from './DemarcationLegend';
 import type {
   MapConfig,
   MapDesign,
@@ -70,6 +71,8 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
   const [clusterAt, setClusterAt] = useState('');
   const [minZoom, setMinZoom] = useState('0');
   const [thresholds, setThresholds] = useState<[string, string, string]>(['', '', '']);
+  const [shape, setShape] = useState(config.style.shape);
+  const [pointColor, setPointColor] = useState(config.style.point_color);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -94,7 +97,15 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
     setThresholds(stored && stored.length === 3
       ? [String(stored[0]), String(stored[1]), String(stored[2])]
       : ['', '', '']);
-  }, [open, layer, availableLevels, config.defaults.tooltip_fields]);
+    const saved = layer?.style_config as
+      { shape?: string; point_color?: string } | null;
+    // The effective value, not the stored one: an unset shape draws the
+    // catalogue's default, and the control has to show what the map draws.
+    setShape(layer?.style.shape ?? saved?.shape ?? config.style.shape);
+    setPointColor(layer?.style.point_color ?? saved?.point_color
+                  ?? config.style.point_color);
+  }, [open, layer, availableLevels, config.defaults.tooltip_fields,
+      config.style.shape, config.style.point_color]);
 
   const levelInfo = config.levels.find((candidate) => candidate.key === level);
   const metricsHere = config.metrics.filter((candidate) => !candidate.unavailable_at.includes(level));
@@ -105,7 +116,15 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
     const parsedThresholds = parseThresholds(thresholds);
     const otherStyle = { ...(layer?.style_config ?? {}) } as Record<string, unknown>;
     delete otherStyle.thresholds;
-    const style = parsedThresholds ? { ...otherStyle, thresholds: parsedThresholds } : otherStyle;
+    delete otherStyle.shape;
+    delete otherStyle.point_color;
+    const style: Record<string, unknown> = parsedThresholds
+      ? { ...otherStyle, thresholds: parsedThresholds }
+      : otherStyle;
+    // Only stored when they differ from the declared default, so a layer that
+    // never chose a shape keeps inheriting one rather than pinning today's.
+    if (shape !== config.style.shape) style.shape = shape;
+    if (pointColor !== config.style.point_color) style.point_color = pointColor;
     return {
       point_level: level,
       layer_name: layerName.trim() || null,
@@ -313,6 +332,43 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
             </label>
             <input id="layer-min-zoom" type="number" min={0} max={MAX_ZOOM} className="input" value={minZoom}
                    onChange={(event) => setMinZoom(event.target.value)} />
+          </div>
+        </div>
+
+        {/* Shape and colour: how a point is drawn where no metric decides it.
+            Shown for every design, because a shape is a legitimate choice on
+            the analysis map too — but it is the demarcation map that needs
+            them, since telling one level from another is all it has. */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label htmlFor="layer-shape" className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              {t('map.shape')}
+            </label>
+            <div className="flex items-center gap-2">
+              <ShapeSwatch
+                shape={config.shapes.find((candidate) => candidate.key === shape)}
+                color={pointColor}
+                size={18}
+              />
+              <select id="layer-shape" className="input" value={shape}
+                      onChange={(event) => setShape(event.target.value)}>
+                {config.shapes.map((option) => (
+                  <option key={option.key} value={option.key}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label htmlFor="layer-point-color" className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              {t('map.pointColor')}
+            </label>
+            <input
+              id="layer-point-color"
+              type="color"
+              className="input h-[38px] p-1"
+              value={pointColor}
+              onChange={(event) => setPointColor(event.target.value)}
+            />
           </div>
         </div>
 

@@ -35,6 +35,10 @@ export const STYLE: MapStyle = {
   diverging: { negative: '#dc2626', neutral: '#94a3b8', positive: '#16a34a' },
   radius: [4, 22],
   cluster: { color: '#1d4ed8', text_color: '#ffffff' },
+  shape: 'circle',
+  point_color: '#2563eb',
+  derived_opacity: 0.25,
+  derived_stroke_width: 1.5,
 };
 
 export const LEVEL_LABELS: Record<string, string> = {
@@ -111,6 +115,12 @@ export const CONFIG: MapConfig = {
     { key: 'both', label: 'Both', requires_boundary: true },
   ],
   metrics: METRICS,
+  shapes: [
+    { key: 'circle', label: 'Circle', path: 'M22 12 A10 10 0 1 1 2 12 A10 10 0 1 1 22 12 Z', viewbox: 24 },
+    { key: 'square', label: 'Square', path: 'M3 3 H21 V21 H3 Z', viewbox: 24 },
+    { key: 'triangle', label: 'Triangle', path: 'M12 2 L22 20 H2 Z', viewbox: 24 },
+  ],
+  purposes: ['analysis', 'demarcation'],
   defaults: { metric: 'net_sales', color_metric: 'achievement', size_metric: 'net_sales', tooltip_fields: ['net_sales'] },
   style: STYLE,
   coverage: [],
@@ -120,6 +130,7 @@ export const DESIGN: MapDesign = {
   design_id: 1,
   name: 'Business Overview',
   description: null,
+  purpose: 'analysis',
   basemap: 'standard',
   basemap_resolved: CONFIG.basemaps[0],
   basemap_note: null,

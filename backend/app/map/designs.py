@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..ai.permission_filter import UserContext
 from ..config import Settings
 from ..database.models_map import (
+    DesignPurpose,
     LayerViewMode,
     MapDesign,
     MapLayer,
@@ -107,6 +108,9 @@ class DesignSpec:
     description: str | None = None
     basemap: str = basemaps.DEFAULT_BASEMAP
     default_metric: str = metrics.DEFAULT_METRIC
+    #: Which map this design composes. Fixed at creation and never edited —
+    #: see :func:`update_design`.
+    purpose: str = DesignPurpose.DEFAULT
     layers: tuple[LayerSpec, ...] = ()
 
 
@@ -277,6 +281,15 @@ def _validate_default_metric(key: str) -> str:
     return key
 
 
+def _validate_purpose(key: str) -> str:
+    if key not in DesignPurpose.ALL:
+        raise InvalidDesign(
+            f"There is no map called \"{key}\". Choose one of: "
+            f"{', '.join(DesignPurpose.ALL)}."
+        )
+    return key
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
@@ -288,10 +301,16 @@ def _with_layers():
     )
 
 
-def list_designs(session: Session, *, include_inactive: bool = False
-                 ) -> list[MapDesign]:
-    """Every design a reader may pick from: the default first, then by name."""
-    statement = _with_layers()
+def list_designs(session: Session, *, include_inactive: bool = False,
+                 purpose: str = DesignPurpose.DEFAULT) -> list[MapDesign]:
+    """Every design a reader may pick from: the default first, then by name.
+
+    Filtered to one purpose, and defaulting to ``analysis`` rather than to
+    everything: the two tabs are different maps, and offering a demarcation
+    design in the analysis tab's dropdown would let a reader pick a map that
+    draws no figures from the screen whose whole subject is figures.
+    """
+    statement = _with_layers().where(MapDesign.purpose == _validate_purpose(purpose))
     if not include_inactive:
         statement = statement.where(MapDesign.is_active.is_(True))
     statement = statement.order_by(MapDesign.is_default.desc(), MapDesign.name)
@@ -307,32 +326,43 @@ def get_design(session: Session, design_id: int) -> MapDesign:
     return design
 
 
-def system_default(session: Session) -> MapDesign | None:
+def system_default(session: Session,
+                   purpose: str = DesignPurpose.DEFAULT) -> MapDesign | None:
     return session.execute(
-        _with_layers().where(MapDesign.is_system_default.is_(True))
+        _with_layers().where(MapDesign.is_system_default.is_(True),
+                             MapDesign.purpose == purpose)
         .order_by(MapDesign.design_id)
     ).scalars().unique().first()
 
 
-def default_design(session: Session) -> MapDesign | None:
-    """The design the page opens with.
+def default_design(session: Session,
+                   purpose: str = DesignPurpose.DEFAULT) -> MapDesign | None:
+    """The design the named map opens with.
 
     The one marked default, if it is active; else the system default; else
-    whichever active design sorts first. ``None`` only when no design exists at
-    all, which the seed prevents.
+    whichever active design sorts first. ``None`` only when no design of that
+    purpose exists at all, which the seeds prevent.
+
+    Scoped to one purpose all the way down, because each tab has to have
+    something to open on: an analysis reader must never be handed the
+    demarcation design because it happened to sort first.
     """
+    purpose = _validate_purpose(purpose)
     marked = session.execute(
         _with_layers().where(MapDesign.is_default.is_(True),
-                             MapDesign.is_active.is_(True))
+                             MapDesign.is_active.is_(True),
+                             MapDesign.purpose == purpose)
         .order_by(MapDesign.design_id)
     ).scalars().unique().first()
     if marked is not None:
         return marked
-    fallback = system_default(session)
+    fallback = system_default(session, purpose)
     if fallback is not None:
         return fallback
     return session.execute(
-        _with_layers().where(MapDesign.is_active.is_(True)).order_by(MapDesign.name)
+        _with_layers().where(MapDesign.is_active.is_(True),
+                             MapDesign.purpose == purpose)
+        .order_by(MapDesign.name)
     ).scalars().unique().first()
 
 
@@ -406,6 +436,7 @@ def create_design(session: Session, user: UserContext, spec: DesignSpec, *,
         description=_validate_description(spec.description),
         basemap=_validate_basemap(spec.basemap, settings),
         default_metric=_validate_default_metric(spec.default_metric),
+        purpose=_validate_purpose(spec.purpose),
         is_default=False,
         is_active=True,
         is_system_default=False,
@@ -424,6 +455,13 @@ def update_design(session: Session, user: UserContext, design_id: int,
     ``changes`` carries only what the caller set — "leave the description
     alone" and "clear the description" both travel as JSON ``null`` and mean
     opposite things, so presence is what decides, not value.
+
+    ``purpose`` is deliberately not among ``DESIGN_FIELDS`` and so is refused
+    by name like any other unknown field. Moving a design between the two maps
+    would change what its settings *mean*: a demarcation layer's metrics are
+    unread and left at their defaults, and the same layer on the analysis tab
+    would suddenly draw by them. Duplicating into the other purpose is the
+    honest way to do that, and it leaves the original where readers expect it.
     """
     design = get_design(session, design_id)
     unknown = sorted(set(changes) - set(DESIGN_FIELDS))
@@ -511,18 +549,28 @@ def duplicate_design(session: Session, user: UserContext, design_id: int, *,
         description=source.description,
         basemap=source.basemap,
         default_metric=source.default_metric,
+        # The copy composes the same map as its original: duplicating the
+        # demarcation design to edit it must not land the copy in the analysis
+        # tab, where its unread metrics would suddenly decide how it draws.
+        purpose=source.purpose,
         layers=tuple(_spec_of(layer) for layer in source.layers),
     )
     return create_design(session, user, spec, settings=settings)
 
 
 def set_default(session: Session, user: UserContext, design_id: int) -> MapDesign:
-    """Make this the design the page opens with. Exactly one ever is."""
+    """Make this the design its own map opens with. Exactly one per purpose is.
+
+    Scoped to the design's purpose: promoting a demarcation design must not
+    clear the analysis map's default and leave that tab with nothing to open
+    on. There is one default per map, not one per table.
+    """
     design = get_design(session, design_id)
     if not design.is_active:
         raise DesignInactive(design.name)
     for other in session.execute(
-        select(MapDesign).where(MapDesign.is_default.is_(True))
+        select(MapDesign).where(MapDesign.is_default.is_(True),
+                                MapDesign.purpose == design.purpose)
     ).scalars().all():
         other.is_default = False
     design.is_default = True
@@ -531,11 +579,16 @@ def set_default(session: Session, user: UserContext, design_id: int) -> MapDesig
 
 
 def _hand_default_to_system(session: Session, leaving: MapDesign) -> None:
-    """When the default goes, the system design takes over — never nothing."""
+    """When a default goes, its own map's system design takes over.
+
+    Within the purpose, for the same reason :func:`set_default` is: the
+    analysis map's fallback is no use to the demarcation tab, and handing the
+    flag across would take it away from the tab that still needs it.
+    """
     if not leaving.is_default:
         return
     leaving.is_default = False
-    fallback = system_default(session)
+    fallback = system_default(session, leaving.purpose)
     if fallback is not None and fallback.design_id != leaving.design_id:
         fallback.is_default = True
 
@@ -566,10 +619,13 @@ def delete_design(session: Session, user: UserContext, design_id: int
         raise DesignProtected(design.name, "deleted")
     _hand_default_to_system(session, design)
     name = design.name
+    purpose = design.purpose
     layer_count = len(design.layers)
     session.delete(design)
     session.flush()
-    fallback = default_design(session)
+    # The fallback the *caller* now opens on, which is their own map's — read
+    # before the delete, because the design is gone by the time we ask.
+    fallback = default_design(session, purpose)
     return {
         "deleted_design_id": design_id,
         "name": name,
@@ -632,6 +688,7 @@ def design_to_dict(design: MapDesign, *, settings: Settings | None = None,
         "design_id": design.design_id,
         "name": design.name,
         "description": design.description,
+        "purpose": design.purpose,
         "basemap": design.basemap,
         "basemap_resolved": basemap.to_dict(),
         "basemap_note": note,

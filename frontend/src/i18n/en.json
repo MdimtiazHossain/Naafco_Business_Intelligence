@@ -1121,5 +1121,17 @@
   "upload.value": "Value",
   "volume.none": "No volume recorded for this period.",
   "volume.title": "Total Volume",
-  "volume.unmeasured": "{count} line(s) carry no Total Volume in the source data and are not included."
+  "volume.unmeasured": "{count} line(s) carry no Total Volume in the source data and are not included.",
+  "map.tab.map": "Business Map",
+  "map.tab.demarcation": "Area Demarcation",
+  "map.demarcationLegend": "Levels",
+  "map.legendDerived": "Hollow: centroid of what is below it",
+  "map.legendMissing": "{missing} of {total} {level} records have no coordinate.",
+  "map.pointsDrawn": "{count} points",
+  "map.noLayers": "No layers selected.",
+  "map.noCoordinates": "No coordinates have been loaded for these levels.",
+  "map.derivedPoint": "Derived",
+  "map.openRecord": "Open record",
+  "map.shape": "Shape",
+  "map.pointColor": "Point colour"
 }

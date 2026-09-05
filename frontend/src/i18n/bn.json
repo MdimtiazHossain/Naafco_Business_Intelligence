@@ -1121,5 +1121,17 @@
   "upload.value": "মান",
   "volume.none": "এই সময়ের জন্য কোনো ভলিউম রেকর্ড নেই।",
   "volume.title": "মোট ভলিউম",
-  "volume.unmeasured": "{count}টি লাইনে সোর্স ডেটায় কোনো মোট ভলিউম নেই, তাই সেগুলো ধরা হয়নি।"
+  "volume.unmeasured": "{count}টি লাইনে সোর্স ডেটায় কোনো মোট ভলিউম নেই, তাই সেগুলো ধরা হয়নি।",
+  "map.tab.map": "বিজনেস ম্যাপ",
+  "map.tab.demarcation": "এরিয়া ডিমার্কেশন",
+  "map.demarcationLegend": "লেভেল",
+  "map.legendDerived": "ফাঁপা: নিচের পয়েন্টগুলোর কেন্দ্রবিন্দু",
+  "map.legendMissing": "{total} টি {level} রেকর্ডের মধ্যে {missing} টির কোনো স্থানাঙ্ক নেই।",
+  "map.pointsDrawn": "{count} টি পয়েন্ট",
+  "map.noLayers": "কোনো লেয়ার নির্বাচন করা হয়নি।",
+  "map.noCoordinates": "এই লেভেলগুলোর জন্য কোনো স্থানাঙ্ক লোড করা হয়নি।",
+  "map.derivedPoint": "উদ্ভূত",
+  "map.openRecord": "রেকর্ড খুলুন",
+  "map.shape": "আকৃতি",
+  "map.pointColor": "পয়েন্টের রঙ"
 }

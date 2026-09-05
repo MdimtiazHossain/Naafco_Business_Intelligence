@@ -13,7 +13,7 @@ import io
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_session
@@ -21,6 +21,7 @@ from app.auth.security import hash_password
 from app.database.models import DimSubTerritory, DimTerritory
 from app.database.models_ai import AppUser, Role, UserStatus
 from app.database.models_map import (
+    DesignPurpose,
     GeoPrecision,
     GeoSource,
     LayerViewMode,
@@ -65,8 +66,12 @@ def add_customers(session: Session, *specs: tuple[str, str, str]) -> None:
 
 
 def test_the_migration_seeds_one_protected_default_design(warehouse_engine):
+    """One analysis design, protected. ``0035`` seeds a demarcation one beside
+    it, which is a different map — hence the filter rather than a bare count."""
     with Session(warehouse_engine) as session:
-        designs = session.execute(select(MapDesign)).scalars().all()
+        designs = session.execute(
+            select(MapDesign).where(MapDesign.purpose == DesignPurpose.ANALYSIS)
+        ).scalars().all()
         assert len(designs) == 1
         design = designs[0]
         assert design.name == "Business Overview"
@@ -93,7 +98,11 @@ def test_the_migration_seeds_one_protected_default_design(warehouse_engine):
         customer = next(layer for layer in layers if layer.point_level == "customer")
         assert customer.cluster_at == 200 and customer.min_zoom == 9
 
-        configs = session.execute(select(MapPointConfiguration)).scalars().all()
+        configs = session.execute(
+            select(MapPointConfiguration)
+            .where(MapPointConfiguration.layer_id.in_(
+                [layer.layer_id for layer in layers]))
+        ).scalars().all()
         assert {config.layer_id for config in configs} == {l.layer_id for l in layers}
         assert all(config.label_field == "name" and not config.show_label
                    for config in configs)
@@ -109,13 +118,21 @@ def test_a_new_design_does_not_collide_with_the_seed(warehouse_engine):
     database, and a second design and its layer land beside them.
     """
     with Session(warehouse_engine) as session:
+        before_designs = session.execute(
+            select(func.count()).select_from(MapDesign)).scalar_one()
+        before_layers = session.execute(
+            select(func.count()).select_from(MapLayer)).scalar_one()
         design = MapDesign(name="Territory Performance", created_by="tester")
         design.layers.append(MapLayer(layer_name="Territory",
                                       point_level="territory", display_order=1))
         session.add(design)
         session.commit()
-        assert design.design_id == 2
-        assert design.layers[0].layer_id == 8
+        # Counted rather than hard-coded: 0034 seeds one design and 0035 a
+        # second, and a test that names the next id has to be edited by every
+        # migration that seeds anything. What matters is that the database
+        # assigned the key, not what number it reached.
+        assert design.design_id > before_designs
+        assert design.layers[0].layer_id > before_layers
 
 
 def test_deleting_a_design_takes_its_layers_and_configurations(warehouse_engine):
@@ -144,7 +161,9 @@ def test_one_layer_per_level_per_design(warehouse_engine):
     from sqlalchemy.exc import IntegrityError
 
     with Session(warehouse_engine) as session:
-        design = session.execute(select(MapDesign)).scalar_one()
+        design = session.execute(
+            select(MapDesign).where(MapDesign.purpose == DesignPurpose.ANALYSIS)
+        ).scalar_one()
         design.layers.append(MapLayer(layer_name="Zone again", point_level="zone",
                                       display_order=9))
         with pytest.raises(IntegrityError):

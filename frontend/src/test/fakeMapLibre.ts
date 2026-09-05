@@ -7,6 +7,19 @@
  */
 
 export class FakeMap {
+  /**
+   * Every map built since the last reset, newest last.
+   *
+   * A test that asks what the page told the map to do needs a handle on the
+   * map, and the page owns its own instance. Reset in `beforeEach` by the
+   * tests that read it; the settings tests never look.
+   */
+  static instances: FakeMap[] = [];
+
+  static get last(): FakeMap | undefined {
+    return FakeMap.instances[FakeMap.instances.length - 1];
+  }
+
   handlers = new Map<string, ((event: unknown) => void)[]>();
   sources = new Map<string, { setData: (data: unknown) => void }>();
   layers = new Map<string, Record<string, unknown>>();
@@ -15,6 +28,7 @@ export class FakeMap {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeMap.instances.push(this);
     queueMicrotask(() => {
       this.fire('style.load');
       this.fire('load');
@@ -51,6 +65,30 @@ export class FakeMap {
 
   isStyleLoaded() {
     return true;
+  }
+
+  /**
+   * Registered icon images, by name.
+   *
+   * The demarcation renderer draws shapes through `symbol` layers, whose icons
+   * must exist on the map before the layer references them. jsdom has no 2D
+   * canvas context, so the real rasterisation returns nothing here — what the
+   * tests can still pin is *which* images the renderer asked for, which is the
+   * same thing the rest of this stub records: what the page asks the map to do,
+   * never what WebGL made of it.
+   */
+  images = new Map<string, unknown>();
+
+  addImage(id: string, image: unknown) {
+    this.images.set(id, image);
+  }
+
+  hasImage(id: string) {
+    return this.images.has(id);
+  }
+
+  removeImage(id: string) {
+    this.images.delete(id);
   }
 
   addSource(id: string) {

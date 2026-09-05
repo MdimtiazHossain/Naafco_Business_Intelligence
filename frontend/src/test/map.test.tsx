@@ -271,7 +271,7 @@ describe('Business Map page', () => {
   beforeEach(() => {
     FakeMap.instances.length = 0;
     vi.spyOn(services.mapService, 'config').mockResolvedValue(CONFIG);
-    vi.spyOn(services.mapService, 'designs').mockResolvedValue({ designs: [DESIGN], default_design_id: 1 });
+    vi.spyOn(services.mapService, 'designs').mockResolvedValue({ purpose: 'analysis', designs: [DESIGN], default_design_id: 1 });
     vi.spyOn(services.mapService, 'entity').mockImplementation((level, code) => Promise.resolve({
       level, label: 'Region', code,
       name: REGIONS.find((region) => region.properties.code === code)?.properties.name ?? code,
@@ -504,7 +504,7 @@ describe('Business Map page', () => {
       ...DESIGN, design_id: 2, name: 'Territory Focus', is_default: false, is_system_default: false,
       layers: [layerConfig('customer', 1)],
     };
-    vi.spyOn(services.mapService, 'designs').mockResolvedValue({ designs: [DESIGN, other], default_design_id: 1 });
+    vi.spyOn(services.mapService, 'designs').mockResolvedValue({ purpose: 'analysis', designs: [DESIGN, other], default_design_id: 1 });
     wrap();
     const select = await screen.findByLabelText('Map design');
     expect((select as HTMLSelectElement).value).toBe('1');

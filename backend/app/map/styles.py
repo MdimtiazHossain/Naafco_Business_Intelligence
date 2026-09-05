@@ -23,6 +23,19 @@ Three colour modes, chosen by the **metric** rather than by the layer:
 **An entity whose colour metric is absent is drawn neutral, never critical.**
 No target means no achievement, not an achievement of nothing — the same
 distinction every report in this platform keeps between absent and zero.
+
+**Shapes are declared here too, geometry included.** The Area Demarcation map
+draws a different shape per level so a reader can tell a territory from a
+customer at a glance, and the catalogue below carries each shape's SVG path
+rather than only its name. The browser rasterises what it is sent and holds no
+catalogue of its own, which is the rule ``0033``'s removal recorded — the
+renderer must not be the only thing that knows a marker's design — read as
+strictly as it can be: a shape the server does not declare cannot reach the
+renderer, and one it does declare cannot arrive without its geometry.
+
+This is deliberately a small closed set, not the uploadable asset library
+``0033`` removed. There is no ``map_marker_designs``, no asset table and no
+per-point shape: a shape is chosen per *level*, from these eight.
 """
 
 from __future__ import annotations
@@ -63,12 +76,60 @@ RADIUS_RANGE: tuple[float, float] = (4.0, 22.0)
 #: How a cluster of points is drawn before the reader zooms into it.
 CLUSTER_STYLE: dict[str, str] = {"color": "#1d4ed8", "text_color": "#ffffff"}
 
+#: Every shape a layer may be drawn with, on a 24×24 viewBox centred at
+#: (12, 12). The path travels to the browser with the key, so adding a shape is
+#: a change to this tuple and nothing else — and a renderer can never be handed
+#: a key it has no geometry for.
+#:
+#: ``circle`` is first and is the default, because it is what the analysis map
+#: has always drawn: a layer that names no shape keeps the appearance it had.
+SHAPES: tuple[dict[str, str], ...] = (
+    {"key": "circle", "label": "Circle",
+     "path": "M22 12 A10 10 0 1 1 2 12 A10 10 0 1 1 22 12 Z"},
+    {"key": "square", "label": "Square",
+     "path": "M3 3 H21 V21 H3 Z"},
+    {"key": "triangle", "label": "Triangle",
+     "path": "M12 2 L22 20 H2 Z"},
+    {"key": "diamond", "label": "Diamond",
+     "path": "M12 2 L22 12 L12 22 L2 12 Z"},
+    {"key": "hexagon", "label": "Hexagon",
+     "path": "M12 2 L20.66 7 V17 L12 22 L3.34 17 V7 Z"},
+    {"key": "star", "label": "Star",
+     "path": "M12 2 L14.35 8.76 L21.51 8.91 L15.8 13.24 L17.88 20.09 "
+             "L12 16 L6.12 20.09 L8.2 13.24 L2.49 8.91 L9.65 8.76 Z"},
+    {"key": "cross", "label": "Cross",
+     "path": "M9 2 H15 V9 H22 V15 H15 V22 H9 V15 H2 V9 H9 Z"},
+    {"key": "pin", "label": "Pin",
+     "path": "M12 22 C12 22 21 14.5 21 9 A9 9 0 1 0 3 9 C3 14.5 12 22 12 22 Z"},
+)
+SHAPE_KEYS: tuple[str, ...] = tuple(shape["key"] for shape in SHAPES)
+DEFAULT_SHAPE = SHAPE_KEYS[0]
+#: The side of the viewBox every path above is drawn on.
+SHAPE_VIEWBOX = 24
+
+#: The flat colour a point takes where no metric decides one — which is every
+#: point on the demarcation map. Blue rather than slate: slate is
+#: :data:`NO_DATA_COLOR`, and "this level's colour" and "this figure is absent"
+#: must not look alike.
+DEFAULT_POINT_COLOR = "#2563eb"
+
+#: How a ``DERIVED`` coordinate is drawn: the same shape, hollow.
+#:
+#: A derived point is the centroid of what is placed below it, not a place
+#: anybody surveyed. On a map whose whole purpose is judging where a boundary
+#: falls, mistaking a computed average for a real address is the error that
+#: matters, so the two are told apart by fill rather than by a legend entry
+#: somebody has to go and read. 293 of ``data/dev.db``'s 1,139 coordinates are
+#: derived, so this is the common case, not an edge one.
+DERIVED_OPACITY = 0.25
+DERIVED_STROKE_WIDTH = 1.5
+
 #: The keys a layer's ``style_config`` may override. Anything else is refused
 #: rather than stored and ignored: a saved setting that changes nothing is a
 #: setting somebody will trust.
 OVERRIDABLE: tuple[str, ...] = (
     "thresholds", "band_colors", "no_data_color", "sequential", "diverging",
-    "radius",
+    "radius", "shape", "point_color",
 )
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -157,7 +218,16 @@ def default_style() -> dict[str, Any]:
         "diverging": dict(DIVERGING_COLORS),
         "radius": list(RADIUS_RANGE),
         "cluster": dict(CLUSTER_STYLE),
+        "shape": DEFAULT_SHAPE,
+        "point_color": DEFAULT_POINT_COLOR,
+        "derived_opacity": DERIVED_OPACITY,
+        "derived_stroke_width": DERIVED_STROKE_WIDTH,
     }
+
+
+def shape_catalogue() -> list[dict[str, Any]]:
+    """Every shape with its geometry, as ``GET /api/map/config`` publishes it."""
+    return [{**shape, "viewbox": SHAPE_VIEWBOX} for shape in SHAPES]
 
 
 def _hex(value: Any, key: str) -> str:
@@ -258,6 +328,18 @@ def effective_style(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
             )
         style["radius"] = [low, high]
 
+    if "shape" in overrides:
+        raw = overrides["shape"]
+        if raw not in SHAPE_KEYS:
+            raise ValueError(
+                f"style_config.shape is not a shape this map draws: {raw!r}. "
+                f"Choose one of: {', '.join(SHAPE_KEYS)}."
+            )
+        style["shape"] = raw
+
+    if "point_color" in overrides:
+        style["point_color"] = _hex(overrides["point_color"], "point_color")
+
     # The bands are derived from the (possibly overridden) thresholds and
     # colours, never stored: a stored band would be a second copy of one rule.
     style["bands"] = bands(tuple(style["thresholds"]), style["band_colors"])
@@ -269,6 +351,10 @@ __all__ = [
     "BAND_COLORS",
     "BAND_KEYS",
     "CLUSTER_STYLE",
+    "DEFAULT_POINT_COLOR",
+    "DEFAULT_SHAPE",
+    "DERIVED_OPACITY",
+    "DERIVED_STROKE_WIDTH",
     "DIVERGING_COLORS",
     "MODE_BANDS",
     "MODE_DIVERGING",
@@ -278,9 +364,13 @@ __all__ = [
     "RADIUS_RANGE",
     "SEQUENTIAL_CLASSES",
     "SEQUENTIAL_RAMP",
+    "SHAPES",
+    "SHAPE_KEYS",
+    "SHAPE_VIEWBOX",
     "bands",
     "class_breaks",
     "color_mode",
     "default_style",
     "effective_style",
+    "shape_catalogue",
 ]

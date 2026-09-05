@@ -17,16 +17,13 @@
 import type {
   GeoJSONSource,
   Map as MapLibreInstance,
-  MapMouseEvent,
 } from 'maplibre-gl';
 import { useEffect, useRef } from 'react';
 import type { MapFeatureProperties, MapLayerData, MapMetricInfo } from '../../types/api';
 import {
-  CLUSTER_FILTER,
   LABEL_FONT,
   LAYER_SUFFIXES,
   POINT_FILTER,
-  clusterRadiusExpression,
   colorExpression,
   labelExpression,
   layerId,
@@ -35,6 +32,12 @@ import {
   shouldCluster,
   sourceId,
 } from './mapExpressions';
+import {
+  SOURCE_OPTIONS,
+  addClusterLayers,
+  useFitBounds,
+  usePointerInteraction,
+} from './mapLayerCore';
 
 export interface MapSelection {
   level: string;
@@ -63,11 +66,6 @@ export interface LayerRendererOptions {
   /** Changes when the data set changes; the map fits its bounds once per value. */
   fitKey: string;
 }
-
-const CLUSTER_RADIUS = 50;
-const CLUSTER_MAX_ZOOM = 14;
-const FIT_PADDING = 48;
-const FIT_MAX_ZOOM = 12;
 
 function pointLayerIds(map: MapLibreInstance, layers: MapLayerData[]): string[] {
   return layers
@@ -108,7 +106,6 @@ export function useLayerRenderer({
   const layersRef = useRef(layers);
   const selectRef = useRef(onSelect);
   const hoverRef = useRef(onHover);
-  const fitted = useRef<string | null>(null);
   layersRef.current = layers;
   selectRef.current = onSelect;
   hoverRef.current = onHover;
@@ -147,8 +144,7 @@ export function useLayerRenderer({
           type: 'geojson',
           data: data.features,
           cluster: clustered,
-          clusterRadius: CLUSTER_RADIUS,
-          clusterMaxZoom: CLUSTER_MAX_ZOOM,
+          ...SOURCE_OPTIONS,
         });
       }
       drawn.current.levels.set(level, clustered);
@@ -161,32 +157,8 @@ export function useLayerRenderer({
       const labelsId = layerId(level, LAYER_SUFFIXES.labels);
       const selectedId = layerId(level, LAYER_SUFFIXES.selected);
 
-      if (clustered && !map.getLayer(clustersId)) {
-        map.addLayer({
-          id: clustersId,
-          type: 'circle',
-          source: id,
-          filter: CLUSTER_FILTER,
-          paint: {
-            'circle-color': layer.style.cluster.color,
-            'circle-radius': clusterRadiusExpression(),
-            'circle-opacity': 0.85,
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff',
-          },
-        });
-        map.addLayer({
-          id: countId,
-          type: 'symbol',
-          source: id,
-          filter: CLUSTER_FILTER,
-          layout: {
-            'text-field': ['get', 'point_count_abbreviated'],
-            'text-font': LABEL_FONT,
-            'text-size': 12,
-          },
-          paint: { 'text-color': layer.style.cluster.text_color },
-        });
+      if (clustered) {
+        addClusterLayers(map, id, level, layer.style.cluster);
       }
 
       if (!map.getLayer(pointsId)) {
@@ -280,82 +252,25 @@ export function useLayerRenderer({
     });
   }, [map, styleVersion, layers, metrics, selected]);
 
-  // Pointer events, registered once per map instance.
-  useEffect(() => {
-    if (!map) return undefined;
+  // Pointer events and the fit, shared with the demarcation renderer: a
+  // click, a hover and a cluster expansion mean the same thing on both maps.
+  usePointerInteraction<MapFeatureProperties>({
+    map,
+    pointLayerIds: () => (map ? pointLayerIds(map, layersRef.current) : []),
+    clusterLayerIds: () => (map ? clusterLayerIds(map, layersRef.current) : []),
+    onSelect: (properties) => selectRef.current(
+      properties
+        ? { level: properties.level, code: properties.code, source: 'map', properties }
+        : null,
+    ),
+    onHover: (hover) => hoverRef.current(
+      hover
+        ? { level: hover.properties.level, properties: hover.properties, point: hover.point }
+        : null,
+    ),
+  });
 
-    const onClick = (event: MapMouseEvent) => {
-      const clusters = clusterLayerIds(map, layersRef.current);
-      const cluster = clusters.length
-        ? map.queryRenderedFeatures(event.point, { layers: clusters })[0]
-        : undefined;
-      if (cluster) {
-        const clusterId = cluster.properties?.cluster_id as number | undefined;
-        const source = map.getSource(cluster.source) as GeoJSONSource | undefined;
-        if (clusterId !== undefined && source) {
-          void source.getClusterExpansionZoom(clusterId).then((zoom) => {
-            const [lng, lat] = (cluster.geometry as { coordinates: [number, number] }).coordinates;
-            map.easeTo({ center: [lng, lat], zoom });
-          });
-        }
-        return;
-      }
-      const points = pointLayerIds(map, layersRef.current);
-      const hit = points.length
-        ? map.queryRenderedFeatures(event.point, { layers: points })[0]
-        : undefined;
-      if (!hit) {
-        selectRef.current(null);
-        return;
-      }
-      const properties = hit.properties as unknown as MapFeatureProperties;
-      selectRef.current({
-        level: properties.level, code: properties.code, source: 'map', properties,
-      });
-    };
-
-    const onMove = (event: MapMouseEvent) => {
-      const points = [...pointLayerIds(map, layersRef.current), ...clusterLayerIds(map, layersRef.current)];
-      const hit = points.length
-        ? map.queryRenderedFeatures(event.point, { layers: points })[0]
-        : undefined;
-      map.getCanvas().style.cursor = hit ? 'pointer' : '';
-      if (!hit || hit.properties?.cluster) {
-        hoverRef.current(null);
-        return;
-      }
-      const properties = hit.properties as unknown as MapFeatureProperties;
-      hoverRef.current({ level: properties.level, properties, point: { x: event.point.x, y: event.point.y } });
-    };
-
-    const onLeave = () => hoverRef.current(null);
-
-    map.on('click', onClick);
-    map.on('mousemove', onMove);
-    map.on('mouseout', onLeave);
-    map.on('movestart', onLeave);
-    return () => {
-      map.off('click', onClick);
-      map.off('mousemove', onMove);
-      map.off('mouseout', onLeave);
-      map.off('movestart', onLeave);
-    };
-  }, [map]);
-
-  // Fit the data once per data set; a layer toggle does not move the map.
-  useEffect(() => {
-    if (!map || layers.length === 0 || fitted.current === fitKey) return;
-    const bounded = layers.map((layer) => layer.bounds).filter((bounds) => bounds !== null);
-    if (bounded.length === 0) return;
-    const west = Math.min(...bounded.map((b) => b!.west));
-    const east = Math.max(...bounded.map((b) => b!.east));
-    const south = Math.min(...bounded.map((b) => b!.south));
-    const north = Math.max(...bounded.map((b) => b!.north));
-    fitted.current = fitKey;
-    map.fitBounds([[west, south], [east, north]], {
-      padding: FIT_PADDING, maxZoom: FIT_MAX_ZOOM, duration: 600,
-    });
-  }, [map, layers, fitKey]);
+  useFitBounds(map, layers.map((layer) => layer.bounds), fitKey);
 
   // A selection made from a table pans to the point, if it has one.
   useEffect(() => {

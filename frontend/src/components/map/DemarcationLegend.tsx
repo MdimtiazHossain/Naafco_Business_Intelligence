@@ -1,0 +1,121 @@
+/**
+ * The demarcation legend: which shape is which level, and how many are placed.
+ *
+ * The analysis legend explains what a *colour* means, because that map encodes
+ * a figure. This one explains what a *shape* means, because that map encodes a
+ * level — and it answers the question a reader of coordinates actually has,
+ * which is how much of each level is on the screen at all.
+ *
+ * Two numbers per level, deliberately. `placed` is what is drawn; `missing` is
+ * what the master holds and the map cannot show. A legend that printed only
+ * the first would let a half-loaded level look complete, which on a map used to
+ * judge where a boundary falls is the difference between "this area ends here"
+ * and "we have not placed the rest yet".
+ *
+ * The swatch is drawn from the same server-declared path the map draws, so a
+ * shape can never mean one thing in the legend and another on the canvas.
+ */
+
+import { useT } from '../../contexts/I18nContext';
+import type { MapLocationLayer, MapShape } from '../../types/api';
+
+export interface DemarcationLegendProps {
+  layers: MapLocationLayer[];
+  shapes: MapShape[];
+  activeLevel: string;
+  onActiveLevel: (level: string) => void;
+}
+
+/** One shape at one colour, as an inline SVG the same size as a text line. */
+export function ShapeSwatch({
+  shape, color, size = 14, hollow = false,
+}: { shape: MapShape | undefined; color: string; size?: number; hollow?: boolean }) {
+  if (!shape) return null;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${shape.viewbox} ${shape.viewbox}`}
+      aria-hidden="true"
+      className="shrink-0"
+    >
+      <path
+        d={shape.path}
+        fill={hollow ? 'none' : color}
+        stroke={color}
+        strokeWidth={hollow ? 2.5 : 1}
+      />
+    </svg>
+  );
+}
+
+export function DemarcationLegend({
+  layers, shapes, activeLevel, onActiveLevel,
+}: DemarcationLegendProps) {
+  const t = useT();
+  if (layers.length === 0) return null;
+  const shapeFor = (key: string) => shapes.find((shape) => shape.key === key);
+  const active = layers.find((layer) => layer.level === activeLevel) ?? layers[0];
+
+  return (
+    <div className="absolute bottom-8 left-3 z-10 max-w-[15rem] rounded-lg bg-white/95 p-3 text-xs shadow-lg backdrop-blur dark:bg-slate-900/95">
+      <p className="mb-2 font-semibold text-slate-700 dark:text-slate-200">
+        {t('map.demarcationLegend')}
+      </p>
+      <ul className="space-y-1.5">
+        {layers.map((layer) => {
+          const isActive = layer.level === active.level;
+          return (
+            <li key={layer.level}>
+              <button
+                type="button"
+                onClick={() => onActiveLevel(layer.level)}
+                className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left ${
+                  isActive
+                    ? 'bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                    : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                }`}
+                aria-pressed={isActive}
+              >
+                <ShapeSwatch
+                  shape={shapeFor(layer.layer.style.shape)}
+                  color={layer.layer.style.point_color}
+                />
+                <span className="flex-1 truncate">{layer.label}</span>
+                <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                  {layer.placed}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {/* Provenance, stated once for the whole map rather than per level: the
+          hollow/solid distinction is the same on every layer, and repeating it
+          eleven times would crowd out the counts. */}
+      {layers.some((layer) => layer.derived > 0) && (
+        <div className="mt-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+          <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+            <ShapeSwatch
+              shape={shapeFor(active.layer.style.shape)}
+              color={active.layer.style.point_color}
+              hollow
+            />
+            <span>{t('map.legendDerived')}</span>
+          </div>
+        </div>
+      )}
+
+      {active.missing > 0 && (
+        <p className="mt-2 border-t border-slate-200 pt-2 text-slate-500 dark:border-slate-700 dark:text-slate-400">
+          {t('map.legendMissing', {
+            missing: String(active.missing),
+            total: String(active.total),
+            level: active.label.toLowerCase(),
+          })}
+        </p>
+      )}
+    </div>
+  );
+}

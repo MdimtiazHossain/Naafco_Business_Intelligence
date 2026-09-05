@@ -15,6 +15,7 @@ import type { Map as MapLibreInstance } from 'maplibre-gl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BusinessMap } from '../components/map/BusinessMap';
+import { DemarcationTab } from '../components/map/DemarcationTab';
 import { useMapConfig, useMapDesigns, useMapLayers } from '../components/map/mapQueries';
 import { SelectedEntityCard } from '../components/map/SelectedEntityCard';
 import { MapSettingsDrawer } from '../components/map/MapSettingsDrawer';
@@ -30,6 +31,18 @@ import { ApiError } from '../services';
 
 /** URL parameters that are the reader's temporary state, and Reset clears. */
 const TEMPORARY_PARAMS = ['layers', 'selected'] as const;
+
+/**
+ * The two maps, in the order they are read.
+ *
+ * Business Map first because it is what somebody arrives for. Area Demarcation
+ * is the same coordinates with every figure taken off — a different question
+ * about the same points, which is why it is a tab here rather than a page of
+ * its own: the reader who wants to know where a boundary falls has usually
+ * just been looking at what is inside it.
+ */
+const TABS = ['map', 'demarcation'] as const;
+type Tab = (typeof TABS)[number];
 
 /**
  * `layers=none`: every layer switched off. An absent parameter means "the
@@ -59,6 +72,13 @@ export default function BusinessMapPage() {
   const designs = useMapDesigns(composer);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  const tab: Tab = (TABS as readonly string[]).includes(searchParams.get('tab') ?? '')
+    ? (searchParams.get('tab') as Tab)
+    : 'map';
+  // Fetched only for the tab that draws them: the two design lists are
+  // different maps' designs and neither tab may offer the other's.
+  const demarcationDesigns = useMapDesigns(composer, 'demarcation');
+
   // The design: the URL's, else the one the page opens with.
   const requestedDesign = Number(searchParams.get('design'));
   const design = useMemo(() => {
@@ -70,17 +90,33 @@ export default function BusinessMapPage() {
     );
   }, [designs.data, requestedDesign]);
 
-  // The reader's layer toggles, else the layers the design shows.
+  const demarcationDesign = useMemo(() => {
+    const list = demarcationDesigns.data?.designs ?? [];
+    return (
+      list.find((candidate) => candidate.design_id === requestedDesign)
+      ?? list.find((c) => c.design_id === demarcationDesigns.data?.default_design_id)
+      ?? list[0]
+    );
+  }, [demarcationDesigns.data, requestedDesign]);
+
+  /** The design the open tab draws with; `design` alone would be the wrong one. */
+  const activeDesign = tab === 'map' ? design : demarcationDesign;
+
+  // The reader's layer toggles, else the layers the open tab's design shows.
   const levels = useMemo(() => {
     const fromUrl = searchParams.get('layers');
     if (fromUrl === NO_LAYERS) return [];
     if (fromUrl) return fromUrl.split(',').filter(Boolean);
-    return design?.layers.filter((layer) => layer.is_visible).map((layer) => layer.point_level) ?? [];
-  }, [design, searchParams]);
+    return activeDesign?.layers.filter((layer) => layer.is_visible)
+      .map((layer) => layer.point_level) ?? [];
+  }, [activeDesign, searchParams]);
 
   const metricParam = searchParams.get('metric') ?? undefined;
   const metric = metricParam ?? design?.default_metric;
-  const layers = useMapLayers(design?.design_id, levels, query, metricParam);
+  // Gated on the tab: the demarcation map reads no fact table, and leaving
+  // this running behind it would aggregate five layers nobody is looking at.
+  const layers = useMapLayers(design?.design_id, tab === 'map' ? levels : [],
+                              query, metricParam);
 
   const basemap = useMemo(() => {
     if (!config.data) return undefined;
@@ -180,13 +216,37 @@ export default function BusinessMapPage() {
 
   /** A reader's layer toggles: in the URL while they differ from the design. */
   const changeLevels = useCallback((next: string[]) => {
-    const defaults = design?.layers
+    const defaults = activeDesign?.layers
       .filter((layer) => layer.is_visible)
       .map((layer) => layer.point_level) ?? [];
     const same = next.length === defaults.length && next.every((level, index) => level === defaults[index]);
     setParam('layers', same ? undefined : next.length === 0 ? NO_LAYERS : next.join(','));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [design, setSearchParams]);
+  }, [activeDesign, setSearchParams]);
+
+  /**
+   * Switch tab, dropping the toggles, the selection and the design.
+   *
+   * All three belonged to the map being left: the two tabs draw different
+   * designs with different layer sets, so carrying a `layers=zone,region` from
+   * one to the other would silently ask the new map for levels its design may
+   * not have.
+   */
+  const changeTab = useCallback((next: Tab) => {
+    setSelectionDetail(null);
+    setActiveChoice(null);
+    setSearchParams(
+      (previous) => {
+        const params = new URLSearchParams(previous);
+        if (next === 'map') params.delete('tab');
+        else params.set('tab', next);
+        TEMPORARY_PARAMS.forEach((name) => params.delete(name));
+        params.delete('design');
+        return params;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
 
   // A new data set — a different period, filter set or design — is fitted
   // once; a layer toggle or a selection never moves the map by itself.
@@ -235,7 +295,28 @@ export default function BusinessMapPage() {
         }
       />
 
-      <GlobalFilterBar />
+      <div className="tab-strip mb-4 gap-1 border-b border-slate-200 dark:border-slate-700">
+        {TABS.map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => changeTab(key)}
+            className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm font-medium ${
+              tab === key
+                ? 'border-b-2 border-brand-600 text-brand-700 dark:text-brand-300'
+                : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+            }`}
+            aria-current={tab === key ? 'page' : undefined}
+          >
+            {t(`map.tab.${key}`)}
+          </button>
+        ))}
+      </div>
+
+      {/* The filter bar belongs to the analysis map alone: the demarcation map
+          draws every placed coordinate, with no period and no scope narrowing,
+          so a chip above it would claim a narrowing that is not applied. */}
+      {tab === 'map' && <GlobalFilterBar />}
 
       {(config.isLoading || designs.isLoading) && <CardSkeleton rows={3} />}
       {(config.error || designs.error) && (
@@ -250,7 +331,27 @@ export default function BusinessMapPage() {
         </div>
       )}
 
-      {config.data && designs.data && (
+      {config.data && tab === 'demarcation' && (
+        <DemarcationTab
+          config={config.data}
+          design={demarcationDesign}
+          designs={demarcationDesigns.data?.designs ?? []}
+          onDesignChange={changeDesign}
+          levels={levels}
+          onLevelsChange={changeLevels}
+          // Narrowed to the identity both maps share. The analysis selection
+          // carries a row of measures the demarcation map has no use for, and
+          // widening either type so they interchange would say the two are the
+          // same thing when they are not.
+          selected={selected && { level: selected.level, code: selected.code,
+                                  source: selected.source }}
+          onSelect={(next) => select(next && { level: next.level, code: next.code,
+                                               source: next.source })}
+          onMap={onMap}
+        />
+      )}
+
+      {config.data && designs.data && tab === 'map' && (
         <>
           <div className="card mb-4 flex flex-wrap items-center gap-4 p-3">
             <div className="flex items-center gap-2">

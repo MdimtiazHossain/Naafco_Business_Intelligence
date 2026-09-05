@@ -2310,6 +2310,29 @@ export interface MapStyle {
   diverging: { negative: string; neutral: string; positive: string };
   radius: [number, number];
   cluster: { color: string; text_color: string };
+  /** Which of the declared shapes this layer's points are drawn as. */
+  shape: string;
+  /** The flat colour a point takes where no metric decides one. */
+  point_color: string;
+  /** How a derived centroid is drawn: the same shape, hollow. */
+  derived_opacity: number;
+  derived_stroke_width: number;
+}
+
+/**
+ * One shape a layer may be drawn with, geometry included.
+ *
+ * The path arrives from the server rather than living here, which is the rule
+ * `0033`'s removal recorded read as strictly as it can be: the renderer is
+ * never the only thing that knows a marker's design, and a shape the server
+ * allows can never be one the browser has no geometry for.
+ */
+export interface MapShape {
+  key: string;
+  label: string;
+  /** SVG path data, drawn on a square of `viewbox` units. */
+  path: string;
+  viewbox: number;
 }
 
 export interface MapCoverage {
@@ -2329,6 +2352,10 @@ export interface MapConfig {
   promoted_levels: string[];
   view_modes: { key: MapViewMode; label: string; requires_boundary: boolean }[];
   metrics: MapMetricInfo[];
+  /** Every shape a layer may be drawn with, with its geometry. */
+  shapes: MapShape[];
+  /** The maps a design may compose: analysis (figures) or demarcation. */
+  purposes: MapPurpose[];
   defaults: {
     metric: string;
     color_metric: string;
@@ -2338,6 +2365,16 @@ export interface MapConfig {
   style: MapStyle;
   coverage: MapCoverage[];
 }
+
+/**
+ * Which map a design composes.
+ *
+ * The two tabs are different maps, not two views of one: `analysis` draws
+ * figures over a period inside the reader's scope, `demarcation` draws
+ * coordinates and nothing else. A design belongs to exactly one, and each has
+ * its own default so both tabs always have something to open on.
+ */
+export type MapPurpose = 'analysis' | 'demarcation';
 
 export type MapColorMode = 'bands' | 'diverging' | 'sequential';
 
@@ -2379,6 +2416,8 @@ export interface MapDesign {
   design_id: number;
   name: string;
   description: string | null;
+  /** Fixed at creation and never edited — duplicating is how a design moves. */
+  purpose: MapPurpose;
   basemap: string;
   basemap_resolved: MapBasemap;
   /** Set when the design names a basemap the deployment no longer configures. */
@@ -2395,8 +2434,62 @@ export interface MapDesign {
 }
 
 export interface MapDesignsResponse {
+  purpose: MapPurpose;
   designs: MapDesign[];
   default_design_id: number | null;
+}
+
+/**
+ * One level's placed coordinates, with no figure attached to any of them.
+ *
+ * Deliberately not `MapLayerData`: that carries extents, class breaks, rows
+ * and a ranking, every one of which needs a metric. What a demarcation layer
+ * has instead is provenance — how many of its points are centroids rather
+ * than positions somebody stated.
+ */
+export interface MapLocationProperties {
+  code: string;
+  name: string;
+  level: string;
+  parent_level: string | null;
+  parent_code: string | null;
+  source: string;
+  precision: string;
+  derived_from: number | null;
+}
+
+export interface MapLocationFeature {
+  type: 'Feature';
+  id: string;
+  geometry: { type: 'Point'; coordinates: [number, number] };
+  properties: MapLocationProperties;
+}
+
+export interface MapLocationCollection {
+  type: 'FeatureCollection';
+  features: MapLocationFeature[];
+}
+
+export interface MapLocationLayer {
+  level: string;
+  label: string;
+  features: MapLocationCollection;
+  /** How many entities the master holds at this level, placed or not. */
+  total: number;
+  placed: number;
+  /** Of the placed, how many are centroids rather than stated positions. */
+  derived: number;
+  missing: number;
+  bounds: MapBounds | null;
+  notes: string[];
+  layer: MapLayerConfig;
+}
+
+export interface MapLocationsResponse {
+  design: MapDesign;
+  levels: string[];
+  empty: boolean;
+  layers: MapLocationLayer[];
 }
 
 /** A layer as the editor sends it. Order in the list is display order. */
