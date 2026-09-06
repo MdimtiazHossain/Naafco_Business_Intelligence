@@ -142,7 +142,9 @@ export const CONFIG: MapConfig = {
         file: 'bgd_admin3.geojson', admin_level: 3, table: 'dim_upazila',
         features: 507, bytes: 1727737 },
     ],
-    default: null,
+    // Per surface, as the server publishes it: the analysis map opens bare and
+    // the demarcation tab opens with upazila outlines.
+    defaults: { analysis: null, demarcation: 'upazila' },
     mask_url: '/geo/bgd_mask.geojson',
     note: 'Administrative reference outlines. They are not business boundaries.',
   },

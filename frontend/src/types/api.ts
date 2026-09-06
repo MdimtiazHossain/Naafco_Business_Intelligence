@@ -2367,8 +2367,20 @@ export interface MapBoundarySet {
 
 export interface MapBoundaryCatalogue {
   sets: MapBoundarySet[];
-  /** `null`: nothing opens with a backdrop switched on. */
-  default: string | null;
+  /**
+   * What each surface opens with, keyed by `MapPurpose`.
+   *
+   * `analysis` is `null` and `demarcation` names a set, because the two maps
+   * answer different questions of the same outlines: on a map of figures a
+   * backdrop is ink over the subject, and on a map for judging where a line
+   * falls it *is* the subject. One value could not say both, which is why this
+   * replaced a single `default` rather than joining it.
+   *
+   * The browser is told rather than deciding: which surface opens with what is
+   * a product decision, and a second copy of it here would be one to keep in
+   * step.
+   */
+  defaults: Record<MapPurpose, string | null>;
   mask_url: string;
   note: string;
 }

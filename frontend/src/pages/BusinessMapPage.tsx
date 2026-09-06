@@ -53,6 +53,17 @@ type Tab = (typeof TABS)[number];
  */
 const NO_LAYERS = 'none';
 
+/**
+ * `boundary=none`: no backdrop, said out loud.
+ *
+ * The same rule as `NO_LAYERS`, and it became necessary for the same reason.
+ * An absent parameter means "the surface's own default", and Area Demarcation's
+ * default is now upazilas — so without a spelling for "off", a reader who
+ * switched the backdrop off would get 1.7 MB of it back on the next reload,
+ * with the control they used apparently doing nothing.
+ */
+const NO_BOUNDARY = 'none';
+
 function parseSelection(value: string | null): MapSelection | null {
   if (!value) return null;
   const separator = value.indexOf(':');
@@ -133,10 +144,18 @@ export default function BusinessMapPage() {
   // The backdrop the reader chose, and the outline they clicked. Both live in
   // the URL like the layer toggles and the point selection, so a link
   // reproduces the whole view and Reset is still one navigation.
+  // The URL wins; an absent parameter falls back to the open tab's own default,
+  // which the server publishes per purpose — none for the analysis map, upazila
+  // outlines for demarcation. Reset clears the parameter, so it returns a
+  // reader to their surface's default rather than to no backdrop at all.
   const boundary = useMemo(() => {
-    const key = searchParams.get('boundary');
+    const requested = searchParams.get('boundary');
+    if (requested === NO_BOUNDARY) return null;
+    const key = requested
+      ?? config.data?.boundaries.defaults[tab === 'map' ? 'analysis' : 'demarcation']
+      ?? null;
     return config.data?.boundaries.sets.find((set) => set.key === key) ?? null;
-  }, [config.data, searchParams]);
+  }, [config.data, searchParams, tab]);
 
   const boundarySelected: BoundarySelection | null = useMemo(() => {
     const code = searchParams.get('barea');
@@ -158,6 +177,19 @@ export default function BusinessMapPage() {
       return params;
     }, { replace: true });
   }, [setSearchParams]);
+
+  /**
+   * Switch the backdrop, spelling "off" rather than leaving the parameter out.
+   *
+   * Written once and used by both tabs: dropping the parameter would hand the
+   * reader back their surface's default, which on Area Demarcation is the very
+   * thing they just turned off.
+   */
+  const changeBoundary = useCallback((key: string | null) => {
+    selectBoundary(null);
+    setParam('boundary', key ?? NO_BOUNDARY);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectBoundary, setSearchParams]);
 
   const metricParam = searchParams.get('metric') ?? undefined;
   const metric = metricParam ?? design?.default_metric;
@@ -418,10 +450,7 @@ export default function BusinessMapPage() {
                                                source: next.source })}
           boundary={boundary}
           boundarySelected={boundarySelected}
-          onBoundaryChange={(key) => {
-            selectBoundary(null);
-            setParam('boundary', key ?? undefined);
-          }}
+          onBoundaryChange={changeBoundary}
           onBoundarySelect={selectBoundary}
           onMap={onMap}
         />
@@ -473,10 +502,7 @@ export default function BusinessMapPage() {
             <BoundaryControl
               catalogue={config.data.boundaries}
               value={boundary?.key ?? null}
-              onChange={(key) => {
-                selectBoundary(null);
-                setParam('boundary', key ?? undefined);
-              }}
+              onChange={changeBoundary}
             />
 
             {levels.length > 0 && (

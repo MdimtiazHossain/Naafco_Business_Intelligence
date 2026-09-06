@@ -119,6 +119,8 @@ describe('Administrative backdrop', () => {
     vi.spyOn(services.mapService, 'locations').mockResolvedValue({
       design: DEMARCATION,
       levels: ['region'],
+      filters: {},
+      scope_note: null,
       empty: false,
       layers: [{
         level: 'region', label: 'Region',
@@ -161,11 +163,30 @@ describe('Administrative backdrop', () => {
   // Nothing until it is asked for
   // ========================================================================
 
-  it('fetches no outline until a backdrop is chosen', async () => {
+  it('fetches no outline until a backdrop is chosen, on the Business Map', async () => {
     wrap(`/map?${WINDOW}`);
     await waitFor(() => expect(services.mapService.data).toHaveBeenCalled());
     // 370 KB of districts nobody asked for, over a connection nobody chose.
+    // Unchanged by the demarcation tab opening with a backdrop: that reasoning
+    // is about a map of figures, where the outlines would be ink over the
+    // subject rather than the subject.
     expect(geoCalls()).toEqual([]);
+  });
+
+  it('opens Area Demarcation with the upazila outlines already asked for', async () => {
+    wrap(`/map?tab=demarcation&${WINDOW}`);
+    // The tab exists to judge where a line falls, so it opens able to answer
+    // its own question rather than showing a blank map and a control.
+    await waitFor(() => expect(geoCalls().some((u) => u.includes('admin3'))).toBe(true));
+  });
+
+  it('lets a reader turn the backdrop off and keeps it off', async () => {
+    wrap(`/map?tab=demarcation&boundary=none&${WINDOW}`);
+    await waitFor(() => expect(services.mapService.locations).toHaveBeenCalled());
+    // `boundary=none` is spelled out for the reason `layers=none` is: an absent
+    // parameter means the surface's own default, so without it the 1.7 MB a
+    // reader just dismissed would come back on the next reload.
+    expect(geoCalls().filter((u) => !u.includes('mask'))).toEqual([]);
   });
 
   it('offers each set with its size once it is worth knowing', async () => {

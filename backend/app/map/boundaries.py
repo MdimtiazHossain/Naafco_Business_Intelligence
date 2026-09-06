@@ -48,6 +48,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..database.models_map import DesignPurpose
+
 #: Where the browser fetches a boundary file from. A URL path, not a directory:
 #: the files are static assets served by nginx (or by Vite in development), and
 #: nothing on the backend reads them.
@@ -117,9 +119,65 @@ BOUNDARY_SETS: tuple[BoundarySet, ...] = (
 BOUNDARY_BY_KEY: dict[str, BoundarySet] = {s.key: s for s in BOUNDARY_SETS}
 BOUNDARY_KEYS: tuple[str, ...] = tuple(BOUNDARY_BY_KEY)
 
-#: What the map opens with: nothing. A backdrop nobody asked for is a 370 KB
-#: download and a lot of ink over the points somebody came to look at.
-DEFAULT_BOUNDARY: str | None = None
+#: What each map opens with — and the two answers differ, which is why this is
+#: keyed by purpose rather than being one constant.
+#:
+#: **The Business Map opens with nothing**, and the original reasoning is
+#: unchanged: a backdrop nobody asked for is a download and a lot of ink over
+#: the points somebody came to look at. That map draws figures. The outlines
+#: would be context laid over its subject, and context that competes with what
+#: it explains is worse than none.
+#:
+#: **Area Demarcation opens with upazilas**, because there the outlines are not
+#: context over the subject — they *are* the subject. That tab exists to judge
+#: where a line falls, and a reader who has to switch the backdrop on before the
+#: tab can answer its own question has been given a blank map and a chore.
+#: Upazila rather than district because a territory is drawn at roughly upazila
+#: grain; districts are too coarse to place a boundary against.
+#:
+#: The cost is accepted rather than overlooked: ``bgd_admin3.geojson`` is 1.7 MB
+#: and 507 features, and it now loads on every visit to that tab. It is fetched
+#: once per session (``geoData`` caches the promise), it never blocks the
+#: points — the coordinates come from a different request and draw first — and
+#: the wait is stated while it happens, which is what
+#: ``BoundaryControl``'s loading state is for.
+#:
+#: One shared constant could not say this. A single value forces both maps to
+#: the same answer, and the honest answer is different on each.
+DEFAULT_BOUNDARY_BY_PURPOSE: dict[str, str | None] = {
+    DesignPurpose.ANALYSIS: None,
+    DesignPurpose.DEMARCATION: "upazila",
+}
+
+
+def _assert_defaults_resolve() -> None:
+    """A default naming a set nobody ships would read as "none", in silence.
+
+    Checked at import so a typo fails the gate rather than quietly turning the
+    demarcation tab back into the blank map this change exists to end. The
+    purposes are checked too: a key that is not a real ``DesignPurpose`` would
+    never be looked up, so the default would simply never apply.
+    """
+    for purpose, key in DEFAULT_BOUNDARY_BY_PURPOSE.items():
+        if purpose not in DesignPurpose.ALL:
+            raise ValueError(
+                f"DEFAULT_BOUNDARY_BY_PURPOSE names {purpose!r}, which is not a "
+                f"map purpose. Known: {', '.join(DesignPurpose.ALL)}."
+            )
+        if key is not None and key not in BOUNDARY_BY_KEY:
+            raise ValueError(
+                f"DEFAULT_BOUNDARY_BY_PURPOSE[{purpose!r}] is {key!r}, which is "
+                f"not a boundary set. Known: {', '.join(BOUNDARY_KEYS)}."
+            )
+    missing = set(DesignPurpose.ALL) - set(DEFAULT_BOUNDARY_BY_PURPOSE)
+    if missing:
+        raise ValueError(
+            f"DEFAULT_BOUNDARY_BY_PURPOSE says nothing about {', '.join(sorted(missing))}. "
+            f"Every map has to open with something, including nothing."
+        )
+
+
+_assert_defaults_resolve()
 
 
 def get_boundary(key: str) -> BoundarySet:
@@ -136,7 +194,11 @@ def catalogue() -> dict[str, Any]:
     """The catalogue as ``GET /api/map/config`` publishes it."""
     return {
         "sets": [boundary.to_dict() for boundary in BOUNDARY_SETS],
-        "default": DEFAULT_BOUNDARY,
+        # Keyed by purpose, and replacing the single `default` this used to
+        # publish rather than sitting beside it: a scalar that cannot express
+        # "none here, upazilas there" is the thing being fixed, and leaving it
+        # in place would leave a second answer for anything that still read it.
+        "defaults": dict(DEFAULT_BOUNDARY_BY_PURPOSE),
         "mask_url": f"{PATH_PREFIX}{MASK_FILE}",
         # Said in the payload, not only in this module's docstring, because the
         # browser is where somebody will next be tempted to colour one by a

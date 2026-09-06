@@ -18,6 +18,7 @@ import pathlib
 
 import pytest
 
+from app.database.models_map import DesignPurpose
 from app.map import boundaries, levels, styles
 
 GEO_DIR = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "public" / "geo"
@@ -118,10 +119,59 @@ def test_the_catalogue_says_out_loud_what_these_are_not():
     assert "not business boundaries" in note.lower()
 
 
-def test_nothing_opens_with_a_backdrop_switched_on():
-    """370 KB and a lot of ink nobody asked for."""
-    assert boundaries.DEFAULT_BOUNDARY is None
-    assert boundaries.catalogue()["default"] is None
+def test_the_business_map_still_opens_with_no_backdrop():
+    """The reason the demarcation tab now opens with one does not reach here.
+
+    A backdrop nobody asked for is a download and a lot of ink over the points
+    somebody came to look at — true of a map that draws figures, and the whole
+    point of splitting the default by purpose was that it is not true of a map
+    that exists to judge where a line falls. This is the half that must not
+    move, and it is pinned separately because a shared constant is exactly how
+    a change to one surface leaks onto the other.
+    """
+    assert boundaries.DEFAULT_BOUNDARY_BY_PURPOSE[DesignPurpose.ANALYSIS] is None
+    assert boundaries.catalogue()["defaults"]["analysis"] is None
+
+
+def test_area_demarcation_opens_with_upazila_outlines():
+    """The tab's own question is where a line falls; it opens able to answer."""
+    assert (boundaries.DEFAULT_BOUNDARY_BY_PURPOSE[DesignPurpose.DEMARCATION]
+            == "upazila")
+    assert boundaries.catalogue()["defaults"]["demarcation"] == "upazila"
+
+
+def test_every_purpose_states_a_default_and_every_default_is_real():
+    """A default naming a set nobody ships would read as "none", in silence."""
+    catalogue = boundaries.catalogue()["defaults"]
+    assert set(catalogue) == set(DesignPurpose.ALL), (
+        "every map has to open with something, including nothing"
+    )
+    for key in catalogue.values():
+        assert key is None or key in boundaries.BOUNDARY_BY_KEY
+
+    # The import-time guard is what makes the above true rather than hoped for.
+    original = dict(boundaries.DEFAULT_BOUNDARY_BY_PURPOSE)
+    try:
+        boundaries.DEFAULT_BOUNDARY_BY_PURPOSE["demarcation"] = "upazilas"
+        with pytest.raises(ValueError, match="not a boundary set"):
+            boundaries._assert_defaults_resolve()
+        boundaries.DEFAULT_BOUNDARY_BY_PURPOSE.clear()
+        boundaries.DEFAULT_BOUNDARY_BY_PURPOSE.update(original)
+        del boundaries.DEFAULT_BOUNDARY_BY_PURPOSE["analysis"]
+        with pytest.raises(ValueError, match="says nothing about"):
+            boundaries._assert_defaults_resolve()
+    finally:
+        boundaries.DEFAULT_BOUNDARY_BY_PURPOSE.clear()
+        boundaries.DEFAULT_BOUNDARY_BY_PURPOSE.update(original)
+
+
+def test_the_catalogue_publishes_no_single_default():
+    """One value cannot say "none here, upazilas there", so there is not one.
+
+    Left beside the new field it would be a second answer to the same question,
+    and whichever reader found it first would win.
+    """
+    assert "default" not in boundaries.catalogue()
 
 
 def test_the_boundary_style_is_declared_once_and_published():
