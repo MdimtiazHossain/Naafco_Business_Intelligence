@@ -763,6 +763,35 @@ def test_the_palette_is_declared_once_and_published(client):
     # Grey is the neutral, so no group may be drawn in it categorically:
     # "this is a group" must not look like "this belongs to no group".
     assert styles.GROUP_NEUTRAL_COLOR not in styles.CATEGORICAL_PALETTE
+    # Nor the accent, or a categorical map would show one group looking picked.
+    assert styles.FOCUS_COLOR not in styles.CATEGORICAL_PALETTE
+    # No colour twice. The whole scheme rests on a group's colour identifying
+    # it, and a duplicate here would put two areas in one colour with nothing
+    # on screen to say so.
+    assert len(set(styles.CATEGORICAL_PALETTE)) == len(styles.CATEGORICAL_PALETTE)
+
+
+def test_the_palette_covers_every_region_the_hierarchy_can_hold(client,
+                                                                agent_engine):
+    """Region colours categorically, which is why the palette is thirteen.
+
+    Not a rule about palettes in general — a level *may* legitimately outgrow
+    the colours and go to focus mode, which is the point of having that mode.
+    It is a rule about this level: Region is the one a reader reaches for first,
+    the deployment has 13 of them, and at twelve colours that map opened
+    entirely grey with a picker nobody had touched. If a future hierarchy adds
+    a fourteenth region this test fails, and the choice — widen again, or accept
+    focus mode there — is one somebody should make deliberately rather than
+    discover on the screen.
+    """
+    from app.database.models import DimRegion
+
+    with Session(agent_engine) as db:
+        regions = db.execute(select(DimRegion.region_code)).scalars().all()
+    assert len(regions) <= styles.MAX_CATEGORICAL_GROUPS, (
+        f"{len(regions)} regions against {styles.MAX_CATEGORICAL_GROUPS} "
+        f"colours: Region would open in focus mode"
+    )
 
 
 def test_the_filter_levels_are_derived_from_the_level_registry(client):

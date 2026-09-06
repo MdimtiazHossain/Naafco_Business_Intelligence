@@ -146,12 +146,27 @@ SHAPE_VIEWBOX = 24
 #: same colour twice.
 #:
 #: **The first eight are Okabe-Ito**, the palette designed to stay separable
-#: under the common colour-vision deficiencies. The last four extend it and are
+#: under the common colour-vision deficiencies. The last five extend it and are
 #: *not* covered by that guarantee — a real limitation, recorded here rather
 #: than discovered. It is survivable because colour is never the only signal on
 #: this map: a point's *level* is carried by its shape, so a reader who cannot
-#: separate two of the last four still knows what each point is, and the legend
+#: separate two of the last five still knows what each point is, and the legend
 #: names every group in words beside its swatch.
+#:
+#: **Thirteen, and the number is measured rather than chosen.** It was twelve,
+#: which put the deployment's 13 regions one over the line and sent Region — a
+#: level a reader expects to colour outright — into focus mode, where nothing
+#: is coloured until a group is picked. Region is the most useful level this
+#: map has, so the palette was widened to meet the data instead. The trade is
+#: explicit: one more colour past the Okabe-Ito eight, against a level that
+#: could not be read at all.
+#:
+#: This is the honest way to move the threshold. Growing the palette adds a
+#: colour a reader can name; raising the cap without one would put two regions
+#: in the same colour, which on this map is a wrong answer about where a
+#: boundary falls. If a level outgrows thirteen, it goes to focus mode — that
+#: is the mechanism, and it is not to be defeated by adding colours nobody can
+#: tell apart.
 #:
 #: Grey is deliberately absent: it is :data:`GROUP_NEUTRAL_COLOR`, and "this is
 #: a group" must not look like "this belongs to no group".
@@ -168,6 +183,10 @@ CATEGORICAL_PALETTE: tuple[str, ...] = (
     "#4d4dff",   # indigo
     "#8c564b",   # umber
     "#17becf",   # teal
+    # Thirteenth. A mid green, filling the sparsest part of what is already
+    # here: the palette holds three blues and two browns but only one green,
+    # and that one (#009e73) carries enough blue to read as teal beside this.
+    "#2ca02c",   # green
 )
 
 #: How many groups can be told apart at once. Read from the palette rather than
