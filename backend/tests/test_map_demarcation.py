@@ -377,6 +377,30 @@ def test_the_module_reports_only_levels_that_have_a_coordinate(client, agent_eng
 # ==========================================================================
 
 
+def test_the_demarcation_levels_read_down_the_hierarchy(client):
+    """The legend and the layer toggles list levels in the order they mean.
+
+    `0035` seeded from Zone and `0036` appended Company, Business Unit and Sales
+    Line after Sales Force, so the list read in the order the layers were
+    *written* — the three widest levels at the bottom of a list whose whole
+    subject is a hierarchy. `0037` puts them in `MAP_LEVELS` order.
+
+    The migration restates that order rather than importing it, as every seed in
+    this chain does: a migration must keep producing what it produced. This is
+    where the two are held equal instead, so a level added to the registry is
+    reported here rather than quietly leaving the seeded design in an order
+    nobody chose.
+    """
+    from app.map.levels import MAP_LEVELS
+
+    design = fetch(client, login(client))["design"]
+    drawn = [layer["point_level"] for layer in design["layers"]]
+    assert drawn == [level.key for level in MAP_LEVELS], (
+        "the seeded demarcation design no longer reads down the hierarchy; if a "
+        "level was added to MAP_LEVELS, a revision must place it"
+    )
+
+
 def test_every_drawable_level_is_visible_on_the_demarcation_design(agent_engine):
     """A hidden level on this map is a hidden *row*.
 
