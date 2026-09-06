@@ -13,7 +13,7 @@
  */
 
 import type { Map as MapLibreInstance } from 'maplibre-gl';
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useT } from '../../contexts/I18nContext';
 import type {
   MapBasemap, MapBoundarySet, MapLocationLayer, MapShape, MapStyle,
@@ -21,7 +21,11 @@ import type {
 import { DemarcationLegend } from './DemarcationLegend';
 import { LAYER_SUFFIXES, layerId } from './mapExpressions';
 import { MapLibreMap } from './MapLibreMap';
-import { useBoundaryLayer, type BoundarySelection } from './useBoundaryLayer';
+import {
+  useBoundaryLayer,
+  type BoundaryLayerState,
+  type BoundarySelection,
+} from './useBoundaryLayer';
 import { useShapeRenderer, type ShapeHover, type ShapeSelection } from './useShapeRenderer';
 import type { MapView } from './useMapLibre';
 
@@ -42,6 +46,15 @@ export interface DemarcationMapProps {
   maskUrl?: string | null;
   boundarySelected?: BoundarySelection | null;
   onBoundarySelect?: (selection: BoundarySelection | null) => void;
+  /**
+   * Whether the backdrop is loading, reported to whoever draws the control.
+   *
+   * The fetch happens in here (the hook needs the map instance) and the control
+   * that explains the wait is drawn by an ancestor, so the state is lifted the
+   * way `onMap` already lifts the instance. Without this the spinner could
+   * never render, which is what it had been doing.
+   */
+  onBoundaryState?: (state: BoundaryLayerState) => void;
   style: MapStyle;
   onMap?: (map: MapLibreInstance | null) => void;
   children?: ReactNode;
@@ -62,6 +75,7 @@ export function DemarcationMap({
   maskUrl,
   boundarySelected = null,
   onBoundarySelect,
+  onBoundaryState,
   style,
   onMap,
   children,
@@ -82,7 +96,7 @@ export function DemarcationMap({
   });
 
   // Same backdrop, same hook, beneath the shapes for the same reason.
-  useBoundaryLayer({
+  const boundaryState = useBoundaryLayer({
     map,
     styleVersion,
     boundary,
@@ -93,6 +107,13 @@ export function DemarcationMap({
     beforeId: layers[0] ? layerId(layers[0].level, LAYER_SUFFIXES.points) : undefined,
     pointLayerIds: () => layers.map((l) => layerId(l.level, LAYER_SUFFIXES.points)),
   });
+
+  // Reported in an effect rather than during render: calling a parent's setter
+  // while rendering a child is a React warning and, with two maps mounted
+  // across a tab switch, a loop.
+  useEffect(() => {
+    onBoundaryState?.(boundaryState);
+  }, [onBoundaryState, boundaryState]);
 
   return (
     <div className="relative h-full w-full">

@@ -39,7 +39,7 @@ import { BoundaryCard, BoundaryControl } from './BoundaryControl';
 import { DemarcationMap } from './DemarcationMap';
 import { ShapeSwatch } from './DemarcationLegend';
 import { useMapLocations } from './mapQueries';
-import type { BoundarySelection } from './useBoundaryLayer';
+import type { BoundaryLayerState, BoundarySelection } from './useBoundaryLayer';
 import type { ShapeSelection } from './useShapeRenderer';
 
 export interface DemarcationTabProps {
@@ -68,13 +68,23 @@ export interface DemarcationTabProps {
   boundarySelected: BoundarySelection | null;
   onBoundaryChange: (key: string | null) => void;
   onBoundarySelect: (selection: BoundarySelection | null) => void;
+  /**
+   * The backdrop's loading state, lifted from the map and handed to the picker.
+   *
+   * It matters most on this tab: Area Demarcation opens with upazila outlines,
+   * 1.7 MB of them, so the longest wait on either map happens on first paint
+   * before anybody has touched the control.
+   */
+  onBoundaryState: (state: BoundaryLayerState) => void;
+  /** What that state currently is, so the picker can explain the wait. */
+  boundaryState: BoundaryLayerState;
   onMap?: (map: MapLibreInstance | null) => void;
 }
 
 export function DemarcationTab({
   config, design, designs, onDesignChange, levels, onLevelsChange,
   query, selected, onSelect, boundary, boundarySelected, onBoundaryChange,
-  onBoundarySelect, onMap,
+  onBoundarySelect, onBoundaryState, boundaryState, onMap,
 }: DemarcationTabProps) {
   const t = useT();
   const [activeChoice, setActiveChoice] = useState<string | null>(null);
@@ -213,6 +223,8 @@ export function DemarcationTab({
           id="demarcation-boundary"
           catalogue={config.boundaries}
           value={boundary?.key ?? null}
+          loading={boundaryState.loading}
+          error={boundaryState.error}
           onChange={onBoundaryChange}
         />
 
@@ -250,6 +262,7 @@ export function DemarcationTab({
             maskUrl={config.boundaries.mask_url}
             boundarySelected={boundarySelected}
             onBoundarySelect={onBoundarySelect}
+            onBoundaryState={onBoundaryState}
             onMap={onMap}
           >
             {locations.isLoading && (

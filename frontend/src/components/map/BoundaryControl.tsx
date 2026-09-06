@@ -6,10 +6,26 @@
  * a district on either. Written here once rather than twice for the same
  * reason `useBoundaryLayer` is one hook.
  *
- * **The sizes are shown, not hidden.** The upazila file is 1.7 MB, and a
- * control that silently stalls for several seconds on a slow connection reads
- * as broken. The figure comes from the server's own catalogue, so it cannot
- * drift from what is actually fetched.
+ * **A wait is explained while it happens, not predicted in the label.** The
+ * upazila file is 1.7 MB and a control that silently stalls for several seconds
+ * reads as broken — that much is unchanged, and it is still the problem being
+ * solved. What changed is the answer. The option used to read
+ * `Upazilas (1.7 MB)`; now it reads `Upazilas`, and the spinner beside the
+ * control says `map.boundaryLoading` for exactly as long as the fetch takes.
+ *
+ * The spinner is the better instrument because a size is a *prediction* and it
+ * is wrong in both directions: it warns every time, including the second time
+ * when `geoData` has the file cached and the swap is instant, and it says
+ * nothing about a slow connection making 370 KB take just as long. The
+ * loading state fires when there is a wait and stays silent when there is not,
+ * which is the thing the size was a proxy for.
+ *
+ * It also had to become real. `useBoundaryLayer` returned `{ loading, error }`
+ * and both map components discarded it, so this component's `loading` prop had
+ * no caller and `map.boundaryLoading` had never once rendered. Area Demarcation
+ * now opens with upazilas by default, so the longest wait on either map happens
+ * before anybody touches this control — which is precisely when a prediction in
+ * an option label would have been no use at all.
  *
  * **What the note says matters more than where it sits.** No fact table
  * carries a district, so nothing on this backdrop is coloured by a figure and
@@ -23,15 +39,15 @@ import { useT } from '../../contexts/I18nContext';
 import type { MapBoundaryCatalogue, MapBoundarySet } from '../../types/api';
 import type { BoundarySelection } from './useBoundaryLayer';
 
-/** Bytes as a figure a reader can weigh a download against. */
-function readableSize(bytes: number): string {
-  return bytes >= 1_000_000
-    ? `${(bytes / 1_000_000).toFixed(1)} MB`
-    : `${Math.round(bytes / 1000)} KB`;
-}
-
-/** Above this, the size is worth putting in front of somebody before they wait. */
-const WARN_BYTES = 500_000;
+/*
+ * `readableSize` and `WARN_BYTES` lived here and are gone with the label that
+ * used them. An unused helper is a thing somebody wires back up.
+ *
+ * `bytes` and `features` stay in the catalogue payload, and not on the chance
+ * something wants them: `test_map_boundaries` reads both and asserts them
+ * against the real files on disk, which is what stops the server's catalogue
+ * claiming a size or a feature count that was never deployed.
+ */
 
 export interface BoundaryControlProps {
   catalogue: MapBoundaryCatalogue;
@@ -62,11 +78,7 @@ export function BoundaryControl({
       >
         <option value="">{t('map.boundaryNone')}</option>
         {catalogue.sets.map((set) => (
-          <option key={set.key} value={set.key}>
-            {set.bytes >= WARN_BYTES
-              ? `${set.label} (${readableSize(set.bytes)})`
-              : set.label}
-          </option>
+          <option key={set.key} value={set.key}>{set.label}</option>
         ))}
       </select>
       {loading && (

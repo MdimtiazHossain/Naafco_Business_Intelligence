@@ -14,7 +14,11 @@ import { MapLegend } from './MapLegend';
 import { MapLibreMap } from './MapLibreMap';
 import { MapTooltip } from './MapTooltip';
 import { LAYER_SUFFIXES, layerId } from './mapExpressions';
-import { useBoundaryLayer, type BoundarySelection } from './useBoundaryLayer';
+import {
+  useBoundaryLayer,
+  type BoundaryLayerState,
+  type BoundarySelection,
+} from './useBoundaryLayer';
 import { useLayerRenderer, type MapHover, type MapSelection } from './useLayerRenderer';
 import type { MapView } from './useMapLibre';
 
@@ -33,6 +37,8 @@ export interface BusinessMapProps {
   maskUrl?: string | null;
   boundarySelected?: BoundarySelection | null;
   onBoundarySelect?: (selection: BoundarySelection | null) => void;
+  /** Lifts the backdrop's loading state to whoever draws the picker. */
+  onBoundaryState?: (state: BoundaryLayerState) => void;
   /** The style defaults, for the backdrop's paint. */
   style?: MapStyle;
   /** Called with the live map so the page can reset its view. */
@@ -55,6 +61,7 @@ export function BusinessMap({
   maskUrl,
   boundarySelected = null,
   onBoundarySelect,
+  onBoundaryState,
   style,
   onMap,
   children,
@@ -86,7 +93,7 @@ export function BusinessMap({
 
   // The backdrop goes *beneath* the lowest business layer, so a point is never
   // hidden by a polygon and a click on a point still selects the point.
-  useBoundaryLayer({
+  const boundaryState = useBoundaryLayer({
     map,
     styleVersion,
     boundary,
@@ -97,6 +104,12 @@ export function BusinessMap({
     beforeId: layers[0] ? layerId(layers[0].level, LAYER_SUFFIXES.points) : undefined,
     pointLayerIds: () => layers.map((l) => layerId(l.level, LAYER_SUFFIXES.points)),
   });
+
+  // In an effect, not during render: a parent setter called while rendering a
+  // child is a React warning and, across a tab switch, a loop.
+  useEffect(() => {
+    onBoundaryState?.(boundaryState);
+  }, [onBoundaryState, boundaryState]);
 
   return (
     <div ref={wrapper} className="relative h-full w-full">

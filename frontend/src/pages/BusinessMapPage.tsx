@@ -21,7 +21,9 @@ import { useMapConfig, useMapDesigns, useMapLayers } from '../components/map/map
 import { SelectedEntityCard } from '../components/map/SelectedEntityCard';
 import { MapSettingsDrawer } from '../components/map/MapSettingsDrawer';
 import { TopBottomTable } from '../components/map/TopBottomTable';
-import type { BoundarySelection } from '../components/map/useBoundaryLayer';
+import type {
+  BoundaryLayerState, BoundarySelection,
+} from '../components/map/useBoundaryLayer';
 import type { MapSelection } from '../components/map/useLayerRenderer';
 import { PageHeader, ResultNotes } from '../components/PageHeader';
 import { CardSkeleton, ErrorState } from '../components/States';
@@ -190,6 +192,18 @@ export default function BusinessMapPage() {
     setParam('boundary', key ?? NO_BOUNDARY);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectBoundary, setSearchParams]);
+
+  /**
+   * Whether the backdrop is in flight, reported up from whichever map drew it.
+   *
+   * The hook that fetches it runs inside the map component and the control that
+   * explains the wait sits above it, so the state has to be lifted — the same
+   * arrangement `onMap` already uses. Held here rather than in each tab because
+   * both tabs render the same control.
+   */
+  const [boundaryState, setBoundaryState] = useState<BoundaryLayerState>(
+    { loading: false, error: null },
+  );
 
   const metricParam = searchParams.get('metric') ?? undefined;
   const metric = metricParam ?? design?.default_metric;
@@ -452,6 +466,8 @@ export default function BusinessMapPage() {
           boundarySelected={boundarySelected}
           onBoundaryChange={changeBoundary}
           onBoundarySelect={selectBoundary}
+          onBoundaryState={setBoundaryState}
+          boundaryState={boundaryState}
           onMap={onMap}
         />
       )}
@@ -502,6 +518,8 @@ export default function BusinessMapPage() {
             <BoundaryControl
               catalogue={config.data.boundaries}
               value={boundary?.key ?? null}
+              loading={boundaryState.loading}
+              error={boundaryState.error}
               onChange={changeBoundary}
             />
 
@@ -535,6 +553,7 @@ export default function BusinessMapPage() {
                 maskUrl={config.data.boundaries.mask_url}
                 boundarySelected={boundarySelected}
                 onBoundarySelect={selectBoundary}
+                onBoundaryState={setBoundaryState}
                 style={config.data.style}
                 onMap={onMap}
               >

@@ -189,15 +189,38 @@ describe('Administrative backdrop', () => {
     expect(geoCalls().filter((u) => !u.includes('mask'))).toEqual([]);
   });
 
-  it('offers each set with its size once it is worth knowing', async () => {
+  it('names each set without predicting how long it will take', async () => {
     wrap(`/map?${WINDOW}`);
     const select = await screen.findByLabelText('Boundaries');
-    // Only what is worth waiting for carries its size: 1.7 MB of upazilas is
-    // a decision, 95 KB of divisions is not. A control that stalled silently
-    // on the first would read as broken.
-    expect(select).toHaveTextContent('Upazilas (1.7 MB)');
-    expect(select).toHaveTextContent('Divisions');
-    expect(select).not.toHaveTextContent('Divisions (');
+    // "Upazilas", not "Upazilas (1.7 MB)". A size in the label is a prediction,
+    // and it is wrong on the second visit when the file is already cached; the
+    // spinner below fires when there is actually a wait.
+    expect(select).toHaveTextContent('Upazilas');
+    expect(select).not.toHaveTextContent('MB');
+    expect(select).not.toHaveTextContent('KB');
+  });
+
+  it('says the outlines are loading while they are', async () => {
+    // Held open so the spinner has something to describe. Without this the
+    // fetch resolves in the same tick and the loading state is never observed
+    // — which is how it went unnoticed that the state reached no component.
+    let release: (value: unknown) => void = () => undefined;
+    const held = new Promise((resolve) => { release = resolve; });
+    fetchMock.mockImplementation((url: string) => {
+      if (!String(url).includes('/geo/')) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      }
+      return held.then(() => ({
+        ok: true, status: 200,
+        json: () => Promise.resolve(String(url).includes('mask') ? MASK : DISTRICTS),
+      }));
+    });
+
+    wrap(`/map?tab=demarcation&${WINDOW}`);
+    expect(await screen.findByText('Loading outlines…')).toBeInTheDocument();
+    release(undefined);
+    await waitFor(() =>
+      expect(screen.queryByText('Loading outlines…')).not.toBeInTheDocument());
   });
 
   // ========================================================================
