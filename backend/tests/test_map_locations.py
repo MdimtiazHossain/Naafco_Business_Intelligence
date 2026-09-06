@@ -716,6 +716,61 @@ def test_an_upload_with_bad_coordinates_reports_row_and_reason(upload_client):
         assert issue["row"] and issue["suggested_fix"]
 
 
+def test_uploading_over_a_centroid_makes_the_row_authoritative(upload_client,
+                                                              agent_engine):
+    """An uploaded coordinate says it was uploaded, and survives the derivation.
+
+    The defect this pins had two harms and only the smaller one was visible.
+    `source` is not an upload column, so the loader's update loop — which writes
+    the columns a file carries — left an existing row saying DERIVED after
+    somebody uploaded a real position for it. That is a wrong label. Worse, a
+    DERIVED row is not authoritative, so the post-load `derive_parents` then
+    recomputed the entity's centroid straight over the uploaded coordinates:
+    the upload was discarded and the screen still called the row computed.
+
+    Data Management had this right already — an edited row becomes MANUAL with
+    `derived_from` cleared, or "the next derivation would recompute the
+    correction away". This is the same act through the other door.
+    """
+    from app.database.models_map import GeoSource, MapEntityLocation
+
+    token = login(upload_client)
+
+    # A placed customer, so the territory above it acquires a centroid.
+    first = upload_locations(upload_client, token,
+                             csv_bytes([["customer", "CUST-A", 23.78, 90.40, ""]]))
+    commit_locations(upload_client, token, first.json()["upload"]["upload_id"])
+
+    with Session(agent_engine) as session:
+        centroid = session.execute(
+            select(MapEntityLocation).where(
+                MapEntityLocation.entity_type == "territory",
+                MapEntityLocation.entity_code == "TR001")
+        ).scalars().one()
+        assert centroid.source == GeoSource.DERIVED, "the fixture must derive it"
+        assert centroid.derived_from == 1
+
+    # Now somebody surveys that territory and uploads its real position.
+    second = upload_locations(upload_client, token,
+                              csv_bytes([["territory", "TR001", 24.50, 91.25, ""]]))
+    commit_locations(upload_client, token, second.json()["upload"]["upload_id"])
+
+    with Session(agent_engine) as session:
+        row = session.execute(
+            select(MapEntityLocation).where(
+                MapEntityLocation.entity_type == "territory",
+                MapEntityLocation.entity_code == "TR001")
+        ).scalars().one()
+        # The label. This is what a reader sees, and it was wrong.
+        assert row.source == GeoSource.UPLOAD
+        assert row.derived_from is None
+        # The coordinates. This is what was silently thrown away: the post-load
+        # derivation ran after the upload and, seeing a non-authoritative row,
+        # wrote the customer's centroid back over the surveyed position.
+        assert round(row.latitude, 4) == 24.5
+        assert round(row.longitude, 4) == 91.25
+
+
 # ==========================================================================
 # Coordinates in Data Management
 # ==========================================================================

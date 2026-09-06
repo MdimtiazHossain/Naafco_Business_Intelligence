@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database.models import plant_key, storage_location_key
+from ..database.models_map import GeoSource
 from ..etl.bulk import bulk_insert
 from ..database.models_admin import ImportMode
 from ..database.models_warehouse import (
@@ -55,6 +56,37 @@ _KIND_BY_NAME = {kind.value: kind for kind in FieldKind}
 COMPOSITE_KEY_BUILDERS = {
     "plant_key": plant_key,
     "storage_location_key": storage_location_key,
+}
+
+#: Columns a load must write itself, by upload type: how a row *arrived*, which
+#: is never something the file states.
+#:
+#: One entry, and the defect it closes is worth stating because the same shape
+#: will recur. ``source`` is not an upload column for Map Locations, so the
+#: update loop below — which writes only the columns a file carries — left an
+#: existing row saying ``DERIVED`` after somebody had just uploaded a real
+#: position for it. That is a wrong label, and it was the smaller half: a
+#: ``DERIVED`` row is not authoritative, so the post-load ``derive_parents``
+#: then recomputed the entity's centroid straight over the uploaded
+#: coordinates. The upload was discarded and the screen went on calling the row
+#: computed, with nothing anywhere saying so.
+#:
+#: Data Management already had this right — ``service._AFTER_MASTER_WRITE``
+#: marks an edited row ``MANUAL`` and clears ``derived_from`` precisely so "the
+#: next derivation would not recompute the correction away". The Upload Centre
+#: is the same act through the other door, and ``master_loader``'s own contract
+#: is that a file and a hand correction leave the warehouse in the same state.
+#:
+#: Applied to inserts and updates alike. A new row would take the model's
+#: ``UPLOAD`` default anyway; writing it explicitly means the two paths cannot
+#: drift, and it costs nothing.
+LOAD_PROVENANCE: dict[str, dict[str, object]] = {
+    "map_entity_locations": {
+        "source": GeoSource.UPLOAD,
+        # Cleared as well, or the row would claim to be computed from N children
+        # while holding a position somebody surveyed.
+        "derived_from": None,
+    },
 }
 
 
@@ -444,6 +476,7 @@ def load(session: Session, upload_type: UploadType,
     model = MASTER_MODEL_BY_TABLE[upload_type.table]
     key_columns = upload_type.business_key
     columns = {c.key for c in model.__table__.columns}
+    provenance = LOAD_PROVENANCE.get(upload_type.key, {})
     result = MasterLoadResult()
 
     applicable = validation.valid_rows
@@ -505,7 +538,7 @@ def load(session: Session, upload_type: UploadType,
             # read when a later row repeats a key, and ``valid_rows`` has already
             # dropped any repeat as DUPLICATE, so within one file a key is
             # applied at most once.
-            new_rows.append(payload)
+            new_rows.append({**payload, **provenance})
             result.inserted += 1
             continue
 
@@ -519,6 +552,15 @@ def load(session: Session, upload_type: UploadType,
             if getattr(existing, column) != value:
                 setattr(existing, column, value)
                 changed = True
+        # How the row arrived, written whatever the file carried. Set outside
+        # the loop above deliberately: that loop skips a `None` the file did not
+        # state, which is right for data and wrong here — `derived_from` must be
+        # cleared *because* the file says nothing about it.
+        for column, value in provenance.items():
+            if column in columns and getattr(existing, column) != value:
+                setattr(existing, column, value)
+                changed = True
+
         # A placeholder created by the ETL becomes a real record once its master
         # arrives, so the flag is cleared rather than left misleadingly set.
         if "is_placeholder" in columns and getattr(existing, "is_placeholder", False):
