@@ -493,6 +493,31 @@ describe('Area Demarcation tab', () => {
     expect(screen.queryByLabelText('Pick one')).not.toBeInTheDocument();
   });
 
+  it('survives an API one deploy behind, on both tabs', async () => {
+    // nginx serves a new bundle the instant it is built; the API restarts by a
+    // separate mechanism. So the browser talking to an older API is an ordinary
+    // state during every deployment, and it is what happened here: the config
+    // still published `boundaries.default` and no `color_by_levels`, the page
+    // indexed the missing object inside a useMemo, and the error boundary
+    // replaced everything with "Something went wrong". A missing catalogue
+    // field must degrade to "that feature is unavailable", never to no page.
+    const older = { ...CONFIG } as Record<string, unknown>;
+    delete older.color_by_levels;
+    older.boundaries = { ...CONFIG.boundaries };
+    delete (older.boundaries as Record<string, unknown>).defaults;
+    vi.spyOn(services.mapService, 'config')
+      .mockResolvedValue(older as unknown as typeof CONFIG);
+
+    wrap('/map?tab=demarcation');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument();
+    // The colour control is still there and simply offers nothing to group by.
+    expect(await screen.findByLabelText('Colour by')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Business Map' }));
+    expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument();
+  });
+
   it('switching tabs drops the layer toggles that belonged to the other map', async () => {
     wrap('/map?tab=demarcation&layers=region&selected=region:REG001');
     await waitFor(() => expect(locations).toHaveBeenCalled());

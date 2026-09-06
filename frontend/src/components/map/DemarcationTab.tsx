@@ -259,7 +259,12 @@ export function DemarcationTab({
             onChange={(event) => onColorByChange(event.target.value || null)}
           >
             <option value="">{t('map.colorByNone')}</option>
-            {config.color_by_levels.map((key) => (
+            {/* `?? []` for the reason the boundary default is optional: an
+                API one deploy behind publishes no such list, and mapping over
+                undefined would take this tab to the error boundary. Empty, the
+                control offers only "Level colour", which is what that API can
+                honour anyway. */}
+            {(config.color_by_levels ?? []).map((key) => (
               <option key={key} value={key}>
                 {config.levels.find((level) => level.key === key)?.label ?? key}
               </option>

@@ -155,8 +155,17 @@ export default function BusinessMapPage() {
   const boundary = useMemo(() => {
     const requested = searchParams.get('boundary');
     if (requested === NO_BOUNDARY) return null;
+    // `defaults?.` — optional, and not defensively. nginx serves a new bundle
+    // the moment it is built while the API restarts by a separate mechanism, so
+    // a browser talking to an API one deploy behind is an ordinary transient
+    // state, not a broken one. This field arrived with `0035`'s successor; an
+    // API that predates it publishes `default` instead, and indexing the
+    // missing object threw inside a `useMemo` and took the entire page to the
+    // error boundary — "Something went wrong", no map, no filter bar, nothing.
+    // Absent it now reads as "no default backdrop", which is exactly what that
+    // older API meant.
     const key = requested
-      ?? config.data?.boundaries.defaults[tab === 'map' ? 'analysis' : 'demarcation']
+      ?? config.data?.boundaries.defaults?.[tab === 'map' ? 'analysis' : 'demarcation']
       ?? null;
     return config.data?.boundaries.sets.find((set) => set.key === key) ?? null;
   }, [config.data, searchParams, tab]);
