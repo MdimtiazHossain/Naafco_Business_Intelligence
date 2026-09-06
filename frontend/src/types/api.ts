@@ -2317,6 +2317,60 @@ export interface MapStyle {
   /** How a derived centroid is drawn: the same shape, hollow. */
   derived_opacity: number;
   derived_stroke_width: number;
+  /** How an administrative outline is drawn beneath the points. */
+  boundary: MapBoundaryStyle;
+}
+
+/**
+ * The backdrop's paint, declared server-side like every other colour.
+ *
+ * Deliberately quiet: no metric is aggregated at district grain, so nothing
+ * here encodes a figure and a strong fill would be read as meaning that is not
+ * there. Selection is emphasis, not information.
+ */
+export interface MapBoundaryStyle {
+  fill_color: string;
+  fill_opacity: number;
+  line_color: string;
+  line_width: number;
+  line_opacity: number;
+  hover_fill_opacity: number;
+  selected_line_color: string;
+  selected_line_width: number;
+  selected_fill_opacity: number;
+  mask_color: string;
+  mask_opacity: number;
+  label_min_zoom: number;
+}
+
+/**
+ * One administrative level's outlines, as a file the browser may fetch.
+ *
+ * **Not a business boundary.** These are divisions, districts and upazilas —
+ * published geography drawn as reference beneath the points. No source states
+ * where a zone, region, area or territory ends, so none is drawn, and every
+ * `MapLevelInfo.boundary_available` stays false.
+ */
+export interface MapBoundarySet {
+  key: string;
+  label: string;
+  /** Where to fetch it; the browser holds no table of filenames. */
+  url: string;
+  file: string;
+  admin_level: number;
+  /** The master these outlines correspond to, e.g. `dim_district`. */
+  table: string;
+  features: number;
+  /** Published so a control can warn before pulling 1.7 MB. */
+  bytes: number;
+}
+
+export interface MapBoundaryCatalogue {
+  sets: MapBoundarySet[];
+  /** `null`: nothing opens with a backdrop switched on. */
+  default: string | null;
+  mask_url: string;
+  note: string;
 }
 
 /**
@@ -2356,6 +2410,14 @@ export interface MapConfig {
   shapes: MapShape[];
   /** The maps a design may compose: analysis (figures) or demarcation. */
   purposes: MapPurpose[];
+  /** Administrative outlines a reader may draw beneath the points. */
+  boundaries: MapBoundaryCatalogue;
+  /**
+   * What the Area Demarcation tab may be narrowed by, derived server-side from
+   * the level registry. The browser keeps `LOCATION_FILTERS` for its controls
+   * and pins it equal to this, so neither can outlive what it names.
+   */
+  location_filters: string[];
   defaults: {
     metric: string;
     color_metric: string;
@@ -2474,11 +2536,26 @@ export interface MapLocationLayer {
   level: string;
   label: string;
   features: MapLocationCollection;
-  /** How many entities the master holds at this level, placed or not. */
+  /**
+   * Records the master holds at this level, placed or not — inside the
+   * caller's scope, like every count on this layer.
+   */
   total: number;
   placed: number;
+  /**
+   * Coordinates at this level inside the caller's scope, before their own
+   * filter narrowed them.
+   *
+   * The denominator that makes `placed` legible: "9 points" and "9 of 94" are
+   * different findings, and only the second tells a narrow filter apart from a
+   * level nobody has surveyed. **Scoped**, because a denominator is a figure
+   * too — printing the national 94 beside a regional manager's nine points
+   * would hand them a total they may not see under a label calling it theirs.
+   */
+  available: number;
   /** Of the placed, how many are centroids rather than stated positions. */
   derived: number;
+  /** Records with no coordinate. Never records a filter excluded. */
   missing: number;
   bounds: MapBounds | null;
   notes: string[];
@@ -2488,6 +2565,10 @@ export interface MapLocationLayer {
 export interface MapLocationsResponse {
   design: MapDesign;
   levels: string[];
+  /** The filters that narrowed it, echoed back so a chip cannot lie. */
+  filters: Record<string, unknown>;
+  /** How the reader's own data scope bounded it, in words; null when full. */
+  scope_note: string | null;
   empty: boolean;
   layers: MapLocationLayer[];
 }

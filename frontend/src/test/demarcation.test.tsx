@@ -20,7 +20,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../contexts/I18nContext';
 import { ThemeProvider } from '../contexts/ThemeContext';
-import { FilterProvider } from '../contexts/FilterContext';
+import { FilterProvider, LOCATION_FILTERS } from '../contexts/FilterContext';
 import BusinessMapPage from '../pages/BusinessMapPage';
 import * as services from '../services';
 import type {
@@ -94,6 +94,7 @@ function locationLayer(
     features: { type: 'FeatureCollection', features: points },
     total: points.length + (extra.missing ?? 0),
     placed: points.length,
+    available: points.length,
     derived: points.filter((p) => p.properties.source === 'DERIVED').length,
     missing: 0,
     bounds: points.length
@@ -109,6 +110,8 @@ function locationLayer(
 const RESPONSE: MapLocationsResponse = {
   design: DEMARCATION,
   levels: ['region', 'territory'],
+  filters: {},
+  scope_note: null,
   empty: false,
   layers: [
     locationLayer('region', 1, [point('region', 'REG001', 'Dhaka'),
@@ -175,11 +178,70 @@ describe('Area Demarcation tab', () => {
     expect(data).not.toHaveBeenCalled();
   });
 
-  it('draws no period filter bar and no metric selector', async () => {
+  it('draws no period control and no metric selector', async () => {
     wrap();
     await waitFor(() => expect(locations).toHaveBeenCalled());
-    // A chip above this map would claim a narrowing that is not applied.
+    // A coordinate has no date and no measure. The filter bar itself is here —
+    // see below — but neither of these two controls could change a point on
+    // this map, and a control whose only outcome is nothing is absent.
     expect(screen.queryByLabelText('Metric')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Period')).not.toBeInTheDocument();
+
+    // The contrast is what makes the two assertions above mean anything: the
+    // analysis tab draws both, from the same bar, in the same page.
+    fireEvent.click(screen.getByRole('button', { name: 'Business Map' }));
+    expect(await screen.findByLabelText('Period')).toBeInTheDocument();
+    expect(await screen.findByLabelText('Metric')).toBeInTheDocument();
+  });
+
+  /**
+   * The browser's filter set and the server's must name the same levels.
+   *
+   * `LOCATION_FILTERS` decides which controls the bar draws; `location_filters`
+   * on `GET /api/map/config` is *derived* from `map.levels.MAP_LEVELS` and
+   * decides which the endpoint will narrow by. A level added to the chain that
+   * reached only one of them would either offer a control that does nothing or
+   * hide a narrowing that works — the stale-list failure the top of `CLAUDE.md`
+   * opens with, in both directions.
+   */
+  it('offers exactly the filters the server says it can narrow by', () => {
+    expect([...LOCATION_FILTERS].sort())
+      .toEqual([...CONFIG.location_filters].sort());
+  });
+
+  it('draws the filter bar for coordinates, not the analysis map’s', async () => {
+    wrap('/map?tab=demarcation');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
+    // Company heads the organisational chain, so it narrows a coordinate.
+    expect(await screen.findByLabelText('Company')).toBeInTheDocument();
+    // A coordinate has no material and no batch, so neither is offered: those
+    // are `MAP_FILTERS`, and this tab is not that map.
+    expect(screen.queryByLabelText('Material')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Batch')).not.toBeInTheDocument();
+  });
+
+  it('sends the filter to the server rather than narrowing in the browser', async () => {
+    wrap('/map?tab=demarcation&region_code=REG001');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    const call = locations.mock.calls[0][0] as Record<string, unknown>;
+    // The narrowing is a subtree resolved against the org hierarchy, which the
+    // browser holds none of. It travels as a parameter and comes back applied.
+    expect(call.region_code).toBe('REG001');
+  });
+
+  it('does not send a filter this map cannot honour', async () => {
+    wrap('/map?tab=demarcation&material_code=M1&batch_code=B1');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    const call = locations.mock.calls[0][0] as Record<string, unknown>;
+    // Left in the URL by the analysis tab. Sending them would be a request the
+    // endpoint must either ignore in silence or refuse.
+    expect(call.material_code).toBeUndefined();
+    expect(call.batch_code).toBeUndefined();
+    // Nor a period. A coordinate has no date, so a range in the request would
+    // only put itself in the cache key and refetch for an identical answer.
+    expect(call.period).toBeUndefined();
+    expect(call.date_from).toBeUndefined();
   });
 
   it('gives every level its own source and a symbol layer', async () => {
@@ -230,6 +292,54 @@ describe('Area Demarcation tab', () => {
     });
     wrap();
     expect(await screen.findByText(/None of the 154 territory records/)).toBeInTheDocument();
+  });
+
+  it('counts matched of available once a filter is narrowing', async () => {
+    locations.mockResolvedValue({
+      ...RESPONSE,
+      filters: { region_code: ['REG001'] },
+      layers: [
+        locationLayer('region', 1, [point('region', 'REG001', 'Dhaka')],
+                      { available: 8 }),
+        locationLayer('territory', 2, [point('territory', 'TR001', 'Kazipara')],
+                      { available: 94 }),
+      ],
+    });
+    wrap('/map?tab=demarcation&region_code=REG001');
+    // "1 point" and "1 of 94" are different findings: one is a narrow filter,
+    // the other a level nobody has finished surveying.
+    expect(await screen.findByText('2 of 102 points')).toBeInTheDocument();
+    const legend = (await screen.findByText('Levels')).closest('div')!;
+    expect(within(legend).getByRole('button', { name: /Territory/ }))
+      .toHaveTextContent('1 of 94');
+  });
+
+  it('names the selection that emptied a level', async () => {
+    locations.mockResolvedValue({
+      ...RESPONSE,
+      filters: { region_code: ['REG001'] },
+      layers: [locationLayer('territory', 2, [], {
+        available: 94,
+        notes: ['None of the 94 placed territory coordinates is inside '
+                + 'region REG001.'],
+      })],
+    });
+    wrap('/map?tab=demarcation&region_code=REG001');
+    // Never a blank map: "there is nothing there" and "look elsewhere" are
+    // indistinguishable on screen and mean opposite things.
+    expect(await screen.findByText(/inside region REG001/)).toBeInTheDocument();
+  });
+
+  it('explains an empty map to a reader with no data scope', async () => {
+    locations.mockResolvedValue({
+      ...RESPONSE,
+      empty: true,
+      scope_note: 'Your role restricts you to your own data scope, and no '
+                  + 'scope has been granted. Ask an administrator for one.',
+      layers: [locationLayer('region', 1, [], { available: 0, total: 8 })],
+    });
+    wrap('/map?tab=demarcation');
+    expect(await screen.findByText(/no scope has been granted/)).toBeInTheDocument();
   });
 
   it('switching tabs drops the layer toggles that belonged to the other map', async () => {

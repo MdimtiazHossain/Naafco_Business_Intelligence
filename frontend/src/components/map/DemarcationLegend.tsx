@@ -12,6 +12,19 @@
  * judge where a boundary falls is the difference between "this area ends here"
  * and "we have not placed the rest yet".
  *
+ * Under a filter the count becomes a pair, `placed of available`, and the two
+ * denominators are different questions asked of the same level: `available` is
+ * how many coordinates exist there inside the reader's scope, `total` is how
+ * many records the master holds. So a level can read "9 of 94" and still say
+ * eleven records have no coordinate — narrow filter, well-mapped level — or
+ * read "94 of 94" beside the same sentence, which is the level nobody has
+ * finished surveying. A single number cannot tell those apart.
+ *
+ * **A level with no coordinates at all is a finding, not an empty result**, so
+ * it keeps its row in the legend and reads zero rather than disappearing: the
+ * level somebody still has to survey is exactly what a demarcation reader is
+ * looking for.
+ *
  * The swatch is drawn from the same server-declared path the map draws, so a
  * shape can never mean one thing in the legend and another on the canvas.
  */
@@ -22,6 +35,8 @@ import type { MapLocationLayer, MapShape } from '../../types/api';
 export interface DemarcationLegendProps {
   layers: MapLocationLayer[];
   shapes: MapShape[];
+  /** A filter is narrowing the points, so each level counts matched of total. */
+  narrowed?: boolean;
   activeLevel: string;
   onActiveLevel: (level: string) => void;
 }
@@ -50,7 +65,7 @@ export function ShapeSwatch({
 }
 
 export function DemarcationLegend({
-  layers, shapes, activeLevel, onActiveLevel,
+  layers, shapes, narrowed = false, activeLevel, onActiveLevel,
 }: DemarcationLegendProps) {
   const t = useT();
   if (layers.length === 0) return null;
@@ -83,7 +98,10 @@ export function DemarcationLegend({
                 />
                 <span className="flex-1 truncate">{layer.label}</span>
                 <span className="tabular-nums text-slate-500 dark:text-slate-400">
-                  {layer.placed}
+                  {narrowed
+                    ? t('map.legendMatched', { placed: String(layer.placed),
+                                               available: String(layer.available) })
+                    : layer.placed}
                 </span>
               </button>
             </li>

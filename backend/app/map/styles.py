@@ -76,6 +76,34 @@ RADIUS_RANGE: tuple[float, float] = (4.0, 22.0)
 #: How a cluster of points is drawn before the reader zooms into it.
 CLUSTER_STYLE: dict[str, str] = {"color": "#1d4ed8", "text_color": "#ffffff"}
 
+#: How an administrative outline is drawn beneath the points.
+#:
+#: Deliberately quiet. This is a backdrop somebody switched on to see where a
+#: district lies, not a layer of its own: a strong fill would compete with the
+#: points it exists to give context to, and a reader would start reading colour
+#: as meaning — which here it does not, because no metric is aggregated at
+#: district level and none colours these.
+#:
+#: The selected outline is the one exception, and it is emphasis rather than
+#: information: it says "this is the one you clicked", nothing more.
+BOUNDARY_STYLE: dict[str, Any] = {
+    "fill_color": "#64748b",
+    "fill_opacity": 0.06,
+    "line_color": "#475569",
+    "line_width": 1.0,
+    "line_opacity": 0.55,
+    "hover_fill_opacity": 0.14,
+    "selected_line_color": "#0f172a",
+    "selected_line_width": 2.5,
+    "selected_fill_opacity": 0.18,
+    #: Dims everything outside the country. Off unless a set is drawn.
+    "mask_color": "#0f172a",
+    "mask_opacity": 0.10,
+    #: Labels are off by default and late when on: a district name over every
+    #: polygon is what stops the points underneath being readable.
+    "label_min_zoom": 7,
+}
+
 #: Every shape a layer may be drawn with, on a 24×24 viewBox centred at
 #: (12, 12). The path travels to the browser with the key, so adding a shape is
 #: a change to this tuple and nothing else — and a renderer can never be handed
@@ -218,6 +246,7 @@ def default_style() -> dict[str, Any]:
         "diverging": dict(DIVERGING_COLORS),
         "radius": list(RADIUS_RANGE),
         "cluster": dict(CLUSTER_STYLE),
+        "boundary": dict(BOUNDARY_STYLE),
         "shape": DEFAULT_SHAPE,
         "point_color": DEFAULT_POINT_COLOR,
         "derived_opacity": DERIVED_OPACITY,
@@ -350,6 +379,7 @@ __all__ = [
     "ACHIEVEMENT_THRESHOLDS",
     "BAND_COLORS",
     "BAND_KEYS",
+    "BOUNDARY_STYLE",
     "CLUSTER_STYLE",
     "DEFAULT_POINT_COLOR",
     "DEFAULT_SHAPE",

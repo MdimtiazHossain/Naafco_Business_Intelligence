@@ -103,8 +103,21 @@ export class FakeMap {
     this.sources.delete(id);
   }
 
-  addLayer(spec: Record<string, unknown>) {
-    this.layers.set(spec.id as string, spec);
+  /**
+   * `beforeId` is recorded, not ignored.
+   *
+   * It is the whole mechanism by which the administrative backdrop stays
+   * *underneath* the points, so a test that could not see it could not tell a
+   * correct stacking order from a broken one.
+   */
+  addLayer(spec: Record<string, unknown>, beforeId?: string) {
+    this.layers.set(spec.id as string, { ...spec, beforeId });
+    return this;
+  }
+
+  /** MapLibre's own liveness check; the renderer uses it before adding layers. */
+  getStyle() {
+    return { layers: [...this.layers.values()] };
   }
 
   getLayer(id: string) {

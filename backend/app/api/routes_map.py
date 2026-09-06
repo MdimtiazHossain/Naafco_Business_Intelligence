@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from ..ai.exceptions import PermissionDeniedError
 from ..ai.permission_filter import UserContext
 from ..ai.schemas import ScopeFilters
 from ..auth import audit
@@ -37,7 +38,9 @@ from ..auth.permissions import FORBIDDEN_MESSAGE, can, require_action, require_s
 from ..config import get_settings
 from ..database.models_ai import AuditAction
 from ..database.models_map import DesignPurpose
-from ..map import basemaps, designs, entities, geo, levels, metrics, styles
+from ..map import (
+    basemaps, boundaries, designs, entities, geo, levels, metrics, styles,
+)
 from ..map import data as map_data
 from ..map import locations as map_locations
 from ..map.errors import DesignNotFound, MapError
@@ -264,6 +267,13 @@ def map_config(session: Session = Depends(get_session),
             # 0033's removal recorded, read as strictly as it can be.
             "shapes": styles.shape_catalogue(),
             "purposes": list(DesignPurpose.ALL),
+            # What the demarcation tab may narrow by, derived from MAP_LEVELS
+            # so the browser never keeps its own list of levels.
+            "location_filters": list(map_locations.FILTER_LEVELS),
+            # Administrative outlines the reader may draw beneath the points.
+            # A catalogue, not the geometry: the files are static assets, so
+            # the browser fetches them itself and holds no list of filenames.
+            "boundaries": boundaries.catalogue(),
             "defaults": {
                 "metric": metrics.DEFAULT_METRIC,
                 "color_metric": metrics.DEFAULT_COLOR_METRIC,
@@ -457,6 +467,7 @@ def map_locations_endpoint(
         None, alias="levels",
         description="Which of the design's layers to draw, repeated. Defaults "
                     "to the layers the design shows."),
+    filters: ScopeFilters = Depends(scope_filters),
     session: Session = Depends(get_session),
     user: UserContext = Depends(_VIEW),
 ) -> dict[str, Any]:
@@ -467,15 +478,19 @@ def map_locations_endpoint(
     it appears at, the count it clusters above — so the renderer reads one
     object per layer and decides nothing itself.
 
-    **Unscoped, deliberately**, and :mod:`app.map.locations` carries the
-    reasoning at length: you judge a boundary by seeing both sides of it, so a
-    demarcation map clipped to the reader's own region cannot answer the
-    question it exists for. No figure is disclosed — a code, a name, a
-    coordinate and its provenance — and the same rows are already readable one
-    at a time from ``/api/map/entities/{level}/{code}``.
+    **The filter narrows by containment**, which is this endpoint's one
+    departure from every report in the platform: selecting a region draws that
+    region and everything inside it, never its zone. A coordinate row names one
+    level and nothing else, so the flat rule every table uses would delete the
+    parent and every child alike. :mod:`app.map.locations` says why at length.
 
-    Viewing is audited like every other report read, so the bulk disclosure is
-    on the record even though it is permitted.
+    **Scope bounds it and a filter narrows inside**, so a filter naming
+    something outside the caller's scope is a 403 naming the code, never an
+    empty map — an empty map reads as "there is nothing there" when the truth
+    is "you may not see that". The filtering happens here rather than in the
+    browser, like every other narrowing in this application.
+
+    Viewing is audited like every other report read.
     """
     settings = get_settings()
 
@@ -496,7 +511,8 @@ def map_locations_endpoint(
             requested = [layer.point_level for layer in design.layers
                          if layer.is_visible]
 
-        result = map_locations.demarcation_data(session, requested)
+        subtree = map_locations.subtree_codes(session, user, filters)
+        result = map_locations.demarcation_data(session, requested, subtree)
         layers_payload = []
         for layer_data in result.layers:
             payload = layer_data.to_dict()
@@ -506,12 +522,20 @@ def map_locations_endpoint(
         return {
             "design": designs.design_to_dict(design, settings=settings),
             "levels": requested,
+            "filters": {key: value for key, value
+                        in filters.model_dump(mode="json").items() if value},
+            "scope_note": subtree.scope_note,
             "empty": result.empty,
             "layers": layers_payload,
         }
 
     try:
         payload = work()
+    except PermissionDeniedError as exc:
+        # A filter outside the caller's scope. 403 with the reason, never an
+        # empty map: the two are indistinguishable on screen and mean opposite
+        # things.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, exc.user_message) from exc
     except MapError as exc:
         raise _refusal(exc) from exc
     except HTTPException:
@@ -526,6 +550,7 @@ def map_locations_endpoint(
         username=user.username, resource="map",
         ip_address=audit.client_ip(request),
         detail={"view": "demarcation",
+                "filters": payload["filters"],
                 "design_id": payload["design"]["design_id"],
                 "levels": payload["levels"]},
     )

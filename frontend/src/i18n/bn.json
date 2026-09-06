@@ -1127,11 +1127,22 @@
   "map.demarcationLegend": "লেভেল",
   "map.legendDerived": "ফাঁপা: নিচের পয়েন্টগুলোর কেন্দ্রবিন্দু",
   "map.legendMissing": "{total} টি {level} রেকর্ডের মধ্যে {missing} টির কোনো স্থানাঙ্ক নেই।",
+  "map.legendMatched": "{available} এর মধ্যে {placed}",
   "map.pointsDrawn": "{count} টি পয়েন্ট",
+  "map.pointsMatched": "{total} টির মধ্যে {count} টি পয়েন্ট",
   "map.noLayers": "কোনো লেয়ার নির্বাচন করা হয়নি।",
   "map.noCoordinates": "এই লেভেলগুলোর জন্য কোনো স্থানাঙ্ক লোড করা হয়নি।",
   "map.derivedPoint": "উদ্ভূত",
+  "map.source.UPLOAD": "আপলোড করা",
+  "map.source.MANUAL": "হাতে বসানো",
+  "map.source.DERIVED": "উদ্ভূত",
+  "map.source.GEOCODED": "জিওকোড করা",
   "map.openRecord": "রেকর্ড খুলুন",
   "map.shape": "আকৃতি",
-  "map.pointColor": "পয়েন্টের রঙ"
+  "map.pointColor": "পয়েন্টের রঙ",
+  "map.boundary": "সীমানা",
+  "map.boundaryNone": "কোনোটি নয়",
+  "map.boundaryLoading": "সীমানা লোড হচ্ছে…",
+  "map.boundaryReference": "শুধু রেফারেন্স",
+  "map.boundaryNotBusiness": "প্রশাসনিক এলাকা — বিক্রয় সীমানা নয়"
 }

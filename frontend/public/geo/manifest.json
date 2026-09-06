@@ -1,0 +1,42 @@
+{
+ "source": "HDX Bangladesh COD-AB v03",
+ "note": "Published administrative geography, restored after 0033_remove_map. These are divisions, districts and upazilas — reference outlines the map draws beneath its points. They are NOT business boundaries: no source states the outline of a zone, region, area or territory, and the map never claims one.",
+ "simplification": {
+  "algorithm": "Douglas-Peucker",
+  "coordinate_places": 5,
+  "tolerance_degrees": {
+   "bgd_admin0.geojson": 0.004,
+   "bgd_admin1.geojson": 0.003,
+   "bgd_admin2.geojson": 0.002,
+   "bgd_admin3.geojson": 0.001
+  }
+ },
+ "files": {
+  "bgd_admin0.geojson": {
+   "description": "Bangladesh national outline",
+   "features": 1,
+   "bytes": 40867
+  },
+  "bgd_admin1.geojson": {
+   "description": "Divisions",
+   "features": 8,
+   "bytes": 95337
+  },
+  "bgd_admin2.geojson": {
+   "description": "Districts",
+   "features": 64,
+   "bytes": 369934
+  },
+  "bgd_admin3.geojson": {
+   "description": "Upazilas",
+   "features": 507,
+   "bytes": 1727737
+  },
+  "bgd_mask.geojson": {
+   "description": "World rectangle with Bangladesh punched out",
+   "features": 1,
+   "bytes": 40824
+  }
+ },
+ "restored_from": "Byte-identical to the files removed by 4ee51b7 (0033_remove_map). The generator that produced them, scripts/build_map_geojson.py, was removed in the same commit and has not been restored: it imports app.map.geometry, which was also removed. Regenerating from a new HDX release needs both back."
+}

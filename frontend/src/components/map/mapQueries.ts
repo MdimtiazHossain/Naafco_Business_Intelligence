@@ -15,6 +15,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { mapService, type MapDataQuery } from '../../services';
 import type {
+  GlobalFilters,
   MapDataResponse,
   MapLayerData,
   MapPurpose,
@@ -49,10 +50,14 @@ export function useMapDesigns(includeInactive = false,
  * different request here, where on the analysis map it is one more request
  * beside the ones already cached.
  */
-export function useMapLocations(designId: number | undefined, levels: string[]) {
+export function useMapLocations(
+  designId: number | undefined,
+  levels: string[],
+  query: GlobalFilters = {},
+) {
   return useQuery({
-    queryKey: ['map-locations', designId ?? null, [...levels].sort()],
-    queryFn: () => mapService.locations({ design_id: designId, levels }),
+    queryKey: ['map-locations', designId ?? null, [...levels].sort(), query],
+    queryFn: () => mapService.locations({ ...query, design_id: designId, levels }),
     enabled: designId !== undefined && levels.length > 0,
   });
 }

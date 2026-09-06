@@ -3,9 +3,17 @@
  *
  * A separate component from the analysis tab rather than a mode of it, because
  * the two share almost nothing above the map instance: no period, no metric, no
- * filters, no ranking, and a legend that explains shapes rather than colours.
- * What they do share — the reader's state living in the URL, Reset being one
- * navigation, a control absent rather than disabled — is convention, not code.
+ * ranking, a different filter set, and a legend that explains shapes rather than
+ * colours. What they do share — the reader's state living in the URL, Reset
+ * being one navigation, a control absent rather than disabled — is convention,
+ * not code.
+ *
+ * **What it draws is exactly the rows of `map_entity_locations`.** Every
+ * coordinate at every level, placed and derived alike, and no fact table is
+ * read here at all: for the same filter selection the number of points on this
+ * map equals the number of rows Data Management > Map Locations lists. That is
+ * the acid test, and it is why the level toggles come from the design rather
+ * than from a visibility default that could quietly omit a level.
  *
  * **Read-only for coordinates, on purpose.** Placing, moving and removing a
  * point already have two ways in (Data Management and the Upload Centre's Map
@@ -22,12 +30,16 @@ import type { Map as MapLibreInstance } from 'maplibre-gl';
 import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useT } from '../../contexts/I18nContext';
-import type { MapConfig, MapDesign, MapLocationLayer } from '../../types/api';
+import type {
+  GlobalFilters, MapBoundarySet, MapConfig, MapDesign, MapLocationLayer,
+} from '../../types/api';
 import { ErrorState } from '../States';
 import { ResultNotes } from '../PageHeader';
+import { BoundaryCard, BoundaryControl } from './BoundaryControl';
 import { DemarcationMap } from './DemarcationMap';
 import { ShapeSwatch } from './DemarcationLegend';
 import { useMapLocations } from './mapQueries';
+import type { BoundarySelection } from './useBoundaryLayer';
 import type { ShapeSelection } from './useShapeRenderer';
 
 export interface DemarcationTabProps {
@@ -37,19 +49,37 @@ export interface DemarcationTabProps {
   onDesignChange: (designId: number | null) => void;
   levels: string[];
   onLevelsChange: (levels: string[]) => void;
+  /**
+   * The reader's filter selection, as `LOCATION_FILTERS` names it.
+   *
+   * Sent to the server and applied there. **A map narrows by containment where
+   * a table narrows by row**: selecting Region R01 shows R01's own coordinate
+   * and everything below it — its areas, units, territories, sub-territories
+   * and customers — because a coordinate is a position inside an area rather
+   * than a fact about one level. Applying the report filters' row semantics
+   * here would draw the region's single centroid and call the other 200 points
+   * excluded.
+   */
+  query: GlobalFilters;
   selected: ShapeSelection | null;
   onSelect: (selection: ShapeSelection | null) => void;
+  /** The administrative backdrop, chosen by the reader and held in the URL. */
+  boundary: MapBoundarySet | null;
+  boundarySelected: BoundarySelection | null;
+  onBoundaryChange: (key: string | null) => void;
+  onBoundarySelect: (selection: BoundarySelection | null) => void;
   onMap?: (map: MapLibreInstance | null) => void;
 }
 
 export function DemarcationTab({
   config, design, designs, onDesignChange, levels, onLevelsChange,
-  selected, onSelect, onMap,
+  query, selected, onSelect, boundary, boundarySelected, onBoundaryChange,
+  onBoundarySelect, onMap,
 }: DemarcationTabProps) {
   const t = useT();
   const [activeChoice, setActiveChoice] = useState<string | null>(null);
-  const query = useMapLocations(design?.design_id, levels);
-  const layers: MapLocationLayer[] = query.data?.layers ?? [];
+  const locations = useMapLocations(design?.design_id, levels, query);
+  const layers: MapLocationLayer[] = locations.data?.layers ?? [];
 
   const basemap = useMemo(() => (
     config.basemaps.find((candidate) => candidate.key === design?.basemap_resolved?.key)
@@ -64,11 +94,15 @@ export function DemarcationTab({
     return drawn[drawn.length - 1] ?? '';
   }, [activeChoice, layers, selected]);
 
-  // A new design or a different level set is fitted once; a selection never
-  // moves the map by itself.
+  // A new design, level set or filter selection is fitted once; a selection
+  // never moves the map by itself. The filters are in the key because narrowing
+  // to one region is a different set of points, and leaving the view over the
+  // whole country would show the reader an apparently empty map.
   const fitKey = useMemo(
-    () => JSON.stringify({ design: design?.design_id ?? null, levels: [...levels].sort() }),
-    [design, levels],
+    () => JSON.stringify({
+      design: design?.design_id ?? null, levels: [...levels].sort(), query,
+    }),
+    [design, levels, query],
   );
 
   const toggle = useCallback((level: string) => {
@@ -77,16 +111,40 @@ export function DemarcationTab({
       : [...levels, level]);
   }, [levels, onLevelsChange]);
 
-  const notes = useMemo(
-    () => [...new Set(layers.flatMap((layer) => layer.notes))],
-    [layers],
-  );
+  /**
+   * What the map could not draw, and why — the layers' own notes plus the one
+   * the server writes about the caller's scope.
+   *
+   * The scope note comes first: "you have no data scope" explains every empty
+   * layer below it, and reading eleven per-level notes before the sentence that
+   * accounts for all of them is the wrong order.
+   */
+  const notes = useMemo(() => [...new Set([
+    ...(locations.data?.scope_note ? [locations.data.scope_note] : []),
+    ...layers.flatMap((layer) => layer.notes),
+  ])], [layers, locations.data]);
 
   const selectedLayer = layers.find((layer) => layer.level === selected?.level);
   const selectedPoint = selectedLayer?.features.features.find(
     (feature) => feature.properties.code === selected?.code,
   );
+  /**
+   * What is drawn, and what there was to draw.
+   *
+   * Two numbers rather than one, because "9 points" cannot be told apart from
+   * "9 points and there are 94" — a narrow filter and a barely-mapped level
+   * look identical otherwise, and on a map used to judge where a boundary falls
+   * they are opposite findings. `available` is what exists at these levels
+   * inside the caller's scope; `placed` is what survived their filter.
+   *
+   * The pair is shown only while a filter is in effect. The server echoes the
+   * narrowing it applied, so this reads the response rather than the URL: a
+   * filter the request did not carry must not put a count on screen claiming it
+   * did.
+   */
   const totalPlaced = layers.reduce((sum, layer) => sum + layer.placed, 0);
+  const totalAvailable = layers.reduce((sum, layer) => sum + layer.available, 0);
+  const narrowed = Object.keys(locations.data?.filters ?? {}).length > 0;
 
   // Which Data Management table a level's records live in, read from the level
   // registry the server publishes rather than written down here. A hand-kept
@@ -151,16 +209,26 @@ export function DemarcationTab({
           })}
         </div>
 
+        <BoundaryControl
+          id="demarcation-boundary"
+          catalogue={config.boundaries}
+          value={boundary?.key ?? null}
+          onChange={onBoundaryChange}
+        />
+
         {layers.length > 0 && (
           <span className="text-xs text-slate-500 dark:text-slate-400">
-            {t('map.pointsDrawn', { count: String(totalPlaced) })}
+            {narrowed
+              ? t('map.pointsMatched', { count: String(totalPlaced),
+                                         total: String(totalAvailable) })
+              : t('map.pointsDrawn', { count: String(totalPlaced) })}
           </span>
         )}
       </div>
 
-      {query.error != null && (
+      {locations.error != null && (
         <div className="card mb-4">
-          <ErrorState error={query.error} onRetry={() => void query.refetch()} />
+          <ErrorState error={locations.error} onRetry={() => void locations.refetch()} />
         </div>
       )}
 
@@ -171,14 +239,20 @@ export function DemarcationTab({
             view={config.view}
             layers={layers}
             shapes={config.shapes}
+            narrowed={narrowed}
             selected={selected}
             onSelect={onSelect}
             activeLevel={activeLevel}
             onActiveLevel={setActiveChoice}
             fitKey={fitKey}
+            style={config.style}
+            boundary={boundary}
+            maskUrl={config.boundaries.mask_url}
+            boundarySelected={boundarySelected}
+            onBoundarySelect={onBoundarySelect}
             onMap={onMap}
           >
-            {query.isLoading && (
+            {locations.isLoading && (
               <div
                 className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-lg bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-600 shadow dark:bg-slate-900/90 dark:text-slate-300"
                 role="status"
@@ -187,7 +261,7 @@ export function DemarcationTab({
                 {t('map.loading')}
               </div>
             )}
-            {!query.isLoading && query.error == null && levels.length === 0 && (
+            {!locations.isLoading && locations.error == null && levels.length === 0 && (
               <div
                 className="absolute right-3 top-3 z-10 rounded-lg bg-white/90 px-3 py-1.5 text-xs text-slate-600 shadow dark:bg-slate-900/90 dark:text-slate-300"
                 role="status"
@@ -195,7 +269,7 @@ export function DemarcationTab({
                 {t('map.noLayers')}
               </div>
             )}
-            {!query.isLoading && query.data?.empty && levels.length > 0 && (
+            {!locations.isLoading && locations.data?.empty && levels.length > 0 && (
               <div
                 className="absolute right-3 top-3 z-10 rounded-lg bg-white/90 px-3 py-1.5 text-xs text-slate-600 shadow dark:bg-slate-900/90 dark:text-slate-300"
                 role="status"
@@ -203,7 +277,7 @@ export function DemarcationTab({
                 {t('map.noCoordinates')}
               </div>
             )}
-            {query.isFetching && !query.isLoading && (
+            {locations.isFetching && !locations.isLoading && (
               <div className="absolute right-3 bottom-8 z-10 rounded-full bg-white/90 p-1.5 shadow dark:bg-slate-900/90">
                 <RefreshCw size={12} className="animate-spin text-slate-500" />
               </div>
@@ -213,6 +287,12 @@ export function DemarcationTab({
       )}
 
       <ResultNotes notes={notes} />
+
+      <BoundaryCard
+        selection={boundarySelected}
+        set={boundary}
+        onClear={() => onBoundarySelect(null)}
+      />
 
       {selected && selectedPoint && (
         <div className="card mb-4 flex flex-wrap items-center gap-3 p-3 text-sm">

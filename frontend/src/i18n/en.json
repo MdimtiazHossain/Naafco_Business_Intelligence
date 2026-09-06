@@ -1127,11 +1127,22 @@
   "map.demarcationLegend": "Levels",
   "map.legendDerived": "Hollow: centroid of what is below it",
   "map.legendMissing": "{missing} of {total} {level} records have no coordinate.",
+  "map.legendMatched": "{placed} of {available}",
   "map.pointsDrawn": "{count} points",
+  "map.pointsMatched": "{count} of {total} points",
   "map.noLayers": "No layers selected.",
   "map.noCoordinates": "No coordinates have been loaded for these levels.",
   "map.derivedPoint": "Derived",
+  "map.source.UPLOAD": "Uploaded",
+  "map.source.MANUAL": "Placed by hand",
+  "map.source.DERIVED": "Derived",
+  "map.source.GEOCODED": "Geocoded",
   "map.openRecord": "Open record",
   "map.shape": "Shape",
-  "map.pointColor": "Point colour"
+  "map.pointColor": "Point colour",
+  "map.boundary": "Boundaries",
+  "map.boundaryNone": "None",
+  "map.boundaryLoading": "Loading outlines…",
+  "map.boundaryReference": "Reference only",
+  "map.boundaryNotBusiness": "Administrative area — not a sales boundary"
 }

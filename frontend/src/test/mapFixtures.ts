@@ -39,6 +39,15 @@ export const STYLE: MapStyle = {
   point_color: '#2563eb',
   derived_opacity: 0.25,
   derived_stroke_width: 1.5,
+  boundary: {
+    fill_color: '#64748b', fill_opacity: 0.06,
+    line_color: '#475569', line_width: 1, line_opacity: 0.55,
+    hover_fill_opacity: 0.14,
+    selected_line_color: '#0f172a', selected_line_width: 2.5,
+    selected_fill_opacity: 0.18,
+    mask_color: '#0f172a', mask_opacity: 0.1,
+    label_min_zoom: 7,
+  },
 };
 
 export const LEVEL_LABELS: Record<string, string> = {
@@ -121,7 +130,31 @@ export const CONFIG: MapConfig = {
     { key: 'triangle', label: 'Triangle', path: 'M12 2 L22 20 H2 Z', viewbox: 24 },
   ],
   purposes: ['analysis', 'demarcation'],
+  boundaries: {
+    sets: [
+      { key: 'division', label: 'Divisions', url: '/geo/bgd_admin1.geojson',
+        file: 'bgd_admin1.geojson', admin_level: 1, table: 'dim_division',
+        features: 8, bytes: 95337 },
+      { key: 'district', label: 'Districts', url: '/geo/bgd_admin2.geojson',
+        file: 'bgd_admin2.geojson', admin_level: 2, table: 'dim_district',
+        features: 64, bytes: 369934 },
+      { key: 'upazila', label: 'Upazilas', url: '/geo/bgd_admin3.geojson',
+        file: 'bgd_admin3.geojson', admin_level: 3, table: 'dim_upazila',
+        features: 507, bytes: 1727737 },
+    ],
+    default: null,
+    mask_url: '/geo/bgd_mask.geojson',
+    note: 'Administrative reference outlines. They are not business boundaries.',
+  },
   defaults: { metric: 'net_sales', color_metric: 'achievement', size_metric: 'net_sales', tooltip_fields: ['net_sales'] },
+  // The levels a coordinate can be narrowed by, as the server derives them
+  // from `map.levels.MAP_LEVELS`. `boundaries.test.tsx` pins the browser's
+  // `LOCATION_FILTERS` equal to the real list; this is the fixture's stand-in.
+  location_filters: [
+    'company_code', 'bu_code', 'sales_line_code', 'zone_code', 'region_code',
+    'area_code', 'unit_code', 'territory_code', 'sub_territory_code',
+    'customer_code', 'sales_force_code',
+  ],
   style: STYLE,
   coverage: [],
 };

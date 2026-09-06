@@ -7,10 +7,14 @@
 
 import type { Map as MapLibreInstance } from 'maplibre-gl';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { MapBasemap, MapLayerData, MapMetricInfo } from '../../types/api';
+import type {
+  MapBasemap, MapBoundarySet, MapLayerData, MapMetricInfo, MapStyle,
+} from '../../types/api';
 import { MapLegend } from './MapLegend';
 import { MapLibreMap } from './MapLibreMap';
 import { MapTooltip } from './MapTooltip';
+import { LAYER_SUFFIXES, layerId } from './mapExpressions';
+import { useBoundaryLayer, type BoundarySelection } from './useBoundaryLayer';
 import { useLayerRenderer, type MapHover, type MapSelection } from './useLayerRenderer';
 import type { MapView } from './useMapLibre';
 
@@ -24,6 +28,13 @@ export interface BusinessMapProps {
   activeLevel: string;
   onActiveLevel: (level: string) => void;
   fitKey: string;
+  /** The administrative backdrop, or `null` for none. */
+  boundary?: MapBoundarySet | null;
+  maskUrl?: string | null;
+  boundarySelected?: BoundarySelection | null;
+  onBoundarySelect?: (selection: BoundarySelection | null) => void;
+  /** The style defaults, for the backdrop's paint. */
+  style?: MapStyle;
   /** Called with the live map so the page can reset its view. */
   onMap?: (map: MapLibreInstance | null) => void;
   /** Overlays the page adds: the loading banner, an error, an empty note. */
@@ -40,6 +51,11 @@ export function BusinessMap({
   activeLevel,
   onActiveLevel,
   fitKey,
+  boundary = null,
+  maskUrl,
+  boundarySelected = null,
+  onBoundarySelect,
+  style,
   onMap,
   children,
 }: BusinessMapProps) {
@@ -66,6 +82,20 @@ export function BusinessMap({
 
   useLayerRenderer({
     map, styleVersion, layers, metrics, selected, onSelect, onHover: setHover, fitKey,
+  });
+
+  // The backdrop goes *beneath* the lowest business layer, so a point is never
+  // hidden by a polygon and a click on a point still selects the point.
+  useBoundaryLayer({
+    map,
+    styleVersion,
+    boundary,
+    maskUrl,
+    style: style ?? layers[0]?.layer.style ?? null as never,
+    selected: boundarySelected,
+    onSelect: onBoundarySelect ?? (() => undefined),
+    beforeId: layers[0] ? layerId(layers[0].level, LAYER_SUFFIXES.points) : undefined,
+    pointLayerIds: () => layers.map((l) => layerId(l.level, LAYER_SUFFIXES.points)),
   });
 
   return (

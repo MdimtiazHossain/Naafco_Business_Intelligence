@@ -15,22 +15,24 @@ import type { Map as MapLibreInstance } from 'maplibre-gl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BusinessMap } from '../components/map/BusinessMap';
+import { BoundaryCard, BoundaryControl } from '../components/map/BoundaryControl';
 import { DemarcationTab } from '../components/map/DemarcationTab';
 import { useMapConfig, useMapDesigns, useMapLayers } from '../components/map/mapQueries';
 import { SelectedEntityCard } from '../components/map/SelectedEntityCard';
 import { MapSettingsDrawer } from '../components/map/MapSettingsDrawer';
 import { TopBottomTable } from '../components/map/TopBottomTable';
+import type { BoundarySelection } from '../components/map/useBoundaryLayer';
 import type { MapSelection } from '../components/map/useLayerRenderer';
 import { PageHeader, ResultNotes } from '../components/PageHeader';
 import { CardSkeleton, ErrorState } from '../components/States';
 import { useAuth } from '../contexts/AuthContext';
-import { MAP_FILTERS, useFilters } from '../contexts/FilterContext';
+import { LOCATION_FILTERS, MAP_FILTERS, useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
 import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { ApiError } from '../services';
 
 /** URL parameters that are the reader's temporary state, and Reset clears. */
-const TEMPORARY_PARAMS = ['layers', 'selected'] as const;
+const TEMPORARY_PARAMS = ['layers', 'selected', 'boundary', 'barea', 'bname'] as const;
 
 /**
  * The two maps, in the order they are read.
@@ -65,6 +67,23 @@ export default function BusinessMapPage() {
   const mapRef = useRef<MapLibreInstance | null>(null);
 
   const query = queryFor(MAP_FILTERS);
+  /**
+   * The demarcation map's own filter set — the same URL state, a different
+   * question of it.
+   *
+   * `queryFor` sends only the levels named, so a material or a batch left in
+   * the URL by the analysis tab does not travel with a coordinate request that
+   * could not honour it. The narrowing itself is the server's: `/api/map/
+   * locations` resolves the selection to a subtree and filters there, so this
+   * is a filter *set*, never a filter *implementation*.
+   *
+   * **No period**, which is the second argument and not a detail. A coordinate
+   * has no date, so the endpoint ignores a range — and sending one anyway would
+   * put it in the React Query key, so changing the period on the dashboard and
+   * coming back here would refetch every coordinate to be told the same thing.
+   * Material Stock leaves it out for exactly this reason.
+   */
+  const locationQuery = queryFor(LOCATION_FILTERS, false);
   const config = useMapConfig();
   const { hasSection } = useAuth();
   // A composer also sees designs taken off the shelf, to put them back.
@@ -110,6 +129,35 @@ export default function BusinessMapPage() {
     return activeDesign?.layers.filter((layer) => layer.is_visible)
       .map((layer) => layer.point_level) ?? [];
   }, [activeDesign, searchParams]);
+
+  // The backdrop the reader chose, and the outline they clicked. Both live in
+  // the URL like the layer toggles and the point selection, so a link
+  // reproduces the whole view and Reset is still one navigation.
+  const boundary = useMemo(() => {
+    const key = searchParams.get('boundary');
+    return config.data?.boundaries.sets.find((set) => set.key === key) ?? null;
+  }, [config.data, searchParams]);
+
+  const boundarySelected: BoundarySelection | null = useMemo(() => {
+    const code = searchParams.get('barea');
+    if (!code || !boundary) return null;
+    const name = searchParams.get('bname') ?? code;
+    return { set: boundary.key, code, name };
+  }, [boundary, searchParams]);
+
+  const selectBoundary = useCallback((next: BoundarySelection | null) => {
+    setSearchParams((previous) => {
+      const params = new URLSearchParams(previous);
+      if (next) {
+        params.set('barea', next.code);
+        params.set('bname', next.name);
+      } else {
+        params.delete('barea');
+        params.delete('bname');
+      }
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   const metricParam = searchParams.get('metric') ?? undefined;
   const metric = metricParam ?? design?.default_metric;
@@ -313,10 +361,30 @@ export default function BusinessMapPage() {
         ))}
       </div>
 
-      {/* The filter bar belongs to the analysis map alone: the demarcation map
-          draws every placed coordinate, with no period and no scope narrowing,
-          so a chip above it would claim a narrowing that is not applied. */}
-      {tab === 'map' && <GlobalFilterBar />}
+      {/*
+        One bar, two filter sets — because the two tabs narrow different things.
+
+        The analysis map reads `vw_sales_detail`, so it draws every filter that
+        view honours, over a period. The demarcation map reads
+        `map_entity_locations`, where a row is a code and a pair of coordinates:
+        it has no material, no batch and no date, so those controls are absent
+        rather than inert, and there is no period selector at all.
+
+        Passing the set per tab is also what makes the chips and "clear all"
+        follow the open tab: the bar describes exactly the levels it was handed,
+        so a material left in the URL by the analysis tab shows no chip over a
+        map that would ignore it.
+      */}
+      {tab === 'map' ? (
+        <GlobalFilterBar />
+      ) : (
+        <GlobalFilterBar
+          levels={[]}
+          showIndependent={false}
+          pageFilters={LOCATION_FILTERS}
+          showDate={false}
+        />
+      )}
 
       {(config.isLoading || designs.isLoading) && <CardSkeleton rows={3} />}
       {(config.error || designs.error) && (
@@ -339,6 +407,7 @@ export default function BusinessMapPage() {
           onDesignChange={changeDesign}
           levels={levels}
           onLevelsChange={changeLevels}
+          query={locationQuery}
           // Narrowed to the identity both maps share. The analysis selection
           // carries a row of measures the demarcation map has no use for, and
           // widening either type so they interchange would say the two are the
@@ -347,6 +416,13 @@ export default function BusinessMapPage() {
                                   source: selected.source }}
           onSelect={(next) => select(next && { level: next.level, code: next.code,
                                                source: next.source })}
+          boundary={boundary}
+          boundarySelected={boundarySelected}
+          onBoundaryChange={(key) => {
+            selectBoundary(null);
+            setParam('boundary', key ?? undefined);
+          }}
+          onBoundarySelect={selectBoundary}
           onMap={onMap}
         />
       )}
@@ -394,6 +470,15 @@ export default function BusinessMapPage() {
               </div>
             )}
 
+            <BoundaryControl
+              catalogue={config.data.boundaries}
+              value={boundary?.key ?? null}
+              onChange={(key) => {
+                selectBoundary(null);
+                setParam('boundary', key ?? undefined);
+              }}
+            />
+
             {levels.length > 0 && (
               <span className="text-xs text-slate-500 dark:text-slate-400">
                 {t('map.layersDrawn', {
@@ -420,6 +505,11 @@ export default function BusinessMapPage() {
                 activeLevel={activeLevel}
                 onActiveLevel={setActiveChoice}
                 fitKey={fitKey}
+                boundary={boundary}
+                maskUrl={config.data.boundaries.mask_url}
+                boundarySelected={boundarySelected}
+                onBoundarySelect={selectBoundary}
+                style={config.data.style}
                 onMap={onMap}
               >
                 {layers.isLoading && (
@@ -461,6 +551,11 @@ export default function BusinessMapPage() {
 
           {design && (
             <>
+              <BoundaryCard
+                selection={boundarySelected}
+                set={boundary}
+                onClear={() => selectBoundary(null)}
+              />
               <SelectedEntityCard
                 selection={selected}
                 layers={layers.layers}

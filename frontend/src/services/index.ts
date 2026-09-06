@@ -664,8 +664,9 @@ export const mapService = {
    * a four-figure table, so splitting it would buy a round trip per level to
    * save nothing.
    */
-  locations: (query: { design_id?: number; levels?: string[] } = {}) =>
-    request<MapLocationsResponse>('/api/map/locations', { params: query }),
+  locations: (
+    query: GlobalFilters & { design_id?: number; levels?: string[] } = {},
+  ) => request<MapLocationsResponse>('/api/map/locations', { params: query }),
   design: (designId: number) => request<MapDesign>(`/api/map/designs/${designId}`),
   createDesign: (body: MapDesignInput) =>
     request<MapDesign>('/api/map/designs', { method: 'POST', body }),

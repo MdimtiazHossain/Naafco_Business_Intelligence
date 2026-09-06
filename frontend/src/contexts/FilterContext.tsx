@@ -201,6 +201,35 @@ export const CREDIT_FILTERS: FilterLevel[] = [
 export const MAP_FILTERS: FilterLevel[] = [...HIERARCHY_ORDER, ...INDEPENDENT_FILTERS];
 
 /**
+ * The Area Demarcation filter set: every level a *coordinate* can be narrowed
+ * by, and no others.
+ *
+ * Same rule as `STOCK_FILTERS` and `CREDIT_FILTERS`, and the same reason. A
+ * coordinate is a point against an organisational or business code — it has no
+ * material, no batch and no date — so drawing the material chain here would put
+ * a chip above unfiltered points claiming they had been narrowed. There is no
+ * period control on that tab either: a coordinate has no date, and a date
+ * control that changes nothing is worse than none.
+ *
+ * Built from `SALES_CASCADE` rather than written out, so the nine
+ * organisational levels stay in one place. What the *server* will narrow by is
+ * derived from `map.levels.MAP_LEVELS` and published as `location_filters` in
+ * `GET /api/map/config`; `demarcation.test.tsx` pins this list equal to that
+ * one and `test_map_demarcation.py` pins the published list in turn, so a level
+ * added to the chain cannot leave the two ends disagreeing about what the map
+ * can be filtered by.
+ *
+ * **The filter's meaning is not this file's to state, but it is worth knowing
+ * here**: the server narrows by *containment*, so selecting a region draws that
+ * region and every area, unit, territory, sub-territory and customer inside it.
+ * The controls are the report bar's; what they do to a map is not.
+ */
+export const LOCATION_FILTERS: FilterLevel[] = [
+  ...SALES_CASCADE,
+  'sales_force_code',
+];
+
+/**
  * Every filter the URL may carry.
  *
  * This is what the provider reads out of the query string and what "clear

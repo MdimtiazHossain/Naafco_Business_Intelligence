@@ -349,3 +349,294 @@ def test_the_module_reports_only_levels_that_have_a_coordinate(client, agent_eng
     # Hierarchy order, from the level registry rather than from the table.
     from app.map.levels import LEVEL_KEYS
     assert drawable == [key for key in LEVEL_KEYS if key in set(drawable)]
+
+
+# ==========================================================================
+# What the tab draws is exactly the coordinate table
+# ==========================================================================
+
+
+def test_every_drawable_level_is_visible_on_the_demarcation_design(agent_engine):
+    """A hidden level on this map is a hidden *row*.
+
+    On a map of figures a hidden layer is one fewer thing competing for the
+    eye. On a map of coordinates it is data the reader is not shown and is not
+    told about, which is what ``0036`` exists to correct.
+    """
+    from app.map.levels import LEVEL_KEYS
+
+    with Session(agent_engine) as db:
+        design = designs.default_design(db, DesignPurpose.DEMARCATION)
+        drawn = {layer.point_level for layer in design.layers if layer.is_visible}
+    assert drawn == set(LEVEL_KEYS), sorted(set(LEVEL_KEYS) - drawn)
+
+
+def test_the_points_drawn_equal_the_rows_stored(client, agent_engine):
+    """The acid test: unfiltered, the map is the table.
+
+    If these two ever disagree the map is the one that is wrong — it is drawing
+    a subset of ``map_entity_locations`` and calling it the whole.
+    """
+    from sqlalchemy import func
+    from app.database.models_map import MapEntityLocation
+
+    headers = login(client)
+    body = fetch(client, headers)
+    drawn = sum(layer["placed"] for layer in body["layers"])
+    with Session(agent_engine) as db:
+        stored = db.execute(
+            select(func.count()).select_from(MapEntityLocation)).scalar_one()
+    assert drawn == stored
+
+
+def test_the_tooltip_can_tell_a_placed_point_from_a_computed_one(client):
+    """``source`` travels per feature: the two are the same dot otherwise.
+
+    A centroid and a surveyed position mean different things on a boundary, and
+    a reader deciding where a line falls must not have to guess which they are
+    looking at.
+    """
+    headers = login(client)
+    region = layer_of(fetch(client, headers, levels=["region"]), "region")
+    for feature in region["features"]["features"]:
+        assert feature["properties"]["source"] in {"UPLOAD", "MANUAL", "DERIVED"}
+
+
+# ==========================================================================
+# A filter narrows by containment, not by row
+# ==========================================================================
+
+
+def test_a_region_draws_itself_and_everything_under_it(client, agent_engine):
+    """The rule this module parts company with every report table over.
+
+    A report ANDs its filters and a row matches only on a level it carries, so
+    the flat rule would drop every coordinate that states no region — which is
+    all of them except the region's own. A map means containment.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
+    headers = login(client)
+    body = fetch(client, headers, region_code="REG001")
+
+    region = layer_of(body, "region")
+    assert {f["properties"]["code"] for f in region["features"]["features"]} == {"REG001"}
+
+    # Descendants are drawn...
+    territory = layer_of(body, "territory")
+    assert territory["placed"] > 0, "the territories inside REG001 are its subtree"
+
+    # ...and ancestors are not. This is the half a flat filter gets wrong in
+    # the other direction: REG001's zone is not inside REG001.
+    for ancestor in ("zone", "sales_line", "bu", "company"):
+        assert layer_of(body, ancestor)["placed"] == 0, ancestor
+
+
+def test_a_filter_matching_nothing_says_which_selection_emptied_it(client):
+    """"No data" is the answer this platform refuses everywhere else."""
+    headers = login(client)
+    body = fetch(client, headers, region_code="REG002")
+    customer = layer_of(body, "customer")
+    if customer["placed"] == 0 and customer["available"]:
+        assert any("REG002" in note for note in customer["notes"]), customer["notes"]
+
+
+def test_each_layer_reports_matched_out_of_placed(client, agent_engine):
+    """"9 points" and "9 of 94 points" are different findings.
+
+    Without the denominator a reader cannot tell a narrow filter from a level
+    nobody has mapped yet, which on a demarcation map is the more useful of the
+    two things to know.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    headers = login(client)
+    narrowed = layer_of(fetch(client, headers, region_code="REG001"), "territory")
+    whole = layer_of(fetch(client, headers), "territory")
+    assert narrowed["available"] == whole["placed"]
+    assert narrowed["placed"] <= narrowed["available"]
+
+
+# ==========================================================================
+# Scope is the ceiling; the filter narrows inside it
+# ==========================================================================
+
+
+def test_a_filter_outside_the_readers_scope_is_refused_by_name(client):
+    """403 naming the code, never an empty map.
+
+    The two are indistinguishable on screen and mean opposite things: "there is
+    nothing there" against "you may not see that". ``dhaka_rm`` is scoped to
+    REG001, so asking for REG002 is asking for somebody else's coordinates.
+    """
+    headers = login(client, "dhaka_rm")
+    response = client.get("/api/map/locations", headers=headers,
+                          params={"region_code": "REG002"})
+    assert response.status_code == 403, response.text
+    assert "REG002" in response.text
+
+    # And the reader's *own* region is allowed. Without this half the test
+    # passes on a scope check that refuses everything: the level was being
+    # spelled `region` where the permission layer spells it `region_code`, so
+    # the ancestor walk found nothing and answered False for every code — a
+    # refusal indistinguishable from the correct one, on the map's most
+    # ordinary request.
+    allowed = client.get("/api/map/locations", headers=headers,
+                         params={"region_code": "REG001"})
+    assert allowed.status_code == 200, allowed.text
+
+
+def test_a_level_above_the_selection_says_so_rather_than_counting(client,
+                                                                  agent_engine):
+    """The containment rule emptied it, and that is a different sentence.
+
+    Selecting a region empties zone, sales line, business unit and company by
+    construction. Read through the counts that came out as "none of the 4
+    placed zone coordinates is inside region REG001", which describes the data
+    and sends a reader looking for a coordinate that is loaded and fine.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
+    body = fetch(client, login(client), region_code="REG001")
+    zone = layer_of(body, "zone")
+    assert zone["placed"] == 0
+    note = " ".join(zone["notes"])
+    assert "sits above" in note and "Clear it" in note
+    assert "has a coordinate" not in note, (
+        "a level the selection excludes is not a level nobody has surveyed"
+    )
+
+
+def test_a_scoped_reader_is_not_told_to_clear_a_filter_they_do_not_have(client,
+                                                                       agent_engine):
+    """Their role emptied the level, and a role is not something to clear."""
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
+    body = fetch(client, login(client, "dhaka_rm"))
+    zone = layer_of(body, "zone")
+    assert zone["placed"] == 0
+    assert not any("Clear it" in note for note in zone["notes"]), (
+        "advice a reader cannot take is worse than none"
+    )
+    # The scope note is what explains it, once, for the whole map.
+    assert body["scope_note"]
+
+
+def test_missing_counts_records_without_a_coordinate_not_ones_filtered_out(
+        client, agent_engine):
+    """A placed point a filter excluded has not gone missing.
+
+    ``missing`` was ``total - placed``, so narrowing the map reported a data
+    problem that grew with the narrowing — on the one screen whose job is
+    saying which records still have to be surveyed.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
+    headers = login(client)
+    whole = layer_of(fetch(client, headers), "region")
+    narrowed = layer_of(fetch(client, headers, region_code="REG001"), "region")
+
+    assert narrowed["placed"] < whole["placed"], "the filter must exclude one"
+    assert narrowed["missing"] == whole["missing"], (
+        "narrowing the map cannot create records that lack a coordinate"
+    )
+
+
+def test_the_denominator_is_scoped_too(client, agent_engine):
+    """A scoped reader is never told a total they may not see.
+
+    ``available`` is the "of how many" in "9 of 94", and it used to be the
+    level's own row count — so a regional manager filtering to one of their own
+    territories read the *national* figure as their denominator. Scope is the
+    outer bound, and it bounds what a reader is told exists exactly as it bounds
+    what they are shown: their 94 is their region's 16.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
+    # Region is the level the fixture separates on: two are placed nationally
+    # and `dhaka_rm` may see one of them.
+    national = layer_of(fetch(client, login(client)), "region")
+    scoped = layer_of(fetch(client, login(client, "dhaka_rm")), "region")
+
+    assert national["available"] == 2
+    assert scoped["available"] == 1, (
+        "the denominator must be the reader's own, not the whole map's"
+    )
+    # Unfiltered, a reader is shown everything they may see, so the two counts
+    # agree — the pair reads "1 of 1" rather than "1 of 2".
+    assert scoped["available"] == scoped["placed"]
+
+    # And with a filter inside that scope, the denominator stays the scope's.
+    inside = fetch(client, login(client, "dhaka_rm"), region_code="REG001")
+    assert layer_of(inside, "region")["available"] == scoped["available"]
+
+
+def test_a_reader_with_no_scope_counts_nothing_out_of_nothing(client):
+    """Not "0 of 94": the denominator is a figure too, and it is not theirs."""
+    body = fetch(client, login(client, "no_scope"))
+    assert all(layer["available"] == 0 for layer in body["layers"])
+    assert all(layer["placed"] == 0 for layer in body["layers"])
+
+
+def test_a_scoped_reader_sees_their_own_subtree_without_asking(client, agent_engine):
+    """Scope is the ceiling, so it applies whether or not a filter is sent."""
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
+    everything = fetch(client, login(client))
+    scoped = fetch(client, login(client, "dhaka_rm"))
+
+    theirs = layer_of(scoped, "region")
+    assert {f["properties"]["code"] for f in theirs["features"]["features"]} == {"REG001"}
+    assert sum(l["placed"] for l in scoped["layers"])         < sum(l["placed"] for l in everything["layers"])
+
+
+def test_a_reader_with_no_scope_is_told_why_rather_than_shown_an_empty_map(client):
+    """The third case: not an error, not somebody else's coordinates."""
+    body = fetch(client, login(client, "no_scope"))
+    assert sum(layer["placed"] for layer in body["layers"]) == 0
+    assert body["scope_note"], "an empty map must say whose emptiness it is"
+    assert "no data scope" in body["scope_note"].lower()
+
+
+def test_the_filter_levels_are_derived_from_the_level_registry(client):
+    """A hand-written level list is the failure CLAUDE.md opens with."""
+    from app.map.levels import MAP_LEVELS
+    from app.map.locations import FILTER_LEVELS
+
+    assert FILTER_LEVELS == tuple(f"{level.key}_code" for level in MAP_LEVELS)
+
+    published = client.get("/api/map/config", headers=login(client)).json()
+    assert published["location_filters"] == list(FILTER_LEVELS), (
+        "the browser is sent this list so it keeps none of its own"
+    )
+
+    # The browser draws a control per level, so it needs the list at build time
+    # and cannot wait for a request. `LOCATION_FILTERS` in
+    # `frontend/src/contexts/FilterContext.tsx` is that copy, and
+    # `demarcation.test.tsx` pins it against the fixture below. Spelled here
+    # rather than derived, deliberately: it is the notification. A level added
+    # to `MAP_LEVELS` fails this line, which names the two files to update — the
+    # alternative is a chain that derives itself on one side and silently
+    # diverges on the other.
+    assert published["location_filters"] == [
+        "company_code", "bu_code", "sales_line_code", "zone_code",
+        "region_code", "area_code", "unit_code", "territory_code",
+        "sub_territory_code", "customer_code", "sales_force_code",
+    ], (
+        "the map gained or lost a level: update LOCATION_FILTERS in "
+        "frontend/src/contexts/FilterContext.tsx and location_filters in "
+        "frontend/src/test/mapFixtures.ts to match"
+    )
