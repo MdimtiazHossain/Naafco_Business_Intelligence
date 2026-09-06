@@ -1441,11 +1441,17 @@ reader for which "the top 500" is a wrong answer rather than a long one.
 | Basemaps, from configuration | `backend/app/map/basemaps.py` |
 | Coordinates: validation, upsert, centroids, coverage | `backend/app/map/geo.py` |
 | One layer's figures, positions, extents, ranking | `backend/app/map/data.py` |
+| Coordinates only, by level, with the containment filter and the group colouring | `backend/app/map/locations.py` |
+| The administrative outline catalogue (files, not geometry) | `backend/app/map/boundaries.py` |
+| "Which entity at level X contains this one", for the whole chain | `backend/app/org/hierarchy.py` (`ancestor_codes`) |
 | Designs and layers: the composition rules | `backend/app/map/designs.py`, `errors.py` |
 | A selected entity's ancestry | `backend/app/map/entities.py` |
 | HTTP surface | `backend/app/api/routes_map.py` |
-| Models and migration | `database/models_map.py`, `migrations/versions/0034_business_map.py` |
+| Models and migrations | `database/models_map.py`, `0034_business_map.py`, `0035_map_demarcation.py` (the `purpose` column and the demarcation design), `0036_demarcation_all_levels.py` (every level visible on it) |
 | Browser: page, renderer, drawer, editors | `frontend/src/pages/BusinessMapPage.tsx`, `frontend/src/components/map/` |
+| Browser: the demarcation tab, its symbol renderer, its legend | `DemarcationTab.tsx`, `DemarcationMap.tsx`, `useShapeRenderer.ts`, `DemarcationLegend.tsx` |
+| Browser: the backdrop — picker, layers, cached loader | `BoundaryControl.tsx`, `useBoundaryLayer.ts`, `geoData.ts` |
+| The outline files themselves, committed rather than built | `frontend/public/geo/` |
 | Restoring the pre-0033 coordinate export | `scripts/reload_map_locations.py` (dry by default) |
 
 ### Endpoints
@@ -1455,8 +1461,9 @@ action on `map_settings`.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/map/config` | Basemaps, first view, levels and the view modes each can honour, metrics, style defaults, coordinate coverage per level |
+| `GET /api/map/config` | Basemaps, first view, levels and the view modes each can honour, metrics, style defaults, coordinate coverage per level, the shape catalogue, the administrative boundary catalogue and each surface's default, `location_filters` and `color_by_levels` |
 | `GET /api/map/data?levels=…&metric=…&design_id=…` + period + filters | The requested layers of one design: GeoJSON points, entities with data but no coordinate, extents and class breaks, Top / Bottom ranking |
+| `GET /api/map/locations?levels=…&design_id=…&color_by=…&focus=…` + filters | Area Demarcation: every placed coordinate of the requested layers, with no figure of any kind. Filters narrow by containment, not by row |
 | `GET /api/map/entities/{level}/{code}` | One entity's name, ancestry and coordinate, for the selected-entity card |
 | `GET /api/map/designs[?include_inactive]` | Every design a reader may pick (inactive ones only for a composer) |
 | `GET /api/map/designs/{id}` | One design with its layers, inherited values resolved beside stored ones |
@@ -1548,12 +1555,143 @@ reader who may not compose the map.
   (`layers`, `layers=none`, `metric`, `design`, `selected=level:code`); Reset
   is one navigation and saves nothing.
 
+### The Area Demarcation tab
+
+A second tab on the same page, and a different map rather than a second view
+of the first. The analysis map answers "what did this level *do* in this
+period, and where is it"; this one answers only "where is it". No fact table
+is read, no period applies and no metric is computed, so nothing on it can
+disagree with a report — there is no figure on it to disagree with.
+
+**What it draws is exactly the rows of `map_entity_locations`.** Every
+coordinate at every level, placed and derived alike. The acid test is that for
+the same filter selection the number of points on the map equals the number of
+rows Data Management ▸ Map Locations lists — 1,139 on `data/dev.db`, 299 on the
+deployment — and `test_map_demarcation` pins it. Revision
+`0036_demarcation_all_levels` exists because that test failed at 1,124 of
+1,139: the seeded design hid Unit and Sales Force and had no layer at all for
+Company, Business Unit or Sales Line. A hidden level is one fewer thing
+competing for the eye on a map of *figures*, and a hidden **row** on a map of
+coordinates.
+
+**A filter narrows by containment, not by row**, and this is the one place the
+map departs from every report table in the platform. A report ANDs its filters
+and a row matches only on a level it actually carries, so filtering by Region
+drops every row stating no region — which here would delete the zone above and
+every customer below, because a coordinate row names one level and nothing
+else. Selecting a region on a *map* means "this region and what is inside it".
+So the filter resolves to a **subtree**: the selected node's own coordinate and
+every level beneath it, never its ancestors. It is built from
+`org.hierarchy.resolve_org_scope`, which returns both directions, with
+everything above the deepest selection trimmed off.
+
+The filter set is its own — `LOCATION_FILTERS` in the browser, `location_filters`
+from the server, both derived from `levels.MAP_LEVELS` — and it is not the
+analysis map's. A coordinate has no material, no batch and no date, so those
+controls are absent rather than inert and there is no period selector at all.
+The narrowing happens in the endpoint, never in the browser: the browser holds
+no hierarchy to resolve a subtree against.
+
+**Scope is the outer bound and the filter narrows inside it.** A filter naming
+something outside the caller's scope is a 403 that names the code, never an
+empty map — the two are indistinguishable on screen and mean opposite things —
+and a reader with no scope at all gets the sentence `review._describe_scope`
+already words. The counts are scoped for the same reason the points are:
+`available` is the "of how many" in "9 of 94", and read as the level's own row
+count it handed a region-scoped manager the national figure as their
+denominator. `total` and `missing` are scoped too, and `missing` counts records
+with no coordinate rather than records a filter excluded, so narrowing the map
+cannot manufacture a data problem.
+
+**An empty layer says which selection emptied it.** A level with no coordinates
+at all is a finding rather than an empty result — it is the level somebody
+still has to survey — and a level *above* the selection is empty by the
+containment rule, which is a different sentence and sends a reader somewhere
+else. That note is suppressed when the reader did not filter: what emptied the
+level was then their role, and "clear it to see this level" is advice they
+cannot take.
+
+**Points are coloured by the organisational parent that contains them.** With
+the derived centroids set aside this map is customer dots, and 846
+undifferentiated dots do not show where one area ends and the next begins,
+which is the only question the tab exists to answer. The reader chooses which
+ancestor level does the colouring, from `color_by_levels` — the organisational
+chain, which is exactly the set of levels that can contain another entity. The
+parent is read server-side by `org.hierarchy.ancestor_codes`, one pass over the
+whole chain rather than a query per point; the browser walks no hierarchy.
+
+The palette is thirteen colours, declared once in `styles.py` and published
+through `/config`; the server assigns every group's colour and the renderer
+turns that list into one MapLibre `match`, so a swatch in the legend and a dot
+on the canvas cannot come apart. Eight of the thirteen are Okabe-Ito and stay
+separable under the common colour-vision deficiencies; five extend it and are
+not, which is survivable only because colour is never the sole signal here —
+shape carries the *level* and colour carries the *parent*, and the legend names
+every group in words.
+
+**A level with more groups than colours is drawn one at a time, never cycled.**
+Two neighbours sharing a colour on a map used to judge where a boundary falls
+is a wrong answer, not an untidy one. So such a level switches to *focus* mode:
+the reader picks one group, it takes the accent, the rest go neutral — and
+nothing is coloured until they pick, because a focus nobody asked for is a
+filter nobody applied. The threshold is the palette's length and the mode is
+decided from the groups **actually drawn**, so narrowing the map can turn a
+level that could not be coloured honestly into one that can. On the deployment
+Zone (4) and Region (13) colour categorically; Area (15) and Unit (22) do not.
+
+**The tab is read-only for coordinates, deliberately.** Placing, moving and
+removing a point already have two ways in — Data Management and the Upload
+Centre — and both route their writes through `app.map`'s own module so the
+derivation, the coordinate rules and the DERIVED-removal refusal live in one
+place each. A third write path would reimplement all three. What this tab
+offers instead is the way *out*: a selected point links to its Data Management
+record.
+
+### The administrative backdrop
+
+Divisions, districts and upazilas, drawn beneath the points on either map.
+**These are not business boundaries and the distinction is load-bearing**: a
+division is published administrative geography and a zone is how this company
+organises its salespeople. Nothing states the outline of a territory, so
+`MapLevel.boundary_source` stays `None` on every level, Boundary and Both stay
+unavailable, and no outline is ever coloured by a figure — there is no metric
+aggregated at district grain and none is invented. What the outlines are for is
+reference: somebody deciding where a territory should end needs to see the
+district lines their customers actually fall inside.
+
+They are **static files, not an endpoint** — `frontend/public/geo/*.geojson`,
+which Vite copies into `dist/` — because they change only when somebody imports
+a new release. `app/map/boundaries.py` publishes the *catalogue* alone, so the
+browser holds no list of filenames, and `test_map_boundaries` checks every
+declared file against the one on disk.
+
+**The default is per surface**, and the two answers differ. The Business Map
+opens with none: it draws figures, and a backdrop nobody asked for is a
+download and a lot of ink over the points somebody came to look at. Area
+Demarcation opens with **upazilas**, because there the outlines are not context
+over the subject, they are the subject. Upazila and not district because a
+territory is drawn at roughly upazila grain. The cost is accepted rather than
+overlooked — `bgd_admin3.geojson` is 1.7 MB and 507 features — and it is
+fetched once per session, never blocks the points, and states the wait while it
+happens. `boundary=none` is spelled out like `layers=none`, or a reader who
+switched the backdrop off would get it back on reload.
+
 ### What stayed removed
 
-The administrative geometry — `map_area_boundaries`, `map_admin_points`,
-`map_area_styles`, `GET /api/map/areas`, the `public/geo/` files and the
-scripts that built them — did not come back; the four administrative
-dimensions did, as master data. The retired `MARKER_*` and
+The administrative geometry **in the database** — `map_area_boundaries`,
+`map_admin_points`, `map_area_styles` and `GET /api/map/areas` — did not come
+back, and the four administrative dimensions did, as master data.
+
+The `public/geo/` files **did** come back, and this paragraph used to say
+otherwise. Five of them (country, divisions, districts, upazilas, sea mask,
+2.2 MB) were restored byte-identical to what `4ee51b7` deleted, as the static
+reference backdrop described above; they are committed rather than built, and
+`.gitignore` carries an explicit negation for them. The **generator** did not
+come back: `scripts/build_map_geojson.py` went with the removal and imports
+`app.map.geometry`, which went too, so restoring the script alone would ship
+one that fails on import. The practical consequence is worth stating rather
+than discovering — a new COD-AB release cannot be processed until both return,
+which is its own piece of work. The retired `MARKER_*` and
 `MAP_LOCATION_UPDATED` audit actions stay in `models_ai.AuditAction` because
 `audit_logs` still holds rows carrying them. `0033` destroyed 1,397
 coordinates, 6,284 administrative points and 580 boundary rings, on
