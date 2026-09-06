@@ -1563,16 +1563,38 @@ period, and where is it"; this one answers only "where is it". No fact table
 is read, no period applies and no metric is computed, so nothing on it can
 disagree with a report — there is no figure on it to disagree with.
 
-**What it draws is exactly the rows of `map_entity_locations`.** Every
-coordinate at every level, placed and derived alike. The acid test is that for
-the same filter selection the number of points on the map equals the number of
-rows Data Management ▸ Map Locations lists — 1,139 on `data/dev.db`, 299 on the
-deployment — and `test_map_demarcation` pins it. Revision
-`0036_demarcation_all_levels` exists because that test failed at 1,124 of
-1,139: the seeded design hid Unit and Sales Force and had no layer at all for
-Company, Business Unit or Sales Line. A hidden level is one fewer thing
-competing for the eye on a map of *figures*, and a hidden **row** on a map of
-coordinates.
+**It draws stated positions only, and accounts for every row it does not
+draw.** A `DERIVED` row is the average of the coordinates below it, so it marks
+a spot nobody surveyed and often one no customer occupies — worse than useless
+on the one map read to decide where a line falls. Such rows were drawn hollow,
+which tells them apart honestly and still puts a mark at a computed point, so
+they are now excluded from the features and **counted** instead.
+
+The acid test therefore reads `drawn + derived = stored` rather than
+`drawn = stored`, and each level partitions as
+`available + derived + missing = total` — `missing` meaning *no coordinate at
+all*, since an entity whose only coordinate is computed is not unmapped. Both
+are pinned by `test_map_demarcation`, and the pair is strictly stronger than
+the old equality: a row dropped for any other reason fails it. On `data/dev.db`
+that is 846 drawn and 293 centroids of 1,139 stored; on the deployment 239 and
+60 of 299.
+
+The exclusion is **server-side**, so no `DERIVED` feature reaches the browser.
+Filtering in the renderer would leave the counts describing one set of points
+and the canvas showing another, which is the disagreement this tab exists to
+prevent.
+
+The shape of the data differs sharply between the two environments, and that is
+data rather than behaviour: `data/dev.db`'s organisational coordinates are all
+centroids derived from its 846 uploaded customers, so every level above
+Customer draws nothing there, while the deployment's territories and
+sub-territories were uploaded and keep their points.
+
+Revision `0036_demarcation_all_levels` exists because the acid test — then the
+plain equality — failed at 1,124 of 1,139: the seeded design hid Unit and Sales
+Force and had no layer at all for Company, Business Unit or Sales Line. A hidden
+level is one fewer thing competing for the eye on a map of *figures*, and a
+hidden **row** on a map of coordinates.
 
 **A filter narrows by containment, not by row**, and this is the one place the
 map departs from every report table in the platform. A report ANDs its filters

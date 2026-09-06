@@ -44,6 +44,16 @@ node's own coordinate and every level beneath it, never its ancestors.
 :func:`subtree_codes` is that shape and says how it differs from
 :func:`app.org.hierarchy.resolve_org_scope`, which supplies both directions.
 
+**A centroid is counted, never drawn.** A ``DERIVED`` row is the average of
+the coordinates below it, so it marks a point where nothing was surveyed and
+often where no customer is — useless on the one map read to decide where a line
+falls, and actively misleading beside real positions. Drawing it hollow told
+the two apart and still put a mark there. So the features exclude it and
+:attr:`LocationLayer.derived` counts it, which keeps this tab's contract intact
+in its stronger form: ``placed + derived + missing == total`` at every level,
+and every row of ``map_entity_locations`` is still accounted for even though
+not every row is drawn.
+
 **A level with no coordinates says so.** An empty layer carries a note naming
 what to load, because a blank map and a map of nothing look identical and only
 one of them is a data problem. The deployment has no customer coordinates at
@@ -99,9 +109,19 @@ class LocationLayer:
     #: difference between a narrow filter and a barely-mapped level, and the
     #: reader has no other way to know which they are looking at.
     available: int = 0
-    #: How many of the placed coordinates are centroids rather than positions
-    #: somebody stated. Reported separately because the renderer draws them
-    #: differently and a reader has to be able to count them.
+    #: Centroids at this level, in scope — counted and **not drawn**.
+    #:
+    #: A `DERIVED` row is not a place, it is the average of the places below
+    #: it, so on a map read to judge where a boundary falls it answers a
+    #: question nobody asked and sits exactly where no customer is. It used to
+    #: be drawn hollow, which distinguishes it honestly but still puts a mark
+    #: on the map at a computed point.
+    #:
+    #: It is **counted** rather than dropped, because this tab's contract is
+    #: that every row of `map_entity_locations` is accounted for: what is drawn
+    #: plus what is derived plus what has no coordinate at all is the whole
+    #: master. Silently omitting them would make the map's own figures stop
+    #: adding up to the table Data Management lists.
     derived: int = 0
     bounds: dict[str, Any] | None = None
     notes: list[str] = field(default_factory=list)
@@ -112,13 +132,19 @@ class LocationLayer:
 
     @property
     def missing(self) -> int:
-        """Records with no coordinate — never records a filter excluded.
+        """Records with **no coordinate at all**.
 
         Against ``available`` rather than ``placed``: a placed coordinate the
         reader filtered out has not gone missing, and counting it here would
         report a data problem every time somebody narrowed the map.
+
+        ``derived`` comes off too, or an entity whose only coordinate is a
+        centroid would be reported as unmapped — which is a different and
+        wrong statement. It *has* a coordinate; that coordinate is computed,
+        so this map does not draw it. The three counts partition the level:
+        ``available + derived + missing == total``.
         """
-        return max(0, self.total - self.available)
+        return max(0, self.total - self.available - self.derived)
 
     def feature_collection(self) -> dict[str, Any]:
         return {"type": "FeatureCollection", "features": self.features}
@@ -529,18 +555,27 @@ def layer_locations(session: Session, level_key: str,
     # points tells them a total they may not see under a label saying it is
     # theirs. Scope bounds what a reader is told exists exactly as it bounds
     # what they are shown.
-    layer.available = sum(
-        1 for code in placed
+    #
+    # Centroids are excluded here as well as from the features. `available` is
+    # the denominator of "9 of 94", and counting rows the map will not draw
+    # would make that pair unreachable — the numerator could never catch it.
+    in_scope = [
+        code for code in placed
         if subtree is None or subtree.allows_in_scope(level.key, code)
+    ]
+    layer.available = sum(
+        1 for code in in_scope if placed[code].source != GeoSource.DERIVED
     )
+    layer.derived = len(in_scope) - layer.available
 
     points: list[tuple[float, float]] = []
     for code, location in sorted(placed.items()):
         if subtree is not None and not subtree.allows(level.key, code):
             continue
-        name, parent_code = master.get(code, (None, None))
+        # A centroid is a computation, not a position. See `derived` above.
         if location.source == GeoSource.DERIVED:
-            layer.derived += 1
+            continue
+        name, parent_code = master.get(code, (None, None))
         layer.features.append({
             "type": "Feature",
             "id": f"{level.key}:{code}",
@@ -634,6 +669,15 @@ def layer_locations(session: Session, level_key: str,
             f"{'record' if layer.total == 1 else 'records'} "
             f"{'has' if layer.missing == 1 else 'have'} no coordinate and "
             f"cannot be drawn."
+        )
+    # Said whatever else the layer reports, because the difference between
+    # "nothing is placed here" and "what is here is computed" is the difference
+    # between surveying an area and reading a map that already answers.
+    if layer.derived:
+        layer.notes.append(
+            f"{layer.derived} {noun} "
+            f"{'centroid is' if layer.derived == 1 else 'centroids are'} "
+            f"computed from the coordinates below and not drawn."
         )
     if subtree is not None and subtree.scope_note and layer.placed == 0:
         layer.notes.append(subtree.scope_note)

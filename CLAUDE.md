@@ -484,12 +484,26 @@ change reaches it only after `cd frontend; npm run build` (no service restart
 
 **Step 9, the second tab (`map/locations.py`, `GET /api/map/locations`,
 `0035_map_demarcation`, `0036_demarcation_all_levels`).** Area Demarcation
-draws **exactly the rows of `map_entity_locations`** and reads no fact table
+draws **the stated positions in `map_entity_locations`** and reads no fact table
 at all, so nothing on it can disagree with a report — there is no figure on it
-to disagree with. The acid test is that the number of points equals the number
-of rows Data Management lists for the same filters, and it is pinned; `0036`
-exists because it failed at 1,124 of 1,139, the seeded design having hidden
-Unit and Sales Force and had no layer at all above Zone. A hidden level is one
+to disagree with. **A centroid is counted, never drawn**: a `DERIVED` row is
+the average of the coordinates below it, so it marks a spot nobody surveyed, and
+drawing it hollow told it apart while still putting a mark there. The exclusion
+is server-side — filtering in the renderer would leave the counts describing one
+set of points and the canvas another. So the acid test is a partition rather
+than an equality: `drawn + derived == stored`, with each level satisfying
+`available + derived + missing == total` (`missing` means *no coordinate at
+all*, or an entity whose only coordinate is computed would read as unmapped).
+That is stronger than the equality it replaced, because a row dropped for any
+other reason still fails it. `0036` exists because the old equality failed at
+1,124 of 1,139, the seeded design having hidden Unit and Sales Force and had no
+layer at all above Zone.
+
+**The two environments look nothing alike here, and it is the data.**
+`data/dev.db`'s organisational coordinates are all centroids derived from its
+846 uploaded customers, so every level above Customer draws nothing there; the
+deployment uploaded its territories and sub-territories, so it draws 239 of 299
+with 60 centroids withheld. A hidden level is one
 fewer thing competing for the eye on a map of figures and a hidden **row** on a
 map of coordinates. The design lives in the same tables behind
 `map_designs.purpose`, so a reader is never offered the other map's design.
@@ -543,9 +557,11 @@ for the whole chain, never a query per point — and it lives in `app/org` rathe
 than in the map because "which entity at level X contains this one" is an
 organisational question. The server assigns every group's colour and the
 renderer turns that list into one MapLibre `match` over `group_code`, wrapping
-the existing `case` on `source` so a derived point stays hollow *in its group's
-colour*. Shape carries the level and colour carries the parent: two questions
-about one dot, and collapsing them into one channel would answer neither.
+the existing `case` on `source`. That `case` is now inert on this tab, since
+no `DERIVED` feature is sent at all, and it is kept rather than unwound because
+the renderer is generic and the distinction costs nothing. Shape carries the
+level and colour carries the parent: two questions about one dot, and collapsing
+them into one channel would answer neither.
 
 **Nothing cycles the palette.** Two neighbours sharing a colour on a map used to
 judge where a boundary falls is a wrong answer, not an untidy one — so a level

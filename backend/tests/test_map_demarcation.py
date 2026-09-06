@@ -270,13 +270,34 @@ def test_a_derived_coordinate_is_counted_apart_from_a_placed_one(client,
     headers = login(client)
     body = fetch(client, headers, levels=["region", "zone"])
     zone = layer_of(body, "zone")
-    assert zone["placed"] > 0, "zone is derived from the placed regions"
-    assert zone["derived"] == zone["placed"]
-    assert all(feature["properties"]["source"] == GeoSource.DERIVED
-               for feature in zone["features"]["features"])
+    # Counted, and deliberately not drawn: the zone's centroid is the average
+    # of its regions, a spot nobody surveyed.
+    assert zone["derived"] > 0, "zone is derived from the placed regions"
+    assert zone["placed"] == 0
+    assert zone["features"]["features"] == []
+    # Never silently: the omission is stated where the reader will see it.
+    assert any("not drawn" in note for note in zone["notes"])
 
     region = layer_of(body, "region")
     assert region["derived"] == 0, "a placed region is not a centroid"
+    assert region["placed"] > 0
+
+
+def test_no_centroid_reaches_the_browser_at_any_level(client, agent_engine):
+    """Not drawn means not sent — the browser is given no DERIVED feature.
+
+    Filtering in the renderer instead would leave the counts describing one set
+    of points and the canvas showing another, which is the disagreement this
+    tab is built to make impossible.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    for layer in fetch(client, login(client))["layers"]:
+        for feature in layer["features"]["features"]:
+            assert feature["properties"]["source"] != GeoSource.DERIVED, (
+                f"{layer['level']} sent a centroid to the browser"
+            )
 
 
 def test_each_layer_carries_the_configuration_it_is_drawn_with(client):
@@ -371,22 +392,54 @@ def test_every_drawable_level_is_visible_on_the_demarcation_design(agent_engine)
     assert drawn == set(LEVEL_KEYS), sorted(set(LEVEL_KEYS) - drawn)
 
 
-def test_the_points_drawn_equal_the_rows_stored(client, agent_engine):
-    """The acid test: unfiltered, the map is the table.
+def test_every_stored_row_is_drawn_or_counted_as_a_centroid(client,
+                                                             agent_engine):
+    """The acid test, in the form it takes now that centroids are not drawn.
 
-    If these two ever disagree the map is the one that is wrong — it is drawing
-    a subset of ``map_entity_locations`` and calling it the whole.
+    It used to read ``drawn == stored``, and the reason it had to change is a
+    product decision rather than a defect: a ``DERIVED`` row is the average of
+    the coordinates below it, so it marks a spot nobody surveyed and often one
+    no customer occupies, which is worse than useless on the one map read to
+    decide where a line falls.
+
+    What the tab still owes the reader is that **no row goes missing without
+    being counted**. So the claim is now a partition — what is drawn plus what
+    is a centroid is the whole table — and it is strictly stronger than a
+    subset check would be, because a row dropped for any other reason fails it.
     """
     from sqlalchemy import func
     from app.database.models_map import MapEntityLocation
 
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
     headers = login(client)
     body = fetch(client, headers)
     drawn = sum(layer["placed"] for layer in body["layers"])
+    derived = sum(layer["derived"] for layer in body["layers"])
     with Session(agent_engine) as db:
         stored = db.execute(
             select(func.count()).select_from(MapEntityLocation)).scalar_one()
-    assert drawn == stored
+
+    assert drawn + derived == stored
+    assert derived > 0, "the fixture must derive something, or this proves little"
+
+
+def test_the_three_counts_partition_every_level(client, agent_engine):
+    """``available + derived + missing == total``, level by level.
+
+    ``missing`` means "no coordinate at all", so a centroid must come off it as
+    well as off ``available`` — otherwise an entity whose only coordinate is
+    computed would be reported as unmapped, which is a different and wrong
+    statement about the data.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    for layer in fetch(client, login(client))["layers"]:
+        assert (layer["available"] + layer["derived"] + layer["missing"]
+                == layer["total"]), layer["level"]
 
 
 def test_the_tooltip_can_tell_a_placed_point_from_a_computed_one(client):
@@ -654,17 +707,24 @@ def test_a_level_colours_itself(client, agent_engine):
 
 def test_a_point_above_the_colour_level_is_neutral_and_counted(
         client, agent_engine):
-    """A zone has no region above it, and none is invented."""
+    """A region has no area above it, and none is invented.
+
+    Colouring by *area* rather than by region, and checking the *region* layer,
+    because the level above the selection has to be one that is actually drawn:
+    zone was the natural choice and is a centroid in this fixture, so since
+    centroids stopped being drawn there is no zone point left to be neutral.
+    Region is uploaded, so it is on the map and above area.
+    """
     with Session(agent_engine) as db:
         geo.derive_parents(db)
         db.commit()
-    body = fetch(client, login(client), color_by="region")
-    zones = layer_of(body, "zone")["features"]["features"]
-    assert zones, "the fixture must place a zone"
-    assert all(f["properties"]["group_code"] is None for f in zones)
+    body = fetch(client, login(client), color_by="area")
+    regions = layer_of(body, "region")["features"]["features"]
+    assert regions, "the fixture must place a region"
+    assert all(f["properties"]["group_code"] is None for f in regions)
     # Reported rather than quietly drawn neutral: a reader looking at grey dots
     # needs to know whether that is an answer or a gap.
-    assert body["color_by"]["ungrouped"] >= len(zones)
+    assert body["color_by"]["ungrouped"] >= len(regions)
     assert "neutral" in body["color_by"]["note"]
 
 

@@ -1125,7 +1125,7 @@
   "map.tab.map": "বিজনেস ম্যাপ",
   "map.tab.demarcation": "এরিয়া ডিমার্কেশন",
   "map.demarcationLegend": "লেভেল",
-  "map.legendDerived": "ফাঁপা: নিচের পয়েন্টগুলোর কেন্দ্রবিন্দু",
+  "map.legendDerived": "{count} টি উদ্ভূত কেন্দ্রবিন্দু, আঁকা হয়নি",
   "map.legendMissing": "{total} টি {level} রেকর্ডের মধ্যে {missing} টির কোনো স্থানাঙ্ক নেই।",
   "map.legendMatched": "{available} এর মধ্যে {placed}",
   "map.colorByLevel": "রঙ করুন",

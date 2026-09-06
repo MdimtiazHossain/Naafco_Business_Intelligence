@@ -2624,7 +2624,13 @@ export interface MapLocationLayer {
    * would hand them a total they may not see under a label calling it theirs.
    */
   available: number;
-  /** Of the placed, how many are centroids rather than stated positions. */
+  /**
+   * Centroids at this level — **counted, and not drawn**.
+   *
+   * A `DERIVED` row is the average of the coordinates below it, so it marks a
+   * spot nobody surveyed. No such feature is sent, so this is the only trace
+   * of them the browser gets; `placed + derived + missing === total`.
+   */
   derived: number;
   /** Records with no coordinate. Never records a filter excluded. */
   missing: number;

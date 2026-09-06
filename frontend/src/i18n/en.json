@@ -1125,7 +1125,7 @@
   "map.tab.map": "Business Map",
   "map.tab.demarcation": "Area Demarcation",
   "map.demarcationLegend": "Levels",
-  "map.legendDerived": "Hollow: centroid of what is below it",
+  "map.legendDerived": "{count} computed centroids, not drawn",
   "map.legendMissing": "{missing} of {total} {level} records have no coordinate.",
   "map.legendMatched": "{placed} of {available}",
   "map.colorByLevel": "Colour by",
