@@ -200,10 +200,20 @@ MAX_CATEGORICAL_GROUPS = len(CATEGORICAL_PALETTE)
 #: answer — and it is the question somebody deciding where a line falls is
 #: actually asking. Nothing is hidden and no colour means two things.
 #:
-#: The neutral is the same slate :data:`NO_DATA_COLOR` uses, and that is not a
-#: collision worth avoiding: both say "there is nothing to read here".
+#: **The neutral is a step darker than :data:`NO_DATA_COLOR`, and no longer the
+#: same value.** It was the same slate, on the argument that both say "there is
+#: nothing to read here" — which is true of the words and wrong on the screen.
+#: A demarcation point is a few pixels drawn over the administrative outlines,
+#: and at country zoom the lighter slate sat so close to the boundary line
+#: colour that the un-picked groups read as part of the backdrop rather than as
+#: points. Darkening it keeps them legible as points while staying clearly
+#: recessive against :data:`FOCUS_COLOR`.
+#:
+#: ``NO_DATA_COLOR`` is deliberately left where it is: it answers a different
+#: question on a different map — a figure that is absent on the analysis map —
+#: and nothing about this one is a reason to restyle that.
 FOCUS_COLOR = "#dc2626"
-GROUP_NEUTRAL_COLOR = NO_DATA_COLOR
+GROUP_NEUTRAL_COLOR = "#64748b"
 
 #: The flat colour a point takes where no metric decides one — which is every
 #: point on the demarcation map. Blue rather than slate: slate is
