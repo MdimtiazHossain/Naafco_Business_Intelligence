@@ -215,7 +215,7 @@ __all__ = [
     "BOUNDARY_BY_KEY",
     "BOUNDARY_KEYS",
     "BOUNDARY_SETS",
-    "DEFAULT_BOUNDARY",
+    "DEFAULT_BOUNDARY_BY_PURPOSE",
     "MASK_FILE",
     "PATH_PREFIX",
     "BoundarySet",

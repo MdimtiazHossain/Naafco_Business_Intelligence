@@ -119,6 +119,28 @@ def test_the_catalogue_says_out_loud_what_these_are_not():
     assert "not business boundaries" in note.lower()
 
 
+def test_every_exported_name_still_names_something():
+    """`__all__` is a list of names, and this file's opening rule applies to it.
+
+    Renaming ``DEFAULT_BOUNDARY`` to ``DEFAULT_BOUNDARY_BY_PURPOSE`` left the
+    old name in ``__all__``, where it broke ``from ... import *`` with an
+    ``AttributeError`` and nothing else — no importer in this codebase uses a
+    star import of this module, so the whole suite stayed green over a module
+    that could not be imported one of the two ways Python offers.
+
+    A stale name in a default does not degrade to a missing item; it breaks the
+    thing that reads it. That is the rule the top of CLAUDE.md opens with, and
+    an export list is as much a hand-written list as a layer catalogue is.
+    """
+    missing = [name for name in boundaries.__all__
+               if not hasattr(boundaries, name)]
+    assert not missing, f"__all__ names what does not exist: {missing}"
+
+    # And the other direction, cheaply: a public symbol nobody exported is not
+    # an error, but the two lists drifting is what this test exists to catch.
+    exec("from app.map.boundaries import *", {})
+
+
 def test_the_business_map_still_opens_with_no_backdrop():
     """The reason the demarcation tab now opens with one does not reach here.
 
