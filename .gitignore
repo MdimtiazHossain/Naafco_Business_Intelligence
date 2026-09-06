@@ -61,13 +61,14 @@ Master Data.xlsx
 bgd_admin_boundaries.geojson/
 *.geojson
 # ...but frontend/public/geo/ holds the browser-sized derivatives the map
-# actually draws — simplified and coordinate-rounded by
-# scripts/build_map_geojson.py, 3.3 MB for all eight. Vite copies them into
-# dist/ and the browser fetches them directly, so without them every
+# actually draws — simplified and coordinate-rounded, 2.2 MB for the five that
+# are shipped (country, divisions, districts, upazilas, sea mask). Vite copies
+# them into dist/ and the browser fetches them directly, so without them every
 # administrative layer 404s on a fresh clone. They cannot be regenerated on a
-# host that lacks the ~118 MB source release above, which is why they are
-# committed rather than built. manifest.json was already tracked; these belong
-# beside it.
+# host that lacks the ~118 MB source release above — nor, at present, on one
+# that has it, since the generator was removed with the rest of the old map —
+# which is why they are committed rather than built. manifest.json is committed
+# with them and records where they came from.
 !frontend/public/geo/
 !frontend/public/geo/*.geojson
 
