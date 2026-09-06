@@ -61,6 +61,19 @@ export interface DemarcationTabProps {
    * excluded.
    */
   query: GlobalFilters;
+  /**
+   * The organisational level whose entities colour the points, or `null`.
+   *
+   * With derived points set aside this map is mostly customer dots, and 846
+   * undifferentiated dots do not show where one area ends and the next begins —
+   * which is the only question the tab exists to answer. Colouring by an
+   * ancestor is what makes it legible.
+   */
+  colorBy: string | null;
+  onColorByChange: (level: string | null) => void;
+  /** The one group picked out where a level has too many to colour at once. */
+  focus: string | null;
+  onFocusChange: (code: string | null) => void;
   selected: ShapeSelection | null;
   onSelect: (selection: ShapeSelection | null) => void;
   /** The administrative backdrop, chosen by the reader and held in the URL. */
@@ -83,12 +96,17 @@ export interface DemarcationTabProps {
 
 export function DemarcationTab({
   config, design, designs, onDesignChange, levels, onLevelsChange,
-  query, selected, onSelect, boundary, boundarySelected, onBoundaryChange,
+  query, colorBy, onColorByChange, focus, onFocusChange,
+  selected, onSelect, boundary, boundarySelected, onBoundaryChange,
   onBoundarySelect, onBoundaryState, boundaryState, onMap,
 }: DemarcationTabProps) {
   const t = useT();
   const [activeChoice, setActiveChoice] = useState<string | null>(null);
-  const locations = useMapLocations(design?.design_id, levels, query);
+  const locations = useMapLocations(design?.design_id, levels, query, {
+    ...(colorBy ? { color_by: colorBy } : {}),
+    ...(colorBy && focus ? { focus } : {}),
+  });
+  const colouring = locations.data?.color_by ?? null;
   const layers: MapLocationLayer[] = locations.data?.layers ?? [];
 
   const basemap = useMemo(() => (
@@ -131,6 +149,10 @@ export function DemarcationTab({
    */
   const notes = useMemo(() => [...new Set([
     ...(locations.data?.scope_note ? [locations.data.scope_note] : []),
+    // Why a level is drawn one group at a time, or why some points are grey.
+    // Beside the layers' own notes rather than tucked into the legend: it
+    // explains the whole map, not one level of it.
+    ...(locations.data?.color_by?.note ? [locations.data.color_by.note] : []),
     ...layers.flatMap((layer) => layer.notes),
   ])], [layers, locations.data]);
 
@@ -219,6 +241,57 @@ export function DemarcationTab({
           })}
         </div>
 
+        {/* Colour by the parent that contains each point. The levels come from
+            the server's own list — the organisational chain — so a level added
+            to the hierarchy is offered here without this file changing. */}
+        <div className="flex items-center gap-2">
+          <label className="label mb-0 whitespace-nowrap" htmlFor="demarcation-colorby">
+            {/* `colorByLevel`, not `colorBy`: that key is taken by the
+                analysis legend's "Colour: Achievement %" and means something
+                else. Two controls sharing a key is how one screen's wording
+                silently rewrites another's. */}
+            {t('map.colorByLevel')}
+          </label>
+          <select
+            id="demarcation-colorby"
+            className="input w-auto min-w-[9rem] py-1.5"
+            value={colorBy ?? ''}
+            onChange={(event) => onColorByChange(event.target.value || null)}
+          >
+            <option value="">{t('map.colorByNone')}</option>
+            {config.color_by_levels.map((key) => (
+              <option key={key} value={key}>
+                {config.levels.find((level) => level.key === key)?.label ?? key}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Offered only where the level has more groups than the palette can
+            keep apart — below that every group already has its own colour, and
+            a picker whose only effect is to make one dot red among eleven
+            coloured ones would be a control with nothing to do. */}
+        {colouring?.mode === 'focus' && colouring.groups.length > 0 && (
+          <div className="flex items-center gap-2">
+            <label className="label mb-0 whitespace-nowrap" htmlFor="demarcation-focus">
+              {t('map.colorFocus')}
+            </label>
+            <select
+              id="demarcation-focus"
+              className="input w-auto min-w-[10rem] py-1.5"
+              value={focus ?? ''}
+              onChange={(event) => onFocusChange(event.target.value || null)}
+            >
+              <option value="">{t('map.colorFocusNone')}</option>
+              {colouring.groups.map((group) => (
+                <option key={group.code} value={group.code}>
+                  {group.name} ({group.count})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <BoundaryControl
           id="demarcation-boundary"
           catalogue={config.boundaries}
@@ -251,6 +324,7 @@ export function DemarcationTab({
             view={config.view}
             layers={layers}
             shapes={config.shapes}
+            colorBy={colouring}
             narrowed={narrowed}
             selected={selected}
             onSelect={onSelect}

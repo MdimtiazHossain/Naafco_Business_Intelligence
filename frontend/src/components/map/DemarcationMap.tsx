@@ -16,7 +16,7 @@ import type { Map as MapLibreInstance } from 'maplibre-gl';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useT } from '../../contexts/I18nContext';
 import type {
-  MapBasemap, MapBoundarySet, MapLocationLayer, MapShape, MapStyle,
+  MapBasemap, MapBoundarySet, MapColorBy, MapLocationLayer, MapShape, MapStyle,
 } from '../../types/api';
 import { DemarcationLegend } from './DemarcationLegend';
 import { LAYER_SUFFIXES, layerId } from './mapExpressions';
@@ -34,6 +34,8 @@ export interface DemarcationMapProps {
   view: MapView;
   layers: MapLocationLayer[];
   shapes: MapShape[];
+  /** How the points are grouped and coloured, as the server assigned it. */
+  colorBy?: MapColorBy | null;
   /** Whether a filter is narrowing the points; the legend counts differently. */
   narrowed?: boolean;
   selected: ShapeSelection | null;
@@ -65,6 +67,7 @@ export function DemarcationMap({
   view,
   layers,
   shapes,
+  colorBy = null,
   narrowed = false,
   selected,
   onSelect,
@@ -92,7 +95,8 @@ export function DemarcationMap({
   }, [onMap]);
 
   useShapeRenderer({
-    map, styleVersion, layers, shapes, selected, onSelect, onHover: setHover, fitKey,
+    map, styleVersion, layers, shapes, colorBy, selected, onSelect,
+    onHover: setHover, fitKey,
   });
 
   // Same backdrop, same hook, beneath the shapes for the same reason.
@@ -121,6 +125,7 @@ export function DemarcationMap({
         <DemarcationLegend
           layers={layers}
           shapes={shapes}
+          colorBy={colorBy}
           narrowed={narrowed}
           activeLevel={activeLevel}
           onActiveLevel={onActiveLevel}

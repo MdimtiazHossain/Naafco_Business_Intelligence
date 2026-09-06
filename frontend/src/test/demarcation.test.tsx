@@ -16,7 +16,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../contexts/I18nContext';
 import { ThemeProvider } from '../contexts/ThemeContext';
@@ -112,6 +112,7 @@ const RESPONSE: MapLocationsResponse = {
   levels: ['region', 'territory'],
   filters: {},
   scope_note: null,
+  color_by: null,
   empty: false,
   layers: [
     locationLayer('region', 1, [point('region', 'REG001', 'Dhaka'),
@@ -119,6 +120,24 @@ const RESPONSE: MapLocationsResponse = {
     locationLayer('territory', 2, [point('territory', 'TR001', 'Kazipara')]),
   ],
 };
+
+/**
+ * The router's current query string, rendered where a test can read it.
+ *
+ * `window.location` is the wrong thing to assert here and quietly so:
+ * `MemoryRouter` keeps its history in memory and never touches the document's
+ * location, so `window.location.search` is the empty string for the whole run.
+ * An assertion that something is *absent* from it therefore passes without
+ * testing anything — which is what the tab-switch test below had been doing.
+ */
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="query">{location.search}</span>;
+}
+
+function query(): string {
+  return screen.getByTestId('query').textContent ?? '';
+}
 
 function wrap(route = ROUTE) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -129,6 +148,7 @@ function wrap(route = ROUTE) {
           <MemoryRouter initialEntries={[route]}>
             <FilterProvider>
               <BusinessMapPage />
+              <LocationProbe />
             </FilterProvider>
           </MemoryRouter>
         </ThemeProvider>
@@ -342,11 +362,146 @@ describe('Area Demarcation tab', () => {
     expect(await screen.findByText(/no scope has been granted/)).toBeInTheDocument();
   });
 
+  // ========================================================================
+  // Coloured by the parent that contains it
+  // ========================================================================
+
+  /** A `color_by` block as the server assigns it, with the points to match. */
+  function coloured(mode: 'categorical' | 'focus', focus: string | null = null) {
+    const groups = mode === 'categorical'
+      ? [{ code: 'REG001', name: 'Dhaka', color: '#0072b2', count: 1 },
+         { code: 'REG002', name: 'Khulna', color: '#e69f00', count: 1 }]
+      : [{ code: 'REG001', name: 'Dhaka',
+           color: focus === 'REG001' ? '#dc2626' : '#94a3b8', count: 1 },
+         { code: 'REG002', name: 'Khulna', color: '#94a3b8', count: 1 }];
+    return {
+      ...RESPONSE,
+      color_by: {
+        level: 'region', label: 'Region', mode, groups, focus,
+        ungrouped: 1,
+        note: mode === 'focus' && !focus
+          ? '2 groups at region level is more than 4 colours can keep apart, '
+            + 'so nothing is coloured until you pick one.'
+          : '1 drawn point sits above or outside every region.',
+      },
+      layers: RESPONSE.layers.map((layer) => ({
+        ...layer,
+        features: {
+          ...layer.features,
+          features: layer.features.features.map((feature, index) => ({
+            ...feature,
+            properties: {
+              ...feature.properties,
+              group_code: index === 0 ? 'REG001' : 'REG002',
+            },
+          })),
+        },
+      })),
+    };
+  }
+
+  it('asks the server to colour by the level in the URL', async () => {
+    wrap('/map?tab=demarcation&colorby=region');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    const call = locations.mock.calls[0][0] as Record<string, unknown>;
+    // The parent walk is the server's: the browser holds no hierarchy, and a
+    // page that computed one could disagree with every other surface.
+    expect(call.color_by).toBe('region');
+  });
+
+  it('draws each group in the colour it was sent, and picks none itself', async () => {
+    locations.mockResolvedValue(coloured('categorical'));
+    wrap('/map?tab=demarcation&colorby=region');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    const map = await fakeMap();
+    await waitFor(() => expect(map.layers.has('business-map-region-points')).toBe(true));
+
+    // One `match` over `group_code`, built from the server's list. What is
+    // pinned is the shape of the ask, not the pixels: the icon ids carry the
+    // colour, so a colour the server did not send cannot reach the canvas.
+    const icon = JSON.stringify(
+      (map.layers.get('business-map-region-points') as { layout?: Record<string, unknown> })
+        ?.layout?.['icon-image'],
+    );
+    expect(icon).toContain('match');
+    expect(icon).toContain('group_code');
+    expect(icon).toContain('REG001');
+    expect(icon).toContain('0072b2');
+  });
+
+  it('names every group in the legend beside its colour', async () => {
+    locations.mockResolvedValue(coloured('categorical'));
+    wrap('/map?tab=demarcation&colorby=region');
+    const legend = (await screen.findByText('Levels')).closest('div')!;
+    // A swatch a reader cannot name answers "these differ" and not "which is
+    // which", and the second is the question a demarcation reader has.
+    expect(await within(legend).findByText('By region')).toBeInTheDocument();
+    expect(within(legend).getByText('Dhaka')).toBeInTheDocument();
+    expect(within(legend).getByText('Khulna')).toBeInTheDocument();
+  });
+
+  it('offers no group picker while every group has its own colour', async () => {
+    locations.mockResolvedValue(coloured('categorical'));
+    wrap('/map?tab=demarcation&colorby=region');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    // A control whose only outcome would be to make one dot red among a dozen
+    // already-distinct ones is absent, not disabled.
+    expect(screen.queryByLabelText('Pick one')).not.toBeInTheDocument();
+  });
+
+  it('offers the picker and colours nothing until one is picked', async () => {
+    locations.mockResolvedValue(coloured('focus'));
+    wrap('/map?tab=demarcation&colorby=region');
+    expect(await screen.findByLabelText('Pick one')).toBeInTheDocument();
+    // Neutral until they choose: a focus nobody asked for is a filter nobody
+    // applied, and the note says why rather than leaving grey unexplained.
+    expect(await screen.findByText(/nothing is coloured until you pick one/))
+      .toBeInTheDocument();
+  });
+
+  it('sends the picked group and keeps it in the URL', async () => {
+    locations.mockResolvedValue(coloured('focus'));
+    wrap('/map?tab=demarcation&colorby=region');
+    const picker = await screen.findByLabelText('Pick one');
+    fireEvent.change(picker, { target: { value: 'REG001' } });
+    await waitFor(() => expect(query()).toContain('focus=REG001'));
+    await waitFor(() => {
+      const last = locations.mock.calls.at(-1)![0] as Record<string, unknown>;
+      expect(last.focus).toBe('REG001');
+    });
+  });
+
+  it('drops the picked group when the level changes', async () => {
+    locations.mockResolvedValue(coloured('focus', 'REG001'));
+    wrap('/map?tab=demarcation&colorby=region&focus=REG001');
+    const level = await screen.findByLabelText('Colour by');
+    // Proven present first, so the absence below is a change and not the
+    // empty string a vacuous assertion would also accept.
+    expect(query()).toContain('focus=REG001');
+    fireEvent.change(level, { target: { value: 'area' } });
+    // A region code means nothing among areas. Carried over it would pick
+    // nothing while the control claimed a selection.
+    await waitFor(() => expect(query()).toContain('colorby=area'));
+    expect(query()).not.toContain('focus=');
+  });
+
+  it('asks for no colouring until a level is chosen', async () => {
+    wrap('/map?tab=demarcation');
+    await waitFor(() => expect(locations).toHaveBeenCalled());
+    const call = locations.mock.calls[0][0] as Record<string, unknown>;
+    expect(call.color_by).toBeUndefined();
+    expect(screen.queryByLabelText('Pick one')).not.toBeInTheDocument();
+  });
+
   it('switching tabs drops the layer toggles that belonged to the other map', async () => {
     wrap('/map?tab=demarcation&layers=region&selected=region:REG001');
     await waitFor(() => expect(locations).toHaveBeenCalled());
+    expect(query()).toContain('layers=region');
     fireEvent.click(screen.getByRole('button', { name: 'Business Map' }));
-    await waitFor(() =>
-      expect(window.location.search.includes('layers=region')).toBe(false));
+    // Read from the router rather than from `window.location`, which
+    // `MemoryRouter` never writes to — this assertion used to hold against the
+    // empty string whatever the page did.
+    await waitFor(() => expect(query()).not.toContain('layers=region'));
+    expect(query()).not.toContain('selected=');
   });
 });

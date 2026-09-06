@@ -215,6 +215,74 @@ def _path_query():
     return statement
 
 
+def ancestor_codes(session: Session, ancestor_level: str) -> dict[str, dict[str, str]]:
+    """``{level: {entity code: its ancestor's code at ancestor_level}}``.
+
+    Asked once for the whole chain rather than per entity, because the caller
+    is a map with a four-figure point count and the alternative is a query per
+    dot. One pass of :func:`_path_query` already joins every level to every
+    other, so this is that statement read a second way.
+
+    Only levels **at or below** ``ancestor_level`` appear. A zone has no region
+    above it, and inventing one would be the guess this platform exists to
+    avoid; the caller draws such a point neutral and says why. The level maps to
+    *itself*, which is not a special case but the honest answer: colouring
+    regions by region gives each region its own colour.
+
+    Customer and sales force are reached through their own dimension's parent
+    column — ``sub_territory_code`` and ``territory_code`` — because they hang
+    off the chain rather than sitting in it. A row whose parent code names
+    nothing in the chain is simply absent from the result, the same as a level
+    above the ancestor: a coordinate is never assigned to a parent the master
+    data does not put it under.
+    """
+    # Imported here rather than at module scope, matching `_add_master_customers`
+    # below: `models_warehouse` reaches back into this package.
+    from ..database.models_warehouse import DimCustomer
+
+    if ancestor_level not in ORG_CHAIN:
+        raise ValueError(
+            f"{ancestor_level!r} is not an organisational level. "
+            f"Known: {', '.join(ORG_CHAIN)}."
+        )
+
+    index: dict[str, dict[str, str]] = {}
+    floor = ORG_CHAIN.index(ancestor_level)
+    below = ORG_CHAIN[floor:]
+
+    for row in session.execute(_path_query()):
+        mapping = row._mapping
+        ancestor = mapping[f"{ancestor_level}_code"]
+        if ancestor is None:
+            continue
+        for level in below:
+            code = mapping[f"{level}_code"]
+            if code is not None:
+                index.setdefault(level, {})[code] = ancestor
+
+    # The two that hang off the chain, each through its own parent column.
+    for entity_type, model, code_field, parent_level, parent_field in (
+        ("customer", DimCustomer, "customer_code", "sub_territory",
+         "sub_territory_code"),
+        ("sales_force", DimSalesForce, "sales_force_code", "territory",
+         "territory_code"),
+    ):
+        parents = index.get(parent_level)
+        if not parents:
+            continue
+        rows = session.execute(select(
+            getattr(model, code_field), getattr(model, parent_field),
+        )).all()
+        for code, parent_code in rows:
+            if code is None or parent_code is None:
+                continue
+            ancestor = parents.get(parent_code)
+            if ancestor is not None:
+                index.setdefault(entity_type, {})[code] = ancestor
+
+    return index
+
+
 def resolve_org_scope(session: Session, filters: HierarchyFilters) -> OrgScope:
     """Turn organisational filters into every code in scope, at every level.
 

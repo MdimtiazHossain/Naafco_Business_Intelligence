@@ -37,6 +37,7 @@ import type {
 } from 'maplibre-gl';
 import { useEffect, useRef } from 'react';
 import type {
+  MapColorBy,
   MapLocationLayer,
   MapLocationProperties,
   MapShape,
@@ -87,6 +88,14 @@ export interface ShapeRendererOptions {
   layers: MapLocationLayer[];
   /** The declared catalogue, from `GET /api/map/config`. */
   shapes: MapShape[];
+  /**
+   * How the points are grouped and coloured, as the server assigned it.
+   *
+   * `null` draws every point in its layer's own colour, which is what the tab
+   * did before there was anything to group by and what it still does until a
+   * reader chooses a level.
+   */
+  colorBy?: MapColorBy | null;
   selected: ShapeSelection | null;
   onSelect: (selection: ShapeSelection | null) => void;
   onHover: (hover: ShapeHover | null) => void;
@@ -112,11 +121,44 @@ function iconExpression(solid: string, outline: string): unknown {
   return ['case', ['==', ['get', 'source'], 'DERIVED'], outline, solid];
 }
 
+/**
+ * One icon per group, each keeping the solid/hollow distinction inside it.
+ *
+ * A `match` on `group_code` wrapping the existing `case` on `source`, rather
+ * than either replacing the other: a derived point is still drawn hollow, in
+ * *its group's* colour, because the two things a reader needs from a dot —
+ * which parent it belongs to and whether anybody actually surveyed it — are
+ * independent and must stay legible together.
+ *
+ * The colours arrive already assigned. This builds an expression out of the
+ * list the server sent and picks nothing: the legend renders the same list, so
+ * the swatch beside a name and the dot on the map cannot come apart.
+ *
+ * The fallback is the layer's own icon, which is what a point with no group
+ * takes — a zone when colouring by region, or an entity whose parent code names
+ * nothing the chain holds. MapLibre requires a `match` to have one.
+ */
+function groupIconExpression(
+  groups: { code: string; icons: { solid: string; outline: string } }[],
+  fallback: unknown,
+): unknown {
+  if (groups.length === 0) return fallback;
+  return [
+    'match',
+    ['get', 'group_code'],
+    ...groups.flatMap((group) => [
+      group.code, iconExpression(group.icons.solid, group.icons.outline),
+    ]),
+    fallback,
+  ];
+}
+
 export function useShapeRenderer({
   map,
   styleVersion,
   layers,
   shapes,
+  colorBy = null,
   selected,
   onSelect,
   onHover,
@@ -172,6 +214,14 @@ export function useShapeRenderer({
 
       const images = ensureShapeImages(map, shapes, layer.style.shape,
                                        layer.style.point_color);
+      // One raster pair per group colour. The shape stays the layer's, because
+      // shape carries the *level* and colour carries the *parent* — two
+      // questions about the same dot, and collapsing them into one channel
+      // would answer neither.
+      const groupIcons = (colorBy?.groups ?? []).map((group) => ({
+        code: group.code,
+        icons: ensureShapeImages(map, shapes, layer.style.shape, group.color),
+      }));
       const pointsId = layerId(level, LAYER_SUFFIXES.points);
       const labelsId = layerId(level, LAYER_SUFFIXES.labels);
       const selectedId = layerId(level, LAYER_SUFFIXES.selected);
@@ -185,7 +235,9 @@ export function useShapeRenderer({
       // layer that was never added is missing data with nothing to show for
       // it, which is the worse of the two by far.
       {
-        const icon = iconExpression(images.solid, images.outline);
+        const icon = groupIconExpression(
+          groupIcons, iconExpression(images.solid, images.outline),
+        );
         if (!map.getLayer(pointsId)) {
           map.addLayer({
             id: pointsId,
@@ -277,7 +329,7 @@ export function useShapeRenderer({
       const id = layerId(data.level, LAYER_SUFFIXES.labels);
       if (map.getLayer(id)) map.moveLayer(id);
     });
-  }, [map, styleVersion, layers, shapes, selected]);
+  }, [map, styleVersion, layers, shapes, colorBy, selected]);
 
   usePointerInteraction<MapLocationProperties>({
     map,

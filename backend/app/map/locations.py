@@ -68,10 +68,11 @@ from ..ai.schemas import ScopeFilters
 from ..database.models_map import GeoSource, MapEntityLocation
 from ..org.hierarchy import (
     ORG_CHAIN,
+    ancestor_codes,
     resolve_business_entities,
     resolve_org_scope,
 )
-from . import geo
+from . import geo, styles
 from .levels import MAP_LEVELS, MapLevel, get_level
 
 
@@ -137,11 +138,79 @@ class LocationLayer:
         }
 
 
+#: The levels a point may be coloured by.
+#:
+#: The organisational chain and nothing else, derived rather than listed. A
+#: customer has nothing below it, so "colour by customer" would give every point
+#: its own colour and mean nothing; the chain is exactly the set of levels that
+#: can *contain* another entity.
+COLOR_BY_LEVELS: tuple[str, ...] = ORG_CHAIN
+
+
+@dataclass
+class ColorGroup:
+    """One parent, and the colour every point inside it is drawn with."""
+
+    code: str
+    name: str
+    color: str
+    #: How many drawn points belong to it. The legend orders by this, because
+    #: a group holding two points and one holding two hundred are different
+    #: things to be looking at.
+    count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"code": self.code, "name": self.name,
+                "color": self.color, "count": self.count}
+
+
+#: Every group has its own colour.
+MODE_CATEGORICAL = "categorical"
+#: One group against a quiet ground, because there are too many to tell apart.
+MODE_FOCUS = "focus"
+
+
+@dataclass
+class ColorBy:
+    """How the drawn points were coloured, and by what.
+
+    The colours are **assigned here and sent**, in both modes, rather than the
+    browser being handed a palette and an ordering rule. That is the same
+    arrangement every other colour on this map follows, and it is what makes the
+    legend and the canvas incapable of disagreeing: the renderer turns this list
+    into one MapLibre ``match`` and invents nothing.
+    """
+
+    level: str
+    label: str
+    mode: str
+    groups: list[ColorGroup] = field(default_factory=list)
+    #: The group the reader asked to pick out, in :data:`MODE_FOCUS`.
+    focus: str | None = None
+    #: Drawn points with no ancestor at this level — a zone when colouring by
+    #: region, or a sales-force member whose territory code names something the
+    #: chain does not hold. Reported rather than quietly drawn neutral.
+    ungrouped: int = 0
+    note: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "level": self.level,
+            "label": self.label,
+            "mode": self.mode,
+            "groups": [group.to_dict() for group in self.groups],
+            "focus": self.focus,
+            "ungrouped": self.ungrouped,
+            "note": self.note,
+        }
+
+
 @dataclass
 class DemarcationData:
     """Several levels of coordinates, in the order asked for."""
 
     layers: list[LocationLayer] = field(default_factory=list)
+    color_by: ColorBy | None = None
 
     @property
     def empty(self) -> bool:
@@ -151,6 +220,7 @@ class DemarcationData:
         return {
             "empty": self.empty,
             "layers": [layer.to_dict() for layer in self.layers],
+            "color_by": self.color_by.to_dict() if self.color_by else None,
         }
 
 
@@ -605,7 +675,9 @@ def _selection_phrase(subtree: Subtree | None) -> str:
 
 
 def demarcation_data(session: Session, level_keys: Sequence[str],
-                     subtree: Subtree | None = None) -> DemarcationData:
+                     subtree: Subtree | None = None,
+                     color_by: str | None = None,
+                     focus: str | None = None) -> DemarcationData:
     """Several levels at once, in the order asked for.
 
     **One call for every level**, which is the opposite of what the analysis
@@ -619,7 +691,128 @@ def demarcation_data(session: Session, level_keys: Sequence[str],
     data = DemarcationData()
     for level_key in level_keys:
         data.layers.append(layer_locations(session, level_key, subtree))
+    if color_by:
+        data.color_by = _apply_color_by(session, data.layers, color_by, focus)
     return data
+
+
+def _apply_color_by(session: Session, layers: list[LocationLayer],
+                    level_key: str, focus: str | None) -> ColorBy:
+    """Colour every drawn point by the entity that contains it.
+
+    **846 undifferentiated dots do not show where one area ends and the next
+    begins**, which is the question this tab exists to answer, so a point takes
+    the colour of an organisational ancestor and the reader chooses which.
+
+    The parent is read from the master data server-side — one pass of
+    :func:`app.org.hierarchy.ancestor_codes` for the whole chain — rather than
+    walked in the browser. A page and the agent cannot disagree about a number
+    here because the browser never computes one.
+
+    **The groups are the ones actually drawn**, not every row of the master.
+    That matters twice over: a legend listing 162 sub-territories when 18 are on
+    screen is unreadable, and the mode below is decided by how many colours the
+    reader must actually tell apart — so narrowing the map can turn a level that
+    could not be coloured honestly into one that can.
+    """
+    level = get_level(level_key)
+    if level_key not in COLOR_BY_LEVELS:
+        raise ValueError(
+            f"Points cannot be coloured by {level_key!r}: nothing sits inside "
+            f"it. Colour by one of {', '.join(COLOR_BY_LEVELS)}."
+        )
+
+    index = ancestor_codes(session, level_key)
+    names, _ = _master_rows(session, level)
+
+    counts: dict[str, int] = {}
+    ungrouped = 0
+    for layer in layers:
+        by_code = index.get(layer.level, {})
+        for feature in layer.features:
+            group = by_code.get(feature["properties"]["code"])
+            # Written on every feature, `None` included: the renderer matches on
+            # this property, and a missing key and an unmatched value take
+            # different paths through a MapLibre expression.
+            feature["properties"]["group_code"] = group
+            if group is None:
+                ungrouped += 1
+            else:
+                counts[group] = counts.get(group, 0) + 1
+
+    # Ordered by size, then by name so two equal groups do not swap places
+    # between requests. The legend reads this order.
+    ordered = sorted(counts, key=lambda code: (-counts[code],
+                                               names.get(code, (None, None))[0] or code))
+
+    palette = styles.CATEGORICAL_PALETTE
+    categorical = len(ordered) <= styles.MAX_CATEGORICAL_GROUPS
+    mode = MODE_CATEGORICAL if categorical else MODE_FOCUS
+    # A focus nobody asked for is a filter nobody applied, so an unpicked focus
+    # map is entirely neutral and the legend invites a choice.
+    picked = focus if (not categorical and focus in counts) else None
+
+    groups = [
+        ColorGroup(
+            code=code,
+            name=(names.get(code, (None, None))[0] or code),
+            color=(palette[position] if categorical
+                   else styles.FOCUS_COLOR if code == picked
+                   else styles.GROUP_NEUTRAL_COLOR),
+            count=counts[code],
+        )
+        for position, code in enumerate(ordered)
+    ]
+    if categorical:
+        # By construction, but the constructions that go wrong are the ones
+        # nobody checked: two groups sharing a colour on this map is not a
+        # cosmetic fault, it is a wrong answer about where a boundary falls.
+        assert len({group.color for group in groups}) == len(groups), (
+            "a categorical palette must not repeat a colour"
+        )
+
+    return ColorBy(
+        level=level_key, label=level.label, mode=mode, groups=groups,
+        focus=picked, ungrouped=ungrouped,
+        note=_color_note(level, groups, mode, picked, ungrouped),
+    )
+
+
+def _color_note(level: MapLevel, groups: list[ColorGroup], mode: str,
+                focus: str | None, ungrouped: int) -> str | None:
+    """Say what the colours mean, and where they stop meaning anything."""
+    # The label is never pluralised. `MapLevel` states a singular name and
+    # nothing states a plural, so appending an "s" produced "94 territorys" —
+    # the phrasing works around that rather than adding a field to the registry
+    # for the sake of one sentence.
+    noun = level.label.lower()
+    parts: list[str] = []
+    if not groups:
+        parts.append(f"No drawn point sits inside any {noun}.")
+    elif mode == MODE_FOCUS and focus is None:
+        # Not a failure and not an empty result: the reader has a choice to
+        # make and nothing has been decided for them.
+        parts.append(
+            f"{len(groups)} groups at {noun} level is more than "
+            f"{styles.MAX_CATEGORICAL_GROUPS} colours can keep apart, so "
+            f"nothing is coloured until you pick one. Cycling a palette would "
+            f"put the same colour on neighbours, which on this map is a wrong "
+            f"answer rather than an untidy one."
+        )
+    elif mode == MODE_FOCUS:
+        others = len(groups) - 1
+        parts.append(
+            f"One {noun} picked out of {len(groups)}; the other {others} are "
+            f"drawn neutral."
+        )
+    if ungrouped:
+        parts.append(
+            f"{ungrouped} drawn "
+            f"{'point sits' if ungrouped == 1 else 'points sit'} above or "
+            f"outside every {noun} and {'is' if ungrouped == 1 else 'are'} "
+            f"drawn neutral."
+        )
+    return " ".join(parts) if parts else None
 
 
 def drawable_levels(session: Session) -> list[str]:

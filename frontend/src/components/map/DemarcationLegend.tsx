@@ -6,6 +6,12 @@
  * level — and it answers the question a reader of coordinates actually has,
  * which is how much of each level is on the screen at all.
  *
+ * **It explains a colour too, once there is one.** Shape carries the level and
+ * colour carries the parent, so the two lists are separate and both are needed:
+ * a reader has to be able to say both "that is a territory" and "that one is in
+ * Mirpur". The group list renders the colours the server assigned, in the order
+ * it sent them, so a swatch here and a dot on the canvas cannot come apart.
+ *
  * Two numbers per level, deliberately. `placed` is what is drawn; `missing` is
  * what the master holds and the map cannot show. A legend that printed only
  * the first would let a half-loaded level look complete, which on a map used to
@@ -30,13 +36,15 @@
  */
 
 import { useT } from '../../contexts/I18nContext';
-import type { MapLocationLayer, MapShape } from '../../types/api';
+import type { MapColorBy, MapLocationLayer, MapShape } from '../../types/api';
 
 export interface DemarcationLegendProps {
   layers: MapLocationLayer[];
   shapes: MapShape[];
   /** A filter is narrowing the points, so each level counts matched of total. */
   narrowed?: boolean;
+  /** The groups the points were coloured by, if any. */
+  colorBy?: MapColorBy | null;
   activeLevel: string;
   onActiveLevel: (level: string) => void;
 }
@@ -65,7 +73,7 @@ export function ShapeSwatch({
 }
 
 export function DemarcationLegend({
-  layers, shapes, narrowed = false, activeLevel, onActiveLevel,
+  layers, shapes, narrowed = false, colorBy = null, activeLevel, onActiveLevel,
 }: DemarcationLegendProps) {
   const t = useT();
   if (layers.length === 0) return null;
@@ -122,6 +130,50 @@ export function DemarcationLegend({
             />
             <span>{t('map.legendDerived')}</span>
           </div>
+        </div>
+      )}
+
+      {/*
+        What each colour means, when the points are coloured by a parent.
+
+        Named, not merely swatched: a reader looking at eleven colours has to
+        be able to say which area is which, and the shape swatches above already
+        answer a different question (which *level* a dot is). The list is the
+        server's, in the server's order — by size, so the group carrying the map
+        is at the top — and it renders the colour it was sent rather than
+        recomputing one, which is what stops a swatch and a dot disagreeing.
+
+        Capped in height rather than in length: 94 territories in focus mode is
+        a real list somebody scrolls to find one entry, and truncating it would
+        hide exactly the group they were looking for.
+      */}
+      {colorBy && colorBy.groups.length > 0 && (
+        <div className="mt-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+          <p className="mb-1 font-semibold text-slate-700 dark:text-slate-200">
+            {t('map.colorLegend', { level: colorBy.label.toLowerCase() })}
+          </p>
+          <ul className="max-h-32 space-y-1 overflow-y-auto pr-1">
+            {colorBy.groups.map((group) => (
+              <li key={group.code} className="flex items-center gap-2">
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: group.color }}
+                  aria-hidden="true"
+                />
+                <span className="flex-1 truncate text-slate-600 dark:text-slate-300">
+                  {group.name}
+                </span>
+                <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                  {group.count}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {colorBy.ungrouped > 0 && (
+            <p className="mt-1 text-slate-500 dark:text-slate-400">
+              {t('map.colorUngrouped', { count: String(colorBy.ungrouped) })}
+            </p>
+          )}
         </div>
       )}
 

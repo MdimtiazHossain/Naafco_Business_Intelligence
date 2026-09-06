@@ -39,6 +39,14 @@ export const STYLE: MapStyle = {
   point_color: '#2563eb',
   derived_opacity: 0.25,
   derived_stroke_width: 1.5,
+  // The categorical palette, as the server declares it. Four colours rather
+  // than the real twelve, so a test can cross the threshold without seeding
+  // a dozen groups — the rule under test is "more groups than colours", and
+  // where that line sits is the server's business, not this fixture's.
+  categorical: ['#0072b2', '#e69f00', '#009e73', '#cc79a7'],
+  max_categorical_groups: 4,
+  focus_color: '#dc2626',
+  group_neutral_color: '#94a3b8',
   boundary: {
     fill_color: '#64748b', fill_opacity: 0.06,
     line_color: '#475569', line_width: 1, line_opacity: 0.55,
@@ -152,6 +160,10 @@ export const CONFIG: MapConfig = {
   // The levels a coordinate can be narrowed by, as the server derives them
   // from `map.levels.MAP_LEVELS`. `boundaries.test.tsx` pins the browser's
   // `LOCATION_FILTERS` equal to the real list; this is the fixture's stand-in.
+  color_by_levels: [
+    'company', 'bu', 'sales_line', 'zone', 'region',
+    'area', 'unit', 'territory', 'sub_territory',
+  ],
   location_filters: [
     'company_code', 'bu_code', 'sales_line_code', 'zone_code', 'region_code',
     'area_code', 'unit_code', 'territory_code', 'sub_territory_code',

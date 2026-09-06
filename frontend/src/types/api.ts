@@ -2317,6 +2317,15 @@ export interface MapStyle {
   /** How a derived centroid is drawn: the same shape, hollow. */
   derived_opacity: number;
   derived_stroke_width: number;
+  /**
+   * The colours a point takes when grouped by its parent, and where they run
+   * out. Published so the legend can draw a swatch the map is not currently
+   * showing, and so nothing on this side picks a colour of its own.
+   */
+  categorical: string[];
+  max_categorical_groups: number;
+  focus_color: string;
+  group_neutral_color: string;
   /** How an administrative outline is drawn beneath the points. */
   boundary: MapBoundaryStyle;
 }
@@ -2430,6 +2439,12 @@ export interface MapConfig {
    * and pins it equal to this, so neither can outlive what it names.
    */
   location_filters: string[];
+  /**
+   * The levels a demarcation point may be coloured by — the organisational
+   * chain, derived server-side. A customer contains nothing, so colouring by
+   * one would give every point its own colour and mean nothing.
+   */
+  color_by_levels: string[];
   defaults: {
     metric: string;
     color_metric: string;
@@ -2530,6 +2545,16 @@ export interface MapLocationProperties {
   source: string;
   precision: string;
   derived_from: number | null;
+  /**
+   * The ancestor this point is coloured by, at the level the reader chose.
+   *
+   * Absent when nothing is being coloured; `null` when the point has no
+   * ancestor at that level — a zone under "colour by region", or an entity
+   * whose parent code names nothing in the chain. The two are different and
+   * the renderer treats them differently: absent takes the layer's own icon,
+   * `null` is a value the `match` fails to hit and so takes the fallback.
+   */
+  group_code?: string | null;
 }
 
 export interface MapLocationFeature {
@@ -2542,6 +2567,40 @@ export interface MapLocationFeature {
 export interface MapLocationCollection {
   type: 'FeatureCollection';
   features: MapLocationFeature[];
+}
+
+/** One parent, its colour, and how many drawn points belong to it. */
+export interface MapColorGroup {
+  code: string;
+  name: string;
+  color: string;
+  count: number;
+}
+
+/**
+ * How the drawn points were coloured, and by what.
+ *
+ * The colours are **assigned by the server** in both modes — this is a list to
+ * render, never a palette to apply an ordering rule to. That is what keeps the
+ * legend's swatch and the dot on the map from ever disagreeing.
+ *
+ * `categorical` gives every group its own colour. `focus` is what a level with
+ * more groups than the palette can keep apart gets instead: one group picked
+ * out against a neutral ground, and neutral everywhere until the reader picks,
+ * because a focus nobody asked for is a filter nobody applied. Nothing cycles a
+ * palette — two neighbours sharing a colour on this map is a wrong answer about
+ * where a boundary falls, not an untidy one.
+ */
+export interface MapColorBy {
+  level: string;
+  label: string;
+  mode: 'categorical' | 'focus';
+  groups: MapColorGroup[];
+  /** The picked group in `focus` mode; `null` until the reader chooses. */
+  focus: string | null;
+  /** Drawn points with no ancestor at this level, drawn neutral. */
+  ungrouped: number;
+  note: string | null;
 }
 
 export interface MapLocationLayer {
@@ -2583,6 +2642,8 @@ export interface MapLocationsResponse {
   scope_note: string | null;
   empty: boolean;
   layers: MapLocationLayer[];
+  /** `null` until a reader chooses a level to colour by. */
+  color_by: MapColorBy | null;
 }
 
 /** A layer as the editor sends it. Order in the list is display order. */

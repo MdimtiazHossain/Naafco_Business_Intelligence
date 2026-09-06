@@ -34,7 +34,8 @@ import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { ApiError } from '../services';
 
 /** URL parameters that are the reader's temporary state, and Reset clears. */
-const TEMPORARY_PARAMS = ['layers', 'selected', 'boundary', 'barea', 'bname'] as const;
+const TEMPORARY_PARAMS = ['layers', 'selected', 'boundary', 'barea', 'bname',
+  'colorby', 'focus'] as const;
 
 /**
  * The two maps, in the order they are read.
@@ -146,6 +147,7 @@ export default function BusinessMapPage() {
   // The backdrop the reader chose, and the outline they clicked. Both live in
   // the URL like the layer toggles and the point selection, so a link
   // reproduces the whole view and Reset is still one navigation.
+  //
   // The URL wins; an absent parameter falls back to the open tab's own default,
   // which the server publishes per purpose — none for the analysis map, upazila
   // outlines for demarcation. Reset clears the parameter, so it returns a
@@ -204,6 +206,28 @@ export default function BusinessMapPage() {
   const [boundaryState, setBoundaryState] = useState<BoundaryLayerState>(
     { loading: false, error: null },
   );
+
+  /**
+   * Which ancestor colours the points, and which group is picked out.
+   *
+   * In the URL with the rest of the reader's state, so "customers coloured by
+   * area, Mirpur picked out" is a link somebody can send. Changing the level
+   * clears the focus: a code chosen among territories means nothing among
+   * areas, and carrying it over would silently pick nothing while the control
+   * claimed a selection.
+   */
+  const colorBy = searchParams.get('colorby');
+  const focus = searchParams.get('focus');
+
+  const changeColorBy = useCallback((level: string | null) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (level) next.set('colorby', level);
+      else next.delete('colorby');
+      next.delete('focus');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   const metricParam = searchParams.get('metric') ?? undefined;
   const metric = metricParam ?? design?.default_metric;
@@ -454,6 +478,10 @@ export default function BusinessMapPage() {
           levels={levels}
           onLevelsChange={changeLevels}
           query={locationQuery}
+          colorBy={colorBy}
+          onColorByChange={changeColorBy}
+          focus={focus}
+          onFocusChange={(code) => setParam('focus', code ?? undefined)}
           // Narrowed to the identity both maps share. The analysis selection
           // carries a row of measures the demarcation map has no use for, and
           // widening either type so they interchange would say the two are the

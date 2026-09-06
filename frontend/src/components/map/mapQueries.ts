@@ -54,10 +54,14 @@ export function useMapLocations(
   designId: number | undefined,
   levels: string[],
   query: GlobalFilters = {},
+  grouping: { color_by?: string; focus?: string } = {},
 ) {
   return useQuery({
-    queryKey: ['map-locations', designId ?? null, [...levels].sort(), query],
-    queryFn: () => mapService.locations({ ...query, design_id: designId, levels }),
+    queryKey: ['map-locations', designId ?? null, [...levels].sort(), query,
+               grouping],
+    queryFn: () => mapService.locations({
+      ...query, ...grouping, design_id: designId, levels,
+    }),
     enabled: designId !== undefined && levels.length > 0,
   });
 }

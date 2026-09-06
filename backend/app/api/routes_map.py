@@ -270,6 +270,11 @@ def map_config(session: Session = Depends(get_session),
             # What the demarcation tab may narrow by, derived from MAP_LEVELS
             # so the browser never keeps its own list of levels.
             "location_filters": list(map_locations.FILTER_LEVELS),
+            # The levels a demarcation point may be coloured by: the
+            # organisational chain, which is exactly the set of levels that can
+            # contain another entity. Derived, like the list above — the browser
+            # renders a control per entry and writes none of them down.
+            "color_by_levels": list(map_locations.COLOR_BY_LEVELS),
             # Administrative outlines the reader may draw beneath the points.
             # A catalogue, not the geometry: the files are static assets, so
             # the browser fetches them itself and holds no list of filenames.
@@ -467,6 +472,17 @@ def map_locations_endpoint(
         None, alias="levels",
         description="Which of the design's layers to draw, repeated. Defaults "
                     "to the layers the design shows."),
+    color_by: str | None = Query(
+        None,
+        description="Colour each point by the organisational entity that "
+                    "contains it, at this level. Omitted, every point takes "
+                    "its layer's own colour."),
+    focus: str | None = Query(
+        None,
+        description="In a level with more groups than the palette can keep "
+                    "apart, the one code to pick out; every other point is "
+                    "drawn neutral. Ignored where each group has its own "
+                    "colour already."),
     filters: ScopeFilters = Depends(scope_filters),
     session: Session = Depends(get_session),
     user: UserContext = Depends(_VIEW),
@@ -511,8 +527,17 @@ def map_locations_endpoint(
             requested = [layer.point_level for layer in design.layers
                          if layer.is_visible]
 
+        if color_by is not None and color_by not in map_locations.COLOR_BY_LEVELS:
+            # Named rather than ignored: a colour-by that silently did nothing
+            # would leave a control on screen claiming to group the map.
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Points cannot be coloured by '{color_by}'. Colour by one of: "
+                f"{', '.join(map_locations.COLOR_BY_LEVELS)}.",
+            )
         subtree = map_locations.subtree_codes(session, user, filters)
-        result = map_locations.demarcation_data(session, requested, subtree)
+        result = map_locations.demarcation_data(session, requested, subtree,
+                                                color_by=color_by, focus=focus)
         layers_payload = []
         for layer_data in result.layers:
             payload = layer_data.to_dict()
@@ -527,6 +552,11 @@ def map_locations_endpoint(
             "scope_note": subtree.scope_note,
             "empty": result.empty,
             "layers": layers_payload,
+            # How the points were coloured, groups and colours already assigned.
+            # The renderer turns this into one MapLibre `match` and picks no
+            # colour of its own, which is what stops the legend and the canvas
+            # ever disagreeing.
+            "color_by": result.color_by.to_dict() if result.color_by else None,
         }
 
     try:

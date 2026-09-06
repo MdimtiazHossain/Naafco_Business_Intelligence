@@ -665,7 +665,14 @@ export const mapService = {
    * save nothing.
    */
   locations: (
-    query: GlobalFilters & { design_id?: number; levels?: string[] } = {},
+    query: GlobalFilters & {
+      design_id?: number;
+      levels?: string[];
+      /** Colour each point by its ancestor at this organisational level. */
+      color_by?: string;
+      /** In a level too fine to colour categorically, the group to pick out. */
+      focus?: string;
+    } = {},
   ) => request<MapLocationsResponse>('/api/map/locations', { params: query }),
   design: (designId: number) => request<MapDesign>(`/api/map/designs/${designId}`),
   createDesign: (body: MapDesignInput) =>

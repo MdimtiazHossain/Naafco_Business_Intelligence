@@ -611,6 +611,160 @@ def test_a_reader_with_no_scope_is_told_why_rather_than_shown_an_empty_map(clien
     assert "no data scope" in body["scope_note"].lower()
 
 
+# ==========================================================================
+# Coloured by the parent that contains it
+# ==========================================================================
+
+
+def test_points_are_coloured_by_the_parent_the_master_data_gives_them(
+        client, agent_engine):
+    """846 undifferentiated dots do not show where one area ends."""
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+
+    body = fetch(client, login(client), color_by="region")
+    colouring = body["color_by"]
+    assert colouring["level"] == "region"
+    assert colouring["groups"], "a region layer must produce at least one group"
+
+    # The group travels on the feature, so the renderer matches on a property
+    # rather than recomputing an ancestry the browser does not hold.
+    territories = layer_of(body, "territory")["features"]["features"]
+    assert territories, "the fixture must place a territory"
+    for feature in territories:
+        assert "group_code" in feature["properties"]
+
+
+def test_a_level_colours_itself(client, agent_engine):
+    """Colouring regions by region gives each region its own colour.
+
+    Not a special case — the honest answer. A level contains itself, and the
+    alternative would be a map where the level you chose is the one level drawn
+    neutral.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    body = fetch(client, login(client), color_by="region")
+    for feature in layer_of(body, "region")["features"]["features"]:
+        assert (feature["properties"]["group_code"]
+                == feature["properties"]["code"])
+
+
+def test_a_point_above_the_colour_level_is_neutral_and_counted(
+        client, agent_engine):
+    """A zone has no region above it, and none is invented."""
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    body = fetch(client, login(client), color_by="region")
+    zones = layer_of(body, "zone")["features"]["features"]
+    assert zones, "the fixture must place a zone"
+    assert all(f["properties"]["group_code"] is None for f in zones)
+    # Reported rather than quietly drawn neutral: a reader looking at grey dots
+    # needs to know whether that is an answer or a gap.
+    assert body["color_by"]["ungrouped"] >= len(zones)
+    assert "neutral" in body["color_by"]["note"]
+
+
+def test_no_two_groups_share_a_colour(client, agent_engine):
+    """On this map a repeated colour is a wrong answer, not an untidy one."""
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    colouring = fetch(client, login(client), color_by="region")["color_by"]
+    assert colouring["mode"] == "categorical"
+    colours = [group["color"] for group in colouring["groups"]]
+    assert len(set(colours)) == len(colours)
+
+
+def test_a_level_with_more_groups_than_colours_is_not_cycled(monkeypatch,
+                                                             client,
+                                                             agent_engine):
+    """Too many to tell apart becomes one at a time, never a repeated palette.
+
+    The fixture has one territory, so the threshold is lowered rather than 94
+    territories being seeded: what is under test is the rule, and a rule that
+    only holds at production row counts is one nobody can check.
+    """
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    monkeypatch.setattr(styles, "MAX_CATEGORICAL_GROUPS", 0)
+
+    colouring = fetch(client, login(client), color_by="region")["color_by"]
+    assert colouring["mode"] == "focus"
+    # Neutral until the reader picks: a focus nobody asked for is a filter
+    # nobody applied.
+    assert colouring["focus"] is None
+    assert {group["color"] for group in colouring["groups"]} == {
+        styles.GROUP_NEUTRAL_COLOR}
+    assert "until you pick one" in colouring["note"]
+
+
+def test_picking_a_group_colours_that_one_and_quiets_the_rest(monkeypatch,
+                                                              client,
+                                                              agent_engine):
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    monkeypatch.setattr(styles, "MAX_CATEGORICAL_GROUPS", 0)
+
+    first = fetch(client, login(client), color_by="region")["color_by"]
+    picked = first["groups"][0]["code"]
+    colouring = fetch(client, login(client),
+                      color_by="region", focus=picked)["color_by"]
+
+    assert colouring["focus"] == picked
+    by_code = {group["code"]: group["color"] for group in colouring["groups"]}
+    assert by_code.pop(picked) == styles.FOCUS_COLOR
+    assert set(by_code.values()) <= {styles.GROUP_NEUTRAL_COLOR}
+
+
+def test_no_colouring_is_asked_for_by_default(client, agent_engine):
+    """The tab draws as it always did until somebody chooses to group it."""
+    with Session(agent_engine) as db:
+        geo.derive_parents(db)
+        db.commit()
+    body = fetch(client, login(client))
+    assert body["color_by"] is None
+    for layer in body["layers"]:
+        for feature in layer["features"]["features"]:
+            assert "group_code" not in feature["properties"]
+
+
+def test_colouring_by_a_level_nothing_sits_inside_is_refused_by_name(client):
+    """A customer contains nothing, so colouring by it would mean nothing."""
+    response = client.get("/api/map/locations", headers=login(client),
+                          params={"color_by": "customer"})
+    assert response.status_code == 422, response.text
+    assert "customer" in response.text
+
+
+def test_the_colour_by_levels_are_the_organisational_chain(client):
+    """Derived, so a level added to the chain is offered with no second list."""
+    from app.map.locations import COLOR_BY_LEVELS
+    from app.org.hierarchy import ORG_CHAIN
+
+    assert COLOR_BY_LEVELS == ORG_CHAIN
+    published = client.get("/api/map/config", headers=login(client)).json()
+    assert published["color_by_levels"] == list(ORG_CHAIN)
+
+
+def test_the_palette_is_declared_once_and_published(client):
+    """The renderer is sent colours; it never picks one."""
+    style = client.get("/api/map/config",
+                       headers=login(client)).json()["style"]
+    assert style["categorical"] == list(styles.CATEGORICAL_PALETTE)
+    assert style["max_categorical_groups"] == len(styles.CATEGORICAL_PALETTE)
+    assert style["focus_color"] == styles.FOCUS_COLOR
+    assert style["group_neutral_color"] == styles.GROUP_NEUTRAL_COLOR
+    # Grey is the neutral, so no group may be drawn in it categorically:
+    # "this is a group" must not look like "this belongs to no group".
+    assert styles.GROUP_NEUTRAL_COLOR not in styles.CATEGORICAL_PALETTE
+
+
 def test_the_filter_levels_are_derived_from_the_level_registry(client):
     """A hand-written level list is the failure CLAUDE.md opens with."""
     from app.map.levels import MAP_LEVELS

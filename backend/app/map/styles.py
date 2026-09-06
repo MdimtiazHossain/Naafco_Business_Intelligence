@@ -135,6 +135,57 @@ DEFAULT_SHAPE = SHAPE_KEYS[0]
 #: The side of the viewBox every path above is drawn on.
 SHAPE_VIEWBOX = 24
 
+#: The colours a demarcation point takes when it is coloured by its parent.
+#:
+#: **Distinguishability is the whole constraint, and it is what sets the
+#: threshold.** A reader colouring customers by area is asking "where does one
+#: end and the next begin", and two neighbouring groups that look alike do not
+#: answer that badly — they answer it wrongly. So this list is short on purpose
+#: and nothing cycles it: a level with more groups than there are colours is
+#: drawn a different way (see :data:`FOCUS_COLOR`) rather than being given the
+#: same colour twice.
+#:
+#: **The first eight are Okabe-Ito**, the palette designed to stay separable
+#: under the common colour-vision deficiencies. The last four extend it and are
+#: *not* covered by that guarantee — a real limitation, recorded here rather
+#: than discovered. It is survivable because colour is never the only signal on
+#: this map: a point's *level* is carried by its shape, so a reader who cannot
+#: separate two of the last four still knows what each point is, and the legend
+#: names every group in words beside its swatch.
+#:
+#: Grey is deliberately absent: it is :data:`GROUP_NEUTRAL_COLOR`, and "this is
+#: a group" must not look like "this belongs to no group".
+CATEGORICAL_PALETTE: tuple[str, ...] = (
+    "#0072b2",   # blue
+    "#e69f00",   # orange
+    "#009e73",   # bluish green
+    "#cc79a7",   # reddish purple
+    "#56b4e9",   # sky blue
+    "#d55e00",   # vermillion
+    "#f0e442",   # yellow
+    "#000000",   # black
+    "#7f3b08",   # brown
+    "#4d4dff",   # indigo
+    "#8c564b",   # umber
+    "#17becf",   # teal
+)
+
+#: How many groups can be told apart at once. Read from the palette rather than
+#: written down, so adding a colour moves the threshold and nothing else has to.
+MAX_CATEGORICAL_GROUPS = len(CATEGORICAL_PALETTE)
+
+#: The two colours a level too fine to colour categorically is drawn with.
+#:
+#: One group at a time against a quiet ground. 94 territories cannot each have
+#: a colour, but "T044 against everything else" is a question with an exact
+#: answer — and it is the question somebody deciding where a line falls is
+#: actually asking. Nothing is hidden and no colour means two things.
+#:
+#: The neutral is the same slate :data:`NO_DATA_COLOR` uses, and that is not a
+#: collision worth avoiding: both say "there is nothing to read here".
+FOCUS_COLOR = "#dc2626"
+GROUP_NEUTRAL_COLOR = NO_DATA_COLOR
+
 #: The flat colour a point takes where no metric decides one — which is every
 #: point on the demarcation map. Blue rather than slate: slate is
 #: :data:`NO_DATA_COLOR`, and "this level's colour" and "this figure is absent"
@@ -249,6 +300,12 @@ def default_style() -> dict[str, Any]:
         "boundary": dict(BOUNDARY_STYLE),
         "shape": DEFAULT_SHAPE,
         "point_color": DEFAULT_POINT_COLOR,
+        # Published so the legend can draw a swatch for a group the map is not
+        # currently drawing, and so nothing downstream picks a colour of its own.
+        "categorical": list(CATEGORICAL_PALETTE),
+        "max_categorical_groups": MAX_CATEGORICAL_GROUPS,
+        "focus_color": FOCUS_COLOR,
+        "group_neutral_color": GROUP_NEUTRAL_COLOR,
         "derived_opacity": DERIVED_OPACITY,
         "derived_stroke_width": DERIVED_STROKE_WIDTH,
     }

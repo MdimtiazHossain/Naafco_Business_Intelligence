@@ -121,6 +121,7 @@ describe('Administrative backdrop', () => {
       levels: ['region'],
       filters: {},
       scope_note: null,
+      color_by: null,
       empty: false,
       layers: [{
         level: 'region', label: 'Region',
