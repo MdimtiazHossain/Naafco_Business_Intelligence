@@ -482,6 +482,114 @@ PostgreSQL has the data, and it serves `frontend/dist` directly, so a frontend
 change reaches it only after `cd frontend; npm run build` (no service restart
 — nginx reads the bundle off disk).
 
+**Step 9, the second tab (`map/locations.py`, `GET /api/map/locations`,
+`0035_map_demarcation`, `0036_demarcation_all_levels`).** Area Demarcation
+draws **exactly the rows of `map_entity_locations`** and reads no fact table
+at all, so nothing on it can disagree with a report — there is no figure on it
+to disagree with. The acid test is that the number of points equals the number
+of rows Data Management lists for the same filters, and it is pinned; `0036`
+exists because it failed at 1,124 of 1,139, the seeded design having hidden
+Unit and Sales Force and had no layer at all above Zone. A hidden level is one
+fewer thing competing for the eye on a map of figures and a hidden **row** on a
+map of coordinates. The design lives in the same tables behind
+`map_designs.purpose`, so a reader is never offered the other map's design.
+
+**A filter narrows by containment, not by row, and this is the one place the
+platform departs from its own filter rule.** A report ANDs its filters and a row
+matches only on a level it carries, so filtering by Region would drop every
+coordinate row stating no region — the zone above and every customer below,
+because a coordinate names one level and nothing else. Selecting a region on a
+*map* means "this region and what is inside it", so the filter resolves to a
+subtree: `resolve_org_scope`'s codes with everything above the deepest
+selection trimmed off, that function returning ancestors *and* descendants.
+`subtree_codes` says so at length because the flat rule is what the next reader
+will reach for. The filter set is its own (`LOCATION_FILTERS` /
+`location_filters`, both derived from `MAP_LEVELS`) with no material, batch or
+period — a coordinate has none — and `queryFor(…, false)` drops the period, or
+it would sit in the React Query key and refetch every coordinate for an
+identical answer.
+
+**Scope bounds what a reader is told exists, not only what they are shown.**
+`available` is the "of how many" in "9 of 94" and it needs a *second*
+containment — the scope alone — because read as the level's own row count it
+handed a region-scoped manager the national figure as their denominator, a
+total they may not see under a label calling it theirs. `total` and `missing`
+are scoped for the same reason, and `missing` counts records with no coordinate
+rather than records a filter excluded, so narrowing the map cannot manufacture
+a data problem on the one screen whose job is saying what still needs
+surveying. A filter outside scope is a 403 naming the code, never an empty map.
+
+**`PermissionFilter.is_within_scope` is keyed on `region_code`, not `region`.**
+`LEVEL_DEPTH` and `BINDING_BY_LEVEL` are both built from
+`LevelBinding.code_field`, so passing the bare level makes `_ancestors` return
+an empty chain and the check answers False for *every* code — a scoped reader
+refused their own region, told "your access covers region REG001" in the same
+sentence. The refusal test passed on it, having only ever asserted that a
+refusal happened, which is why it now asserts the allowed case too. **A test
+that only checks the negative passes on a function that refuses everything.**
+
+**A level above the selection is empty by the rule, not by the data**, and
+needs a different sentence: read through the counts it came out as "none of the
+4 placed zone coordinates is inside region X", which describes the data and
+sends somebody looking for a coordinate that is loaded and fine. That note is
+suppressed when the reader did not filter — what emptied the level was then
+their role, and "clear it to see this level" is advice they cannot take.
+
+**Step 10, colouring by the parent (`styles.CATEGORICAL_PALETTE`,
+`org.hierarchy.ancestor_codes`).** With the derived centroids set aside the map
+is customer dots, and 846 undifferentiated dots do not show where one area ends.
+The parent is read server-side — `ancestor_codes` is one pass of `_path_query`
+for the whole chain, never a query per point — and it lives in `app/org` rather
+than in the map because "which entity at level X contains this one" is an
+organisational question. The server assigns every group's colour and the
+renderer turns that list into one MapLibre `match` over `group_code`, wrapping
+the existing `case` on `source` so a derived point stays hollow *in its group's
+colour*. Shape carries the level and colour carries the parent: two questions
+about one dot, and collapsing them into one channel would answer neither.
+
+**Nothing cycles the palette.** Two neighbours sharing a colour on a map used to
+judge where a boundary falls is a wrong answer, not an untidy one — so a level
+with more groups than colours switches to *focus* mode (one group picked out,
+the rest neutral, and **neutral until the reader picks**, because a focus nobody
+asked for is a filter nobody applied). The threshold is the palette's own
+length and the mode is decided from the groups **actually drawn**, so narrowing
+the map can turn a level that could not be coloured honestly into one that
+can. The
+palette is thirteen because the deployment has thirteen regions and Region is
+the level a reader reaches for first; eight of the thirteen are Okabe-Ito and
+five are not, which is survivable only because colour is not the sole signal.
+**Widening the palette is the only honest way to move that threshold** — raising
+the cap without adding a colour would put two regions in one colour.
+
+**Step 11, the administrative backdrop (`map/boundaries.py`,
+`frontend/public/geo/`).** Divisions, districts and upazilas, drawn beneath the
+points on both maps and **not business boundaries**: nothing states the outline
+of a territory, so `boundary_source` stays `None` on every level and no outline
+is ever coloured by a figure. They are static files rather than an endpoint,
+and `boundaries.py` publishes the catalogue alone so the browser holds no list
+of filenames. **The default is per surface** — `None` for the analysis map,
+`upazila` for demarcation — because on a map of figures a backdrop is ink over
+the subject and on a map for judging a line it *is* the subject; one constant
+could not say both, so `catalogue()` publishes `defaults` keyed by purpose and
+`boundary=none` is spelled out like `layers=none`. The five files came back
+byte-identical from `4ee51b7`; `scripts/build_map_geojson.py` did **not**, and
+cannot until `app.map.geometry` returns with it, so a new COD-AB release cannot
+be processed today.
+
+**Three traps this work walked into, none of which the suite would have
+caught.** *An i18n key that already exists*: `map.colorBy` meant "Colour" on the
+analysis legend, and adding the new control's label under it silently rewrote
+that legend — check a key is free before writing it, not that it is present
+after. *`window.location` under `MemoryRouter`*: the router keeps history in
+memory and never touches the document, so every `expect(window.location.search)
+.not.toContain(…)` passes against the empty string — `demarcation.test.tsx`
+renders the router's own `useLocation().search` instead, and each absence is
+proven against a value shown present first. *A stale name in `__all__`*:
+renaming `DEFAULT_BOUNDARY` left the old name exported, which broke
+`from … import *` and nothing else, because no importer here uses one. The
+opening rule of this file applies to an export list as much as to a layer
+catalogue.
+
 **A backend change reaches that deployment only on a service restart, and this
 sentence used to imply otherwise.** "No service restart" above is true of the
 *frontend* and was read as covering both, which cost a round trip: a Map
@@ -507,6 +615,26 @@ code, `Get-Service` reporting Running throughout. So the symptom has two causes,
 the restart not run and the restart not taken, and
 `deploy/local/restart-api.ps1` is what separates them: it ends whatever still
 holds the port after the stop, then proves the process id changed.
+
+**There is a third state, and `nssm.exe`'s own creation time is what names it.**
+nssm *is* the service process, so a genuine stop-and-start gives it a new pid;
+if `Get-CimInstance Win32_Service` names a process whose `CreationDate` has not
+moved, the service was never stopped at all — which is neither "not taken" (a
+*new* nssm with an old python squatting on the port) nor anything the script can
+report, because the script never ran. A session spent four attempts and a
+reported reboot in that state, with `Get-Service` saying Running throughout,
+`LastBootUpTime` unchanged, and nssm, its child and the port holder all sharing
+one creation timestamp. Check those three timestamps before believing any
+restart, and note that the script writes
+`deploy/local/run/logs/restart-api-*.log` as soon as it clears its two
+pre-flight gates: **no transcript means it exited at the elevation check or
+never started**, which is a different problem from a restart that failed.
+
+Meanwhile the deployment can be verified without the service at all — load
+`deploy/local/env.ps1`, `Import-ProductionEnv`, and call the module directly
+against PostgreSQL. That answers "does the code work on the real data" while
+"is the running service serving it" is still stuck, and the two questions are
+worth keeping apart.
 
 ### Agent learning (`ai/feedback.py mining.py vocabulary.py lexicon.py`, migration 0025)
 
