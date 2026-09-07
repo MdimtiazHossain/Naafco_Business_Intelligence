@@ -470,7 +470,8 @@ and Reset is one navigation; a composer's changes go through the Map Settings
 drawer (`MapSettingsDrawer`, the `Modal` with `placement="sheet"`) and its
 `DesignEditor` / `LayerEditor`, which send the whole ordered layer list so the
 server validates the design as it will stand and show a refusal as the server
-phrased it. The legend explains the *active* layer and offers the others by
+phrased it. **The drawer serves both tabs** — see below; it was mounted inside
+this branch for a while and the Settings button above it was not. The legend explains the *active* layer and offers the others by
 name rather than stacking four legends over the basemap; the tooltip renders
 the layer's configured `tooltip_fields`; the selected-entity card reads the
 point's own figures and fetches only the ancestry; Top / Bottom are two
@@ -480,7 +481,13 @@ page asks the map to do, never WebGL. **Development `data/dev.db` holds no
 sales rows**, so the map there is correctly empty; the localhost deployment's
 PostgreSQL has the data, and it serves `frontend/dist` directly, so a frontend
 change reaches it only after `cd frontend; npm run build` (no service restart
-— nginx reads the bundle off disk).
+— nginx reads the bundle off disk). **Which makes the typecheck gate the
+deployment step**, and that is a trap rather than a convenience: this file calls
+`npm run build` "the real typecheck gate", so running it to check a type also
+publishes the bundle nginx is serving, with no separate act to approve. Run
+`npx tsc -b --noEmit` while iterating — it is the same `tsc -b` without the
+`vite build` — and keep `npm run build` for the moment the change is meant to
+go live.
 
 **Step 9, the second tab (`map/locations.py`, `GET /api/map/locations`,
 `0035_map_demarcation`, `0036_demarcation_all_levels`).** Area Demarcation
@@ -592,7 +599,60 @@ byte-identical from `4ee51b7`; `scripts/build_map_geojson.py` did **not**, and
 cannot until `app.map.geometry` returns with it, so a new COD-AB release cannot
 be processed today.
 
-**Three traps this work walked into, none of which the suite would have
+**Step 12, the drawer on both tabs (`MapSettingsDrawer`, `LayerEditor`,
+`DesignEditor`).** The Settings button lives in the page header, which is drawn
+for both tabs, but the drawer was mounted inside the analysis branch — so on
+Area Demarcation the button did nothing at all, and left `settingsOpen` true, so
+the drawer sprang open by itself the next time the reader came back to the other
+tab. One omission, two symptoms.
+
+**Hiding the button would have been the wrong repair**, though it is what this
+file's own "a control whose only outcome is a refusal is absent" rule suggests
+at first reading. Shape and Point colour are *demarcation* controls — that map
+draws no figure, so the shape and the colour of a point are the entire means by
+which a reader tells a territory from a customer — and they worked, validated
+and round-tripped correctly while being reachable only from the map that does
+not need them. Hiding the button would have made that permanent and tidy.
+
+**Mounting it would have broken New design, so `purpose` is threaded through.**
+The server defaults `purpose` to `analysis` and refuses to change it afterwards,
+deliberately, so a design created from the demarcation drawer would have been
+saved to the other map and vanished from the list the composer was looking at.
+The analysis path states its purpose too although the value is the one the
+server would have chosen: one code path saying it for both beats a conditional
+exercised on one. A **new demarcation design starts with every level** rather
+than `PROMOTED_LEVELS`, because that map accounts for every stored coordinate —
+`drawn + derived == stored` — and a design quietly omitting Company, Business
+Unit, Sales Line and Sales Force breaks the partition for whoever opens it,
+which is the defect `0036` exists to repair. The analysis map keeps the shorter
+list for the opposite reason.
+
+**A design that draws no figure is offered no figure control.** Seven controls
+are absent on a demarcation design — six in `LayerEditor` and the design's
+*Default metric* in `DesignEditor` — each dead there for its own reason.
+*Metric, Colour, Size* and *Default metric* have nothing to measure. *Label*,
+because `useShapeRenderer` draws `['get', 'name']` and nothing else, so even
+"Code" would do nothing. *Tooltip*, because the demarcation hover shows a
+point's name, its level and its `source` and reads `tooltip_fields` nowhere.
+And *Achievement bands*, because they colour by the metric this map never uses.
+Colour was the worst of them and is why the rest were worth finding — it sat
+three fields above Point colour, so the map's one working colour control had a
+decoy directly above it. **Show labels and Labels from zoom stay**: that
+renderer honours both, and dropping the whole label row would have been tidier
+and wrong. `drawn` is likewise passed empty on demarcation, which makes the
+Active layer picker absent rather than inert — it names the layer the legend
+explains and the Top / Bottom tables rank, and this map has neither.
+
+**Nothing stored changes, and that is what makes it a hidden control rather
+than an edited design.** Every one of those fields is still read from the layer
+into state and still sent back on save, so a design duplicated from the analysis
+map keeps its layers' metrics, the tooltip stays inherited rather than being
+sent as the empty list `validate_layer` refuses by name, and the design's
+default metric goes on being validated against every level. It is keyed on
+`design.purpose`, so all seven return by themselves the day this map is given
+something to measure.
+
+**Three traps steps 9–11 walked into, none of which the suite would have
 caught.** *An i18n key that already exists*: `map.colorBy` meant "Colour" on the
 analysis legend, and adding the new control's label under it silently rewrote
 that legend — check a key is free before writing it, not that it is present

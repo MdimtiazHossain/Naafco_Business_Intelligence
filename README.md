@@ -1547,6 +1547,16 @@ reader who may not compose the map.
   deactivation and from nothing else. Deleting a custom design is a real
   delete — it is configuration, not a figure — and is audited
   (`MAP_DESIGN_*` actions).
+* **Map Settings opens on both tabs, and each map is offered only what it can
+  honour.** The drawer picks the design, toggles layers for the current view
+  and — for a holder of Map Settings — creates, edits, duplicates, activates
+  and deletes designs and edits their layers. It shows the *open tab's* designs
+  and creates into the open tab's map, so a demarcation design is never offered
+  where it could not be drawn. On a demarcation design seven controls are
+  absent rather than disabled, because that map reads no fact table: Metric,
+  Colour, Size, the label's field, the tooltip's fields and the achievement
+  bands on a layer, and Default metric on the design itself. What is stored is untouched — every value still
+  travels on save — so this hides controls rather than editing designs.
 * **The browser fetches one layer per request, in parallel.** Five layers in
   one call waited for the slowest before the first could paint (7.5 s over
   July on the PostgreSQL deployment); fetched separately the first layer is on
@@ -1668,6 +1678,30 @@ derivation, the coordinate rules and the DERIVED-removal refusal live in one
 place each. A third write path would reimplement all three. What this tab
 offers instead is the way *out*: a selected point links to its Data Management
 record.
+
+**How it is drawn *is* composable here, through the same Map Settings drawer.**
+It is the same component the Business Map opens, pointed at this map's designs:
+which levels are layers, in what order, each level's shape and colour, when a
+level appears and when it clusters. That matters more here than on the other
+tab, because with no figure to colour by, a point's shape and colour are the
+whole of how a reader tells a territory from a customer — and for a while the
+drawer was mounted only on the Business Map, so the two controls built for this
+map could be reached only from the one that does not need them. The Settings
+button, being in the shared page header, did nothing at all here.
+
+**Seven controls the other tab shows are absent on a demarcation design**,
+because this map reads no fact table and each would change nothing. Six are on
+a layer: Metric, Colour and Size; the label's *field*, since the renderer draws
+the entity's name and nothing else; the tooltip's fields, since the hover shows
+name, level and whether the coordinate was stated or computed; and the
+achievement bands, which colour by the metric this map never uses. The seventh
+is Default metric on the design itself. Colour was the one worth removing most:
+it sat three fields above Point colour, so the map's one working colour control
+had a decoy above it.
+*Show labels* and *Labels from zoom* stay, because the renderer honours both.
+Nothing stored changes — every value is still sent on save — so a design
+duplicated from the Business Map keeps everything its layers carried, and all
+seven return by themselves if this map is ever given something to measure.
 
 ### The administrative backdrop
 
