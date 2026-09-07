@@ -7,6 +7,30 @@
  * the catalogue minus the metrics that have no meaning at this level. The
  * whole layer list is sent back on save, in order, so the server validates
  * the design as it will stand; a refusal names the field to fix.
+ *
+ * **A design that draws no figure is offered no figure control.** Area
+ * Demarcation reads `map_entity_locations` and no fact table, so six of these
+ * fields cannot change a point on it, and each is absent there rather than
+ * disabled — the rule this platform follows wherever a control's only outcome
+ * would be nothing:
+ *
+ * * *Metric, Colour, Size* — nothing to measure. Colour was the worst of them,
+ *   sitting three fields above Point colour, so the map's one working colour
+ *   control had a decoy directly above it.
+ * * *Label* — `useShapeRenderer` draws `['get', 'name']`, full stop, so the
+ *   field choice does nothing at all. **Show labels and Labels from zoom stay**,
+ *   because that renderer does honour both; only the *choice of field* is dead.
+ * * *Tooltip* — the demarcation hover shows name, level and source, and reads
+ *   `tooltip_fields` nowhere.
+ * * *Achievement bands* — they feed `color_mode === 'bands'`, which needs the
+ *   colour metric this map never uses.
+ *
+ * What is *stored* is untouched throughout. The state is still read from the
+ * layer and still sent back on save, so a value an analysis design set before
+ * its layers were copied survives, and the server goes on validating the
+ * design's default metric against every level exactly as it did. Every one of
+ * these becomes visible again the day this map is given something to measure;
+ * none of them was removed from the schema.
  */
 
 import { Loader2, Trash2 } from 'lucide-react';
@@ -46,6 +70,9 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
   const t = useT();
   const mutations = useDesignMutations();
   const adding = layer === undefined;
+  // Read from the design rather than passed in: it is the design being edited
+  // that decides whether a metric means anything, and it already says so.
+  const drawsFigures = design.purpose !== 'demarcation';
 
   const usedLevels = useMemo(
     () => new Set(design.layers.map((candidate) => candidate.point_level)),
@@ -248,32 +275,40 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
           )}
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          <MetricSelect id="layer-metric" label={t('map.layerMetric')} value={metric} onChange={setMetric}
-                        metrics={metricsHere.map((m) => [m.key, m.label])}
-                        inheritLabel={t('map.inheritDesign', { metric: metricLabel(design.default_metric) })} />
-          <MetricSelect id="layer-color" label={t('map.colorBy')} value={colorMetric} onChange={setColorMetric}
-                        metrics={metricsHere.map((m) => [m.key, m.label])}
-                        inheritLabel={t('map.inheritDesign', { metric: metricLabel(config.defaults.color_metric) })} />
-          <MetricSelect id="layer-size" label={t('map.sizeBy')} value={sizeMetric} onChange={setSizeMetric}
-                        metrics={metricsHere.map((m) => [m.key, m.label])}
-                        inheritLabel={t('map.inheritDesign', { metric: metricLabel(config.defaults.size_metric) })} />
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div>
-            <label htmlFor="layer-label" className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
-              {t('map.labelField')}
-            </label>
-            <select id="layer-label" className="input" value={labelField}
-                    onChange={(event) => setLabelField(event.target.value)}>
-              <option value="name">{t('map.labelName')}</option>
-              <option value="code">{t('map.labelCode')}</option>
-              {metricsHere.map((m) => (
-                <option key={m.key} value={m.key}>{m.label}</option>
-              ))}
-            </select>
+        {drawsFigures && (
+          <div className="grid gap-3 sm:grid-cols-3">
+            <MetricSelect id="layer-metric" label={t('map.layerMetric')} value={metric} onChange={setMetric}
+                          metrics={metricsHere.map((m) => [m.key, m.label])}
+                          inheritLabel={t('map.inheritDesign', { metric: metricLabel(design.default_metric) })} />
+            <MetricSelect id="layer-color" label={t('map.colorBy')} value={colorMetric} onChange={setColorMetric}
+                          metrics={metricsHere.map((m) => [m.key, m.label])}
+                          inheritLabel={t('map.inheritDesign', { metric: metricLabel(config.defaults.color_metric) })} />
+            <MetricSelect id="layer-size" label={t('map.sizeBy')} value={sizeMetric} onChange={setSizeMetric}
+                          metrics={metricsHere.map((m) => [m.key, m.label])}
+                          inheritLabel={t('map.inheritDesign', { metric: metricLabel(config.defaults.size_metric) })} />
           </div>
+        )}
+
+        <div className={`grid gap-3 ${drawsFigures ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+          {/* Which field the label shows — absent where the renderer ignores it.
+              `useShapeRenderer` draws `['get', 'name']` and nothing else, so on
+              this map even "Code" would do nothing. The two controls beside it
+              are honoured there and stay. */}
+          {drawsFigures && (
+            <div>
+              <label htmlFor="layer-label" className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                {t('map.labelField')}
+              </label>
+              <select id="layer-label" className="input" value={labelField}
+                      onChange={(event) => setLabelField(event.target.value)}>
+                <option value="name">{t('map.labelName')}</option>
+                <option value="code">{t('map.labelCode')}</option>
+                {metricsHere.map((m) => (
+                  <option key={m.key} value={m.key}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <label className="flex items-center gap-2 self-end pb-2 text-sm">
             <input type="checkbox" checked={showLabel} onChange={(event) => setShowLabel(event.target.checked)} />
             {t('map.showLabel')}
@@ -287,6 +322,10 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
           </div>
         </div>
 
+        {/* Absent on the demarcation map, whose hover shows a point's name, its
+            level and whether the coordinate was stated or computed — a label
+            rather than a table of measures, and none of it read from here. */}
+        {drawsFigures && (
         <fieldset>
           <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">{t('map.tooltipFields')}</legend>
           <label className="mb-1 flex items-center gap-2 text-sm">
@@ -312,6 +351,7 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
             </div>
           )}
         </fieldset>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="flex items-center gap-2 self-end pb-2 text-sm">
@@ -372,6 +412,10 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
           </div>
         </div>
 
+        {/* The achievement bands colour a figure, so they need the colour metric
+            this map does not have. Absent here for the same reason as Colour
+            itself, and the two would look inconsistent apart. */}
+        {drawsFigures && (
         <fieldset>
           <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">{t('map.thresholds')}</legend>
           <div className="grid grid-cols-3 gap-2">
@@ -396,6 +440,7 @@ export function LayerEditor({ open, config, design, layer, onClose, onSaved }: L
           </div>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('map.thresholdsHint')}</p>
         </fieldset>
+        )}
       </form>
     </Modal>
   );

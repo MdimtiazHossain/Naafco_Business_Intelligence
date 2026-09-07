@@ -188,17 +188,24 @@ export function DesignEditor({ open, config, design, purpose, onClose, onSaved }
               </select>
             </div>
           )}
-          <div>
-            <label htmlFor="design-metric" className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
-              {t('map.defaultMetric')}
-            </label>
-            <select id="design-metric" className="input" value={defaultMetric}
-                    onChange={(event) => setDefaultMetric(event.target.value)}>
-              {config.metrics.map((metric) => (
-                <option key={metric.key} value={metric.key}>{metric.label}</option>
-              ))}
-            </select>
-          </div>
+          {/* Absent on a design that draws no figure: Area Demarcation reads no
+              fact table, so what its layers would be measured by is a setting
+              with nothing to change. Still *sent* — the field has a server
+              default and every layer's own metric is validated against it — so
+              this hides a control rather than altering a design. */}
+          {purpose !== 'demarcation' && (
+            <div>
+              <label htmlFor="design-metric" className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                {t('map.defaultMetric')}
+              </label>
+              <select id="design-metric" className="input" value={defaultMetric}
+                      onChange={(event) => setDefaultMetric(event.target.value)}>
+                {config.metrics.map((metric) => (
+                  <option key={metric.key} value={metric.key}>{metric.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {creating && (

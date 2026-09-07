@@ -292,6 +292,28 @@ describe('Map settings drawer', () => {
     ).toMatchObject({ design_id: 1 }));
   });
 
+  it('keeps every metric control on the map that does read figures', async () => {
+    // The contrast that gives the demarcation absences their meaning: the same
+    // form, the same three fields, on a design whose points carry measures.
+    auth.composer = true;
+    wrap();
+    const drawer = await openSettings();
+    fireEvent.click(within(drawer).getByLabelText('Edit layer: Region'));
+    const editor = await screen.findByRole('dialog', { name: 'Edit layer' });
+    expect(within(editor).getByLabelText('Metric')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Colour')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Size')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Label')).toBeInTheDocument();
+    expect(within(editor).getByText('Tooltip')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Good from')).toBeInTheDocument();
+
+    // Two Cancels: the Modal's own dismiss and the form's. Either closes it.
+    fireEvent.click(within(editor).getAllByRole('button', { name: 'Cancel' })[0]);
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Edit design' }));
+    expect(await within(await screen.findByRole('dialog', { name: 'Edit design' }))
+      .findByLabelText('Default metric')).toBeInTheDocument();
+  });
+
   it('carries the shape and the point colour, which nothing else did', async () => {
     // The two controls this change exists for, and the two the suite had never
     // pinned: everything else in the editor is covered above.
@@ -408,6 +430,71 @@ describe('Map settings drawer on the Area Demarcation tab', () => {
     expect(layers[1].style_config).toMatchObject({ shape: 'triangle', point_color: '#db2777' });
     // The region layer keeps its own, untouched.
     expect(layers[0].style_config).toMatchObject({ shape: 'circle', point_color: '#2563eb' });
+  });
+
+  it('offers no figure control at all, on a map that reads no fact table', async () => {
+    // Six fields, each dead here for its own reason. Metric, Colour and Size
+    // have nothing to measure; Label because `useShapeRenderer` draws
+    // `['get', 'name']` and nothing else; Tooltip because the demarcation hover
+    // is a label rather than a table of measures; Achievement bands because
+    // they colour a figure. Colour was the worst of them, sitting three fields
+    // above the Point colour control that actually works.
+    wrap(DEMARCATION_ROUTE);
+    const drawer = await openSettings();
+    fireEvent.click(within(drawer).getByLabelText('Edit layer: Region'));
+    const editor = await screen.findByRole('dialog', { name: 'Edit layer' });
+    expect(within(editor).queryByLabelText('Metric')).not.toBeInTheDocument();
+    expect(within(editor).queryByLabelText('Colour')).not.toBeInTheDocument();
+    expect(within(editor).queryByLabelText('Size')).not.toBeInTheDocument();
+    expect(within(editor).queryByLabelText('Label')).not.toBeInTheDocument();
+    expect(within(editor).queryByText('Tooltip')).not.toBeInTheDocument();
+    expect(within(editor).queryByLabelText('Good from')).not.toBeInTheDocument();
+
+    // What stays is what the demarcation renderer honours, which is what makes
+    // the six absences a removal rather than a gutted form. The two label
+    // controls in particular: it reads `show_label` and `label_min_zoom` even
+    // though it ignores the field choice above them.
+    expect(within(editor).getByLabelText('Shape')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Point colour')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Show labels')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Labels from zoom')).toBeInTheDocument();
+    expect(within(editor).getByLabelText(/Cluster above/)).toBeInTheDocument();
+    expect(within(editor).getByLabelText('Show from zoom')).toBeInTheDocument();
+  });
+
+  it('keeps sending the stored metrics, so hiding a control changes no design',
+     async () => {
+    // The distinction the change rests on: the three fields are taken off the
+    // form, not off the layer. The server still validates the design's default
+    // metric against every level, and a value a duplicated analysis design
+    // carried would be thrown away if this were not true.
+    const replaced = vi.spyOn(services.mapService, 'replaceLayers')
+      .mockResolvedValue(DEMARCATION);
+    wrap(DEMARCATION_ROUTE);
+    const drawer = await openSettings();
+    fireEvent.click(within(drawer).getByLabelText('Edit layer: Region'));
+    const editor = await screen.findByRole('dialog', { name: 'Edit layer' });
+    fireEvent.change(within(editor).getByLabelText('Shape'), { target: { value: 'triangle' } });
+    fireEvent.click(within(editor).getByRole('button', { name: 'Save layer' }));
+
+    await waitFor(() => expect(replaced).toHaveBeenCalledTimes(1));
+    const layers = replaced.mock.calls[0][1] as MapLayerInput[];
+    expect(layers[0]).toMatchObject({
+      metric: null, color_metric: 'achievement', size_metric: 'net_sales',
+      label_field: 'name',
+    });
+    // The tooltip stays inherited rather than being sent as an empty list,
+    // which the server refuses by name.
+    expect(layers[0].tooltip_fields).toBeNull();
+  });
+
+  it('offers no default metric when composing a design for this map', async () => {
+    wrap(DEMARCATION_ROUTE);
+    const drawer = await openSettings();
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Edit design' }));
+    const editor = await screen.findByRole('dialog', { name: 'Edit design' });
+    expect(within(editor).queryByLabelText('Default metric')).not.toBeInTheDocument();
+    expect(within(editor).getByLabelText(/Design name/)).toBeInTheDocument();
   });
 
   it('creates a design for this map, not the other, and starts it with every level', async () => {
