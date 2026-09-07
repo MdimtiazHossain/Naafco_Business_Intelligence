@@ -164,14 +164,23 @@ describe('Administrative backdrop', () => {
   // Nothing until it is asked for
   // ========================================================================
 
-  it('fetches no outline until a backdrop is chosen, on the Business Map', async () => {
+  it('opens the Business Map with the upazila outlines too', async () => {
+    // This used to assert the opposite — that nothing was fetched until a
+    // reader chose a backdrop, on the reasoning that outlines over a map of
+    // figures are ink over the subject. That was overruled: a regional figure
+    // is read together with the ground it covers, so both surfaces now open
+    // able to show it, and `boundary=none` is how a reader says otherwise.
     wrap(`/map?${WINDOW}`);
+    await waitFor(() => expect(geoCalls().some((u) => u.includes('admin3'))).toBe(true));
+  });
+
+  it('lets a reader turn the backdrop off on the Business Map as well', async () => {
+    // The half that makes the new default acceptable rather than imposed: the
+    // 1.7 MB is opt-out, once, and the choice survives a reload because
+    // `boundary=none` is spelled out rather than left as an absent parameter.
+    wrap(`/map?boundary=none&${WINDOW}`);
     await waitFor(() => expect(services.mapService.data).toHaveBeenCalled());
-    // 370 KB of districts nobody asked for, over a connection nobody chose.
-    // Unchanged by the demarcation tab opening with a backdrop: that reasoning
-    // is about a map of figures, where the outlines would be ink over the
-    // subject rather than the subject.
-    expect(geoCalls()).toEqual([]);
+    expect(geoCalls().filter((u) => !u.includes('mask'))).toEqual([]);
   });
 
   it('opens Area Demarcation with the upazila outlines already asked for', async () => {

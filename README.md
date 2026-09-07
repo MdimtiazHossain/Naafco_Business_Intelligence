@@ -1721,16 +1721,27 @@ a new release. `app/map/boundaries.py` publishes the *catalogue* alone, so the
 browser holds no list of filenames, and `test_map_boundaries` checks every
 declared file against the one on disk.
 
-**The default is per surface**, and the two answers differ. The Business Map
-opens with none: it draws figures, and a backdrop nobody asked for is a
-download and a lot of ink over the points somebody came to look at. Area
-Demarcation opens with **upazilas**, because there the outlines are not context
-over the subject, they are the subject. Upazila and not district because a
-territory is drawn at roughly upazila grain. The cost is accepted rather than
-overlooked — `bgd_admin3.geojson` is 1.7 MB and 507 features — and it is
-fetched once per session, never blocks the points, and states the wait while it
-happens. `boundary=none` is spelled out like `layers=none`, or a reader who
-switched the backdrop off would get it back on reload.
+**Both surfaces open with upazilas.** Area Demarcation always did, because
+there the outlines are not context over the subject, they are the subject —
+upazila and not district because a territory is drawn at roughly upazila grain.
+The Business Map now does too, which reverses the reasoning that used to sit
+here: that a map of figures should open bare, since a backdrop nobody asked for
+is a download and a lot of ink over the points somebody came to look at. The
+judgement that overrode it is that a regional figure is read together with the
+ground it covers, and an opt-in default asks every reader to go and find a
+control for the sake of the ones who do not want it. The ink half was weaker
+than it read in any case — the fill is drawn at 0.06 opacity and the line at
+0.55 precisely so the outlines recede behind whatever sits on them.
+
+The cost is accepted rather than overlooked and is now paid on both tabs:
+`bgd_admin3.geojson` is 1.7 MB and 507 features. It is fetched once per
+session, never blocks the points — those come from a different request and draw
+first — and states the wait while it happens. `boundary=none` is spelled out
+like `layers=none`, which is what makes the default opt-*out*: a reader who
+switches the backdrop off is not overruled on the next reload. The catalogue
+still publishes the default **per surface** even though the two answers now
+agree, because they agree by decision rather than by construction and the two
+maps must stay free to diverge again.
 
 ### What stayed removed
 

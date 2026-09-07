@@ -141,18 +141,23 @@ def test_every_exported_name_still_names_something():
     exec("from app.map.boundaries import *", {})
 
 
-def test_the_business_map_still_opens_with_no_backdrop():
-    """The reason the demarcation tab now opens with one does not reach here.
+def test_the_business_map_opens_with_upazila_outlines_too():
+    """Both maps open with a backdrop, which reverses what this test asserted.
 
-    A backdrop nobody asked for is a download and a lot of ink over the points
-    somebody came to look at — true of a map that draws figures, and the whole
-    point of splitting the default by purpose was that it is not true of a map
-    that exists to judge where a line falls. This is the half that must not
-    move, and it is pinned separately because a shared constant is exactly how
-    a change to one surface leaks onto the other.
+    It used to pin the Business Map opening with nothing, on the reasoning that
+    a backdrop nobody asked for is a download and a lot of ink over the points
+    somebody came to look at. That was overruled: a regional figure is read
+    together with the ground it covers, and an opt-in default asks every reader
+    to find a control for the sake of the ones who do not want it.
+
+    The pinning stays separate from the demarcation one even though the two
+    values now agree. They agree by decision rather than by construction, and a
+    single assertion over a shared value is exactly how a later change to one
+    surface would leak onto the other unnoticed.
     """
-    assert boundaries.DEFAULT_BOUNDARY_BY_PURPOSE[DesignPurpose.ANALYSIS] is None
-    assert boundaries.catalogue()["defaults"]["analysis"] is None
+    assert (boundaries.DEFAULT_BOUNDARY_BY_PURPOSE[DesignPurpose.ANALYSIS]
+            == "upazila")
+    assert boundaries.catalogue()["defaults"]["analysis"] == "upazila"
 
 
 def test_area_demarcation_opens_with_upazila_outlines():

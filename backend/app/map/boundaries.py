@@ -119,33 +119,43 @@ BOUNDARY_SETS: tuple[BoundarySet, ...] = (
 BOUNDARY_BY_KEY: dict[str, BoundarySet] = {s.key: s for s in BOUNDARY_SETS}
 BOUNDARY_KEYS: tuple[str, ...] = tuple(BOUNDARY_BY_KEY)
 
-#: What each map opens with — and the two answers differ, which is why this is
-#: keyed by purpose rather than being one constant.
+#: What each map opens with. **Both open with upazilas.**
 #:
-#: **The Business Map opens with nothing**, and the original reasoning is
-#: unchanged: a backdrop nobody asked for is a download and a lot of ink over
-#: the points somebody came to look at. That map draws figures. The outlines
-#: would be context laid over its subject, and context that competes with what
-#: it explains is worse than none.
+#: Area Demarcation always did, and for a reason that has not changed: there
+#: the outlines are not context over the subject, they *are* the subject. That
+#: tab exists to judge where a line falls, and a reader who has to switch the
+#: backdrop on before the tab can answer its own question has been given a
+#: blank map and a chore. Upazila rather than district because a territory is
+#: drawn at roughly upazila grain; districts are too coarse to place a boundary
+#: against.
 #:
-#: **Area Demarcation opens with upazilas**, because there the outlines are not
-#: context over the subject — they *are* the subject. That tab exists to judge
-#: where a line falls, and a reader who has to switch the backdrop on before the
-#: tab can answer its own question has been given a blank map and a chore.
-#: Upazila rather than district because a territory is drawn at roughly upazila
-#: grain; districts are too coarse to place a boundary against.
+#: **The Business Map now does too, which reverses what this comment used to
+#: say.** The old reasoning was that a backdrop nobody asked for is a download
+#: and a lot of ink over the points somebody came to look at — true of a map
+#: that draws figures, where the outlines would be context laid over its
+#: subject. The judgement that overrides it is that a regional figure is read
+#: together with the ground it covers, and a reader who wants that had to find
+#: a control first: an opt-in default asks every reader to do the work for the
+#: ones who do not want it. The ink half was also weaker than it read, since
+#: :data:`BOUNDARY_STYLE` draws the fill at 0.06 opacity and the line at 0.55
+#: precisely so the outlines recede behind whatever sits on top of them.
 #:
-#: The cost is accepted rather than overlooked: ``bgd_admin3.geojson`` is 1.7 MB
-#: and 507 features, and it now loads on every visit to that tab. It is fetched
-#: once per session (``geoData`` caches the promise), it never blocks the
-#: points — the coordinates come from a different request and draw first — and
-#: the wait is stated while it happens, which is what
-#: ``BoundaryControl``'s loading state is for.
+#: The cost is accepted rather than overlooked, and it is now paid on both
+#: tabs: ``bgd_admin3.geojson`` is 1.7 MB and 507 features. It is fetched once
+#: per session (``geoData`` caches the promise), it never blocks the points —
+#: those come from a different request and draw first — and the wait is stated
+#: while it happens, which is what ``BoundaryControl``'s loading state is for.
+#: ``boundary=none`` still turns it off and is still spelled out, so a reader
+#: who does not want it says so once and is not overruled on the next reload.
 #:
-#: One shared constant could not say this. A single value forces both maps to
-#: the same answer, and the honest answer is different on each.
+#: **Still keyed by purpose although both answers now agree**, deliberately.
+#: The shape is what ``catalogue()`` publishes and what the browser reads per
+#: tab; the two are free to diverge again; and :func:`_assert_defaults_resolve`
+#: goes on earning its keep either way. Collapsing it back to one constant
+#: would be churn to undo the first time one surface wants what the other does
+#: not — which is the state this map was in a week ago.
 DEFAULT_BOUNDARY_BY_PURPOSE: dict[str, str | None] = {
-    DesignPurpose.ANALYSIS: None,
+    DesignPurpose.ANALYSIS: "upazila",
     DesignPurpose.DEMARCATION: "upazila",
 }
 

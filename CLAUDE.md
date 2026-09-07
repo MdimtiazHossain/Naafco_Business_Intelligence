@@ -595,11 +595,16 @@ points on both maps and **not business boundaries**: nothing states the outline
 of a territory, so `boundary_source` stays `None` on every level and no outline
 is ever coloured by a figure. They are static files rather than an endpoint,
 and `boundaries.py` publishes the catalogue alone so the browser holds no list
-of filenames. **The default is per surface** — `None` for the analysis map,
-`upazila` for demarcation — because on a map of figures a backdrop is ink over
-the subject and on a map for judging a line it *is* the subject; one constant
-could not say both, so `catalogue()` publishes `defaults` keyed by purpose and
-`boundary=none` is spelled out like `layers=none`. The five files came back
+of filenames. **Both surfaces open with `upazila`**, and that reverses
+half of what this sentence used to say. The split existed because on a map of
+figures a backdrop reads as ink over the subject while on a map for judging a
+line it *is* the subject, so the analysis map opened bare. That was overruled: a
+regional figure is read together with the ground it covers, and an opt-in
+default makes every reader find a control for the sake of the ones who do not
+want it. `catalogue()` still publishes `defaults` keyed by purpose and the two
+values still agree only by decision, so a change to one surface cannot leak onto
+the other — and `boundary=none`, spelled out like `layers=none`, is what makes
+the 1.7 MB opt-out rather than imposed: dismissing it once survives a reload. The five files came back
 byte-identical from `4ee51b7`; `scripts/build_map_geojson.py` did **not**, and
 cannot until `app.map.geometry` returns with it, so a new COD-AB release cannot
 be processed today.

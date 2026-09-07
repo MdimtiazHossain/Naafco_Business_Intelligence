@@ -60,10 +60,11 @@ const NO_LAYERS = 'none';
  * `boundary=none`: no backdrop, said out loud.
  *
  * The same rule as `NO_LAYERS`, and it became necessary for the same reason.
- * An absent parameter means "the surface's own default", and Area Demarcation's
- * default is now upazilas — so without a spelling for "off", a reader who
- * switched the backdrop off would get 1.7 MB of it back on the next reload,
- * with the control they used apparently doing nothing.
+ * An absent parameter means "the surface's own default", and both surfaces now
+ * default to upazilas — so without a spelling for "off", a reader who switched
+ * the backdrop off would get 1.7 MB of it back on the next reload, with the
+ * control they used apparently doing nothing. It matters on both tabs now: it
+ * is what makes an opt-out default opt-out rather than merely dismissible.
  */
 const NO_BOUNDARY = 'none';
 

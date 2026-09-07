@@ -150,9 +150,10 @@ export const CONFIG: MapConfig = {
         file: 'bgd_admin3.geojson', admin_level: 3, table: 'dim_upazila',
         features: 507, bytes: 1727737 },
     ],
-    // Per surface, as the server publishes it: the analysis map opens bare and
-    // the demarcation tab opens with upazila outlines.
-    defaults: { analysis: null, demarcation: 'upazila' },
+    // Keyed by surface, as the server publishes it. Both answers are now
+    // `upazila` — they agree by decision rather than by construction, and the
+    // shape stays per-purpose so the two can diverge again.
+    defaults: { analysis: 'upazila', demarcation: 'upazila' },
     mask_url: '/geo/bgd_mask.geojson',
     note: 'Administrative reference outlines. They are not business boundaries.',
   },
