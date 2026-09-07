@@ -38,7 +38,8 @@ The virtualenv is `.venv/` at the repo root; on this machine use `.\.venv\Script
 There is no CI, no backend linter and no formatter config in this repo — `pytest` and the frontend's `typecheck`/`lint`/`build` are the whole gate, so run them yourself before calling work done.
 
 ```powershell
-# Tests (1770 backend tests; run from the repo root — pytest.ini sets pythonpath=backend)
+# Tests (2,075 backend tests; run from the repo root — pytest.ini sets
+# pythonpath=backend and deselects the 7 opt-in volume tests, see -m volume below)
 .\.venv\Scripts\python.exe -m pytest -n auto --dist loadfile   # pytest-xdist: ~30 min, against ~3 hours serially
 .\.venv\Scripts\python.exe -m pytest backend/tests/test_etl_pipeline.py
 .\.venv\Scripts\python.exe -m pytest backend/tests/test_ai_tools.py::test_name -x
@@ -52,7 +53,7 @@ cd backend; ..\.venv\Scripts\alembic.exe revision -m "0015_thing"
 
 # Frontend (this machine: API on 8010, Vite on 5183 — see frontend/.env.local)
 cd frontend; npm run dev
-cd frontend; npm test          # vitest, 22 suites
+cd frontend; npm test          # vitest, 404 tests across 29 suites
 cd frontend; npm run lint      # oxlint
 cd frontend; npm run typecheck # tsc -b --noEmit — the fast gate
 cd frontend; npm run build     # tsc -b then vite build — the real typecheck gate
