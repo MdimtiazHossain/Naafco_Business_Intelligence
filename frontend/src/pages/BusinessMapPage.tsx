@@ -647,21 +647,46 @@ export default function BusinessMapPage() {
               <TopBottomTable layer={activeLayer} metrics={metrics} onSelect={select} />
             </>
           )}
-
-          <MapSettingsDrawer
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
-            config={config.data}
-            designs={designs.data.designs}
-            design={design}
-            onDesignChange={changeDesign}
-            levels={levels}
-            onLevelsChange={changeLevels}
-            drawn={layers.layers}
-            activeLevel={activeLevel}
-            onActiveLevel={setActiveChoice}
-          />
         </>
+      )}
+
+      {/*
+        One drawer, both tabs, against whichever map is open.
+
+        It used to be mounted inside the analysis branch above, which left the
+        Settings button in the header — drawn for both tabs — doing nothing at
+        all on Area Demarcation, and worse, latching `settingsOpen` so the
+        drawer sprang open by itself on the way back. Both symptoms are the same
+        omission.
+
+        The point of fixing it rather than hiding the button is that Shape and
+        Point colour are demarcation controls: that map draws no figure, so the
+        shape and the colour of a point are the whole of how a reader tells a
+        territory from a customer. Those controls worked and could not be
+        reached for the only map that needs them.
+
+        Every prop follows the open tab. `drawn` is deliberately empty on
+        demarcation: it feeds the "Active layer" picker, which names the layer
+        the legend explains and the Top / Bottom tables rank — and that map has
+        no ranking and a legend that names every level at once. Empty makes the
+        section absent rather than inert, which is the same rule the rest of
+        this page follows.
+      */}
+      {config.data && (tab === 'map' ? designs.data : demarcationDesigns.data) && (
+        <MapSettingsDrawer
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          config={config.data}
+          designs={(tab === 'map' ? designs.data?.designs : demarcationDesigns.data?.designs) ?? []}
+          design={activeDesign}
+          purpose={tab === 'map' ? 'analysis' : 'demarcation'}
+          onDesignChange={changeDesign}
+          levels={levels}
+          onLevelsChange={changeLevels}
+          drawn={tab === 'map' ? layers.layers : []}
+          activeLevel={activeLevel}
+          onActiveLevel={setActiveChoice}
+        />
       )}
     </>
   );

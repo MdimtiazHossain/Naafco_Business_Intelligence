@@ -2675,6 +2675,17 @@ export interface MapDesignInput {
   description?: string | null;
   basemap?: string;
   default_metric?: string;
+  /**
+   * Which map the design composes. Fixed at creation and never editable —
+   * `MapDesignUpdate` deliberately has no counterpart, because moving a design
+   * between the two maps would change what its settings *mean*.
+   *
+   * Sent because the settings drawer is now on both tabs, and the server
+   * defaults it to `analysis`: a design created from the Area Demarcation
+   * drawer without it would be saved to the other map and vanish from the list
+   * the composer was looking at.
+   */
+  purpose?: MapPurpose;
   layers: MapLayerInput[];
 }
 

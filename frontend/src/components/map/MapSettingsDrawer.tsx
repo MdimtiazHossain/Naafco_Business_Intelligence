@@ -1,6 +1,12 @@
 /**
  * The Map Settings drawer: which design, which layers, which is active.
  *
+ * **Both tabs draw it**, against their own map's designs. Area Demarcation is
+ * where the Shape and Point colour controls actually matter — telling one level
+ * from another is all that map has, since it draws no figure — so a drawer
+ * mounted only on the analysis tab left those two controls working and
+ * unreachable for the map they were built for.
+ *
  * Two audiences share it. A **reader** picks a design, switches layers on and
  * off for the view in front of them — a temporary choice that lives in the
  * URL and saves nothing — and chooses the layer the legend and tables
@@ -17,7 +23,9 @@ import {
 import { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useT } from '../../contexts/I18nContext';
-import type { MapConfig, MapDesign, MapLayerConfig, MapLayerData } from '../../types/api';
+import type {
+  MapConfig, MapDesign, MapLayerConfig, MapLayerData, MapPurpose,
+} from '../../types/api';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Modal } from '../Modal';
 import { DesignEditor } from './DesignEditor';
@@ -31,6 +39,16 @@ export interface MapSettingsDrawerProps {
   config: MapConfig;
   /** Every design the caller may see; inactive ones only for a composer. */
   designs: MapDesign[];
+  /**
+   * Which map these designs compose — the open tab's.
+   *
+   * Carried only so a *new* design lands on the map the composer is looking
+   * at: the server defaults `purpose` to `analysis`, so without this a design
+   * created from the Area Demarcation drawer would be saved to the other tab
+   * and vanish from the list it was created in. Everything else here already
+   * follows the design it was handed.
+   */
+  purpose: MapPurpose;
   design: MapDesign | undefined;
   onDesignChange: (designId: number | null) => void;
   /** The levels drawn right now, and how a reader changes them. */
@@ -42,8 +60,8 @@ export interface MapSettingsDrawerProps {
 }
 
 export function MapSettingsDrawer({
-  open, onClose, config, designs, design, onDesignChange, levels, onLevelsChange,
-  drawn, activeLevel, onActiveLevel,
+  open, onClose, config, designs, design, purpose, onDesignChange, levels,
+  onLevelsChange, drawn, activeLevel, onActiveLevel,
 }: MapSettingsDrawerProps) {
   const t = useT();
   const { hasSection, can } = useAuth();
@@ -269,6 +287,7 @@ export function MapSettingsDrawer({
           open={editor !== 'closed'}
           config={config}
           design={editor === 'edit' ? design : undefined}
+          purpose={purpose}
           onClose={() => setEditor('closed')}
           onSaved={(saved) => {
             setEditor('closed');

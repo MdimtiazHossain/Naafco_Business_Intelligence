@@ -9,9 +9,11 @@
  */
 
 import { Loader2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useT } from '../../contexts/I18nContext';
-import type { MapConfig, MapDesign, MapLayerInput } from '../../types/api';
+import type {
+  MapConfig, MapDesign, MapLayerInput, MapPurpose,
+} from '../../types/api';
 import { Modal } from '../Modal';
 import { refusalMessage } from './mapErrors';
 import { useDesignMutations } from './mapMutations';
@@ -21,20 +23,56 @@ export interface DesignEditorProps {
   config: MapConfig;
   /** The design being edited; absent when creating one. */
   design?: MapDesign;
+  /**
+   * Which map a *new* design composes — the open tab's, never a constant.
+   *
+   * Ignored when editing: `purpose` is fixed at creation, for the reason
+   * `app.map.designs.update_design` gives. It is sent on create because the
+   * server defaults it to `analysis`, so a design created from the Area
+   * Demarcation drawer without it would be saved to the other map and
+   * disappear from the list the composer was looking at.
+   */
+  purpose: MapPurpose;
   onClose: () => void;
   onSaved: (design: MapDesign) => void;
 }
 
-/** Levels a new design starts with drawn; the rest are listed but off. */
+/** Levels an analysis design starts with drawn; the rest are listed but off. */
 const INITIAL_VISIBLE = new Set(['zone', 'region', 'area', 'territory', 'sub_territory']);
 
 /** Points above which a new customer layer clusters, matching the seed. */
 const CUSTOMER_CLUSTER_AT = 200;
 
-export function DesignEditor({ open, config, design, onClose, onSaved }: DesignEditorProps) {
+export function DesignEditor({ open, config, design, purpose, onClose, onSaved }: DesignEditorProps) {
   const t = useT();
   const mutations = useDesignMutations();
   const creating = design === undefined;
+
+  /**
+   * The levels a new design may start with, and which are ticked.
+   *
+   * **Every level for a demarcation design, not the promoted seven.** That map
+   * accounts for every row in `map_entity_locations` — the acid test is
+   * `drawn + derived == stored` — so a design that quietly omitted Company,
+   * Business Unit, Sales Line and Sales Force would break that partition for
+   * whoever opened it. Revision `0036_demarcation_all_levels` exists because
+   * the seeded design did exactly that.
+   *
+   * The analysis map is the opposite case and keeps the shorter list: there a
+   * hidden level is one fewer thing competing for the eye on a map of figures.
+   */
+  const offered = useMemo(
+    () => (purpose === 'demarcation'
+      ? config.levels.map((level) => level.key)
+      : config.promoted_levels),
+    [config.levels, config.promoted_levels, purpose],
+  );
+  const initial = useMemo(
+    () => (purpose === 'demarcation'
+      ? offered
+      : offered.filter((level) => INITIAL_VISIBLE.has(level))),
+    [offered, purpose],
+  );
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -50,8 +88,8 @@ export function DesignEditor({ open, config, design, onClose, onSaved }: DesignE
     setDescription(design?.description ?? '');
     setBasemap(design?.basemap ?? config.default_basemap);
     setDefaultMetric(design?.default_metric ?? config.defaults.metric);
-    setLevels(config.promoted_levels.filter((level) => INITIAL_VISIBLE.has(level)));
-  }, [open, design, config]);
+    setLevels([...initial]);
+  }, [open, design, config, initial]);
 
   const busy = mutations.create.isPending || mutations.update.isPending;
 
@@ -60,7 +98,7 @@ export function DesignEditor({ open, config, design, onClose, onSaved }: DesignE
     setError(null);
     try {
       if (creating) {
-        const layers: MapLayerInput[] = config.promoted_levels
+        const layers: MapLayerInput[] = offered
           .filter((level) => levels.includes(level))
           .map((level) => ({
             point_level: level,
@@ -72,6 +110,7 @@ export function DesignEditor({ open, config, design, onClose, onSaved }: DesignE
           description: description.trim() || null,
           basemap,
           default_metric: defaultMetric,
+          purpose,
           layers,
         });
         onSaved(saved);
@@ -168,7 +207,7 @@ export function DesignEditor({ open, config, design, onClose, onSaved }: DesignE
               {t('map.initialLayers')}
             </legend>
             <div className="grid gap-1 sm:grid-cols-2">
-              {config.promoted_levels.map((level) => (
+              {offered.map((level) => (
                 <label key={level} className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
