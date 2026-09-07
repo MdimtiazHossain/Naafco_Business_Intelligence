@@ -56,7 +56,11 @@ cd frontend; npm run dev
 cd frontend; npm test          # vitest, 404 tests across 29 suites
 cd frontend; npm run lint      # oxlint
 cd frontend; npm run typecheck # tsc -b --noEmit — the fast gate
-cd frontend; npm run build     # tsc -b then vite build — the real typecheck gate
+cd frontend; npm run build     # tsc -b then vite build — the real typecheck gate,
+                               # and also the deployment: it rewrites frontend/dist,
+                               # which the localhost deployment's nginx serves off
+                               # disk. Use `npm run typecheck` while iterating and
+                               # run this when the change is meant to go live.
 
 # Postgres
 docker compose up -d db
