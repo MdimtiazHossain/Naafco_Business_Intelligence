@@ -151,6 +151,37 @@ def date_range_params(
     return resolve_range(period, date_from, date_to)
 
 
+def _narrower_than_the_country(user: UserContext,
+                               filters: ScopeFilters) -> str | None:
+    """Why the country card is not showing the country, when it is not.
+
+    Every tool is scoped, so a regional manager's "Monthly Country Performance"
+    is their region's months — correct for what they may see, and a figure that
+    is neither the whole nor labelled as partial is exactly what this platform
+    does not put on a screen. The card is **narrowed and labelled**, never
+    hidden: withholding it would deny them the one view of their own year.
+
+    The same sentence covers an active filter, because a reader who narrowed to
+    one region is looking at the identical partial number. Filters are read from
+    the model rather than listed here, so a level added to ``ScopeFilters``
+    is named by this note on the day it is added.
+    """
+    narrowings: list[str] = []
+    if not user.is_unrestricted and user.data_scope:
+        narrowings.append(f"your data scope ({user.describe_scope()})")
+    active = sorted(
+        key.removesuffix("_codes").removesuffix("_keys").removesuffix("_names")
+           .replace("_", " ")
+        for key, value in filters.model_dump(mode="json").items() if value
+    )
+    if active:
+        narrowings.append(f"the filters you have set ({', '.join(active)})")
+    if not narrowings:
+        return None
+    return ("These figures cover " + " and ".join(narrowings)
+            + ", not the whole country.")
+
+
 def tool_context(session: Session, user: UserContext) -> ToolContext:
     index = MasterDataIndex(session)
     return ToolContext(session, PermissionFilter(session, user, index), user)
@@ -229,14 +260,66 @@ def dashboard(
                                    date_range.date_from).isoformat(),
                      compare_to=(date_range.compare_to or
                                  date_range.date_to).isoformat())
+        # Monthly windows carry two earlier years and the target; a daily one
+        # carries neither, because both are monthly by construction — a target
+        # is a month of a financial year, and aligning days across years
+        # compares different weekdays.
+        #
+        # **One section, two cards.** The Sales Trend line chart and the Monthly
+        # Country Performance combo card both draw these rows: the first answers
+        # "what shape is the year", the second "how did each month do against
+        # its plan and against last year". Reading them off one result is what
+        # stops the two disagreeing about a month, and it is why the key stays
+        # ``sales_trend`` — same tool, same measure, same rows; only the drawing
+        # was added. Renaming it would be churn rather than a stale name.
+        monthly = (date_range.date_to - date_range.date_from).days > 92
         trend = run(ctx, "get_sales_trend", date_range, filters,
-                    granularity=("month" if (date_range.date_to -
-                                             date_range.date_from).days > 92 else "day"),
-                    limit=200)
-        regions = run(ctx, "get_region_performance", date_range, filters,
-                      group_by=GroupBy.REGION.value, limit=10)
-        achievement = run(ctx, "get_target_achievement", date_range, filters,
-                          group_by=GroupBy.REGION.value, limit=10)
+                    granularity=("month" if monthly else "day"),
+                    limit=200,
+                    **({"compare_years": 2, "include_target": True} if monthly else {}))
+        if isinstance(trend.get("notes"), list):
+            if not monthly:
+                # The combo card is still drawn, with one actual series and no
+                # percentage axis — but it has to say why, or a reader who saw
+                # target bars last week reads their absence as a fault. An
+                # absent card would be worse still: a section that vanishes
+                # reads as a rendering failure rather than as a period too short
+                # to answer the question.
+                trend["notes"].append(
+                    "This period is shorter than a quarter, so it is charted by "
+                    "day: there is no year-on-year monthly comparison and no "
+                    "monthly target to measure against."
+                )
+            narrowed = _narrower_than_the_country(user, filters)
+            if narrowed:
+                trend["notes"].append(narrowed)
+        # One call where there were two, because there was only ever one
+        # question. ``get_region_performance`` was drawing a region's net sales
+        # beside a card that already carried it: ``target_vs_actual``'s
+        # ``actual_sales`` **is** that figure, read a second time from the same
+        # view over the same window. Two reads of one number is how two cards
+        # come to disagree — and it cost a second pass over the fact view for a
+        # column the other call already had.
+        #
+        # The comparison window is the one the Total Sales KPI grows against a
+        # few lines above, deliberately: a region's growth on this card and the
+        # headline growth beside it now answer to the same two dates, so they
+        # cannot tell different stories about the same period.
+        #
+        # The pair is passed only when the range carries one, never defaulted to
+        # this window's own dates: comparing a period against itself would put a
+        # previous-period bar equal to the actual on every region and a growth
+        # line flat at 0%, which is a statement rather than a gap. Absent stays
+        # absent — the tool then returns neither key and the card draws neither.
+        comparable = (date_range.compare_from is not None
+                      and date_range.compare_to is not None)
+        region_overview = run(
+            ctx, "get_target_achievement", date_range, filters,
+            group_by=GroupBy.REGION.value, limit=10,
+            **({"compare_from": date_range.compare_from.isoformat(),
+                "compare_to": date_range.compare_to.isoformat()}
+               if comparable else {}),
+        )
         # The dashboard ranks brands, not individual materials: fifteen pack
         # sizes of one brand is not a picture of the business. Material-level
         # ranking lives on the Material Analysis page, where it is asked for
@@ -313,8 +396,11 @@ def dashboard(
         "kpis": kpis,
         "summary": summary,
         "sales_trend": trend,
-        "region_performance": regions,
-        "target_achievement": achievement,
+        # Not ``region_performance``: that name belongs to the sales-only tool,
+        # which still runs on /api/pages/sales and is untouched there. A key
+        # that outlived what it named would leave two different shapes under one
+        # word.
+        "region_overview": region_overview,
         "top_brands": brands,
     }
 

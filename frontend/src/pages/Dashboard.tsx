@@ -14,7 +14,13 @@ import {
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { CategoryBarChart, ComparisonBarChart, TrendChart } from '../charts/Charts';
+import {
+  barSeriesFrom,
+  CHART_COLORS,
+  ComboBarLineChart,
+  TrendChart,
+  trendSeriesFrom,
+} from '../charts/Charts';
 import { KpiCard } from '../components/KpiCard';
 import { PageHeader, ResultNotes, Section } from '../components/PageHeader';
 import { ExportButtons } from '../components/ExportButtons';
@@ -81,8 +87,10 @@ export default function Dashboard() {
   // throws on the missing key rather than falling back — which took the whole
   // page down behind the error boundary instead of leaving one chart empty.
   const trendRows = data?.sales_trend?.rows ?? [];
-  const regionRows = data?.region_performance?.rows ?? [];
-  const achievementRows = data?.target_achievement?.rows ?? [];
+  // One panel where there were two. The old Region Performance card drew the
+  // net sales that this card's `actual_sales` already is — the same column of
+  // the same view over the same window, read twice.
+  const regionRows = data?.region_overview?.rows ?? [];
   const brandRows = data?.top_brands?.rows ?? [];
 
   const kpiPairs: [string, string][] = (data?.kpis ?? []).map((kpi) => [
@@ -137,28 +145,81 @@ export default function Dashboard() {
             <TrendChart
               data={trendRows}
               xKey={trendRows[0]?.date ? 'date' : 'label'}
-              yKey="net_sales"
+              // A monthly window carries two earlier years and the target; a
+              // daily one is a single line, and `trendSeriesFrom` returns
+              // exactly that when the tool sent no series.
+              series={trendSeriesFrom(data?.sales_trend?.chart, t('sales.netSales'),
+                                      t('kpi.target'))}
               height={280}
             />
           </Section>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Section title={t('dashboard.regionPerformance')}>
-              <CategoryBarChart data={regionRows} xKey="label" yKey="net_sales" />
-            </Section>
+          {/*
+            The same rows as the card above, drawn the other way. One request,
+            two questions: the line chart answers "what shape is the year" and
+            this answers "how did each month do against its plan and against
+            last year". Reading both off one `sales_trend` result is what stops
+            them disagreeing about a month — a second query for the same measure
+            over the same window is how two cards on one screen drift apart.
 
-            <Section title={t('dashboard.targetAchievement')}>
-              <ComparisonBarChart
-                data={achievementRows}
-                xKey="label"
-                series={[
-                  { key: 'target_amount', label: t('kpi.target') },
-                  { key: 'actual_sales', label: t('target.actual') },
-                ]}
-              />
-            </Section>
+            Money on the left axis, ratios on the right, for the reason the
+            region card below gives: an achievement of 93 shares a taka axis
+            with figures in the crores only by becoming invisible.
+          */}
+          <Section title={t('dashboard.monthlyCountry')}>
+            <ComboBarLineChart
+              data={trendRows}
+              xKey={trendRows[0]?.date ? 'date' : 'label'}
+              height={320}
+              // Named from the backend's own series list — prior years, target
+              // and actual, ordered and coloured by `barSeriesFrom` — so a third
+              // comparison year needs no change here and every year keeps the
+              // hue it has on the line chart above.
+              bars={barSeriesFrom(data?.sales_trend?.chart, t('sales.netSales'),
+                                  t('kpi.target'))}
+              // The percentages are named explicitly, because they are
+              // deliberately absent from `chart.series`: that list is what the
+              // line chart above turns into lines on a taka axis.
+              lines={[
+                { key: 'achievement_percent', label: t('target.achievement') },
+                { key: 'growth_percent', label: t('dashboard.growthLine') },
+              ]}
+            />
+            {/* Under this card only. Both cards read one result, so printing
+                its notes twice would say everything twice. */}
+            <ResultNotes notes={data?.sales_trend?.notes} />
+          </Section>
 
-          </div>
+          {/*
+            Full width, because it carries five series over ten regions: the
+            two-column grid this replaced gave each half a plot too narrow to
+            read a region name in.
+
+            Money on the left axis, ratios on the right. The two were previously
+            in separate cards, which meant a reader comparing a region's
+            achievement against what it actually sold had to hold one card in
+            their head while looking at the other.
+          */}
+          <Section title={t('dashboard.regionOverview')}>
+            <ComboBarLineChart
+              data={regionRows}
+              xKey="label"
+              height={340}
+              bars={[
+                // The target is the plan, not another measurement, so it takes
+                // the palette's neutral for the same reason the trend's target
+                // line does.
+                { key: 'target_amount', label: t('kpi.target'), color: CHART_COLORS[7] },
+                { key: 'actual_sales', label: t('target.actual') },
+                { key: 'previous_sales', label: t('dashboard.lastPeriodActual') },
+              ]}
+              lines={[
+                { key: 'achievement_percent', label: t('target.achievement') },
+                { key: 'growth_percent', label: t('dashboard.growthLine') },
+              ]}
+            />
+            <ResultNotes notes={data?.region_overview?.notes} />
+          </Section>
 
           {/*
             Full width, and outside the two-column grid above: ten columns of

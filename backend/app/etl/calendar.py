@@ -173,6 +173,41 @@ def ensure_dates_exist(session, dates: set[date],
     return len(missing)
 
 
+def shift_years(value: date, years: int) -> date:
+    """The same day, that many years earlier or later.
+
+    Month and day are kept, which is what makes a comparison window *the
+    reader's own window shifted* rather than a period this module chose for
+    them. The one day that cannot be kept is 29 February, which becomes 28
+    February: the alternative — rolling to 1 March — moves the day into the next
+    month, and on a monthly series that silently drops February's first day into
+    March's bucket.
+    """
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        # 29 February in a year that has none.
+        return value.replace(year=value.year + years, day=28)
+
+
+def months_between(start: date, end: date) -> list[tuple[int, int]]:
+    """Every ``(year, month)`` the window touches, in order.
+
+    The positions a monthly series is aligned on. Derived from the window rather
+    than from the rows, which is the whole point: a month nobody traded in still
+    has a position, so it can be reported as absent instead of closing the gap
+    and drawing a straight line through it.
+    """
+    if end < start:
+        return []
+    months: list[tuple[int, int]] = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        months.append((year, month))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
 __all__ = [
     "FinancialYearConfig",
     "to_date_id",
@@ -181,4 +216,6 @@ __all__ = [
     "build_date_rows",
     "populate_dim_date",
     "ensure_dates_exist",
+    "months_between",
+    "shift_years",
 ]

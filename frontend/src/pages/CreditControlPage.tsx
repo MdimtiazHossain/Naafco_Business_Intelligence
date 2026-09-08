@@ -34,7 +34,8 @@ import { CREDIT_FILTERS, useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
 import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { creditService } from '../services';
-import { DataTable, type Column } from '../tables/DataTable';
+import { DataTable, renderTotalValue, type Column } from '../tables/DataTable';
+import { sumWhere } from '../tables/totals';
 import type {
   CreditCustomerPage,
   CreditCustomerRow,
@@ -138,6 +139,7 @@ export default function CreditControlPage() {
       align: 'right',
       sortable: true,
       render: (row) => formatAmount(row.net_invoice_amount),
+      total: 'sum' as const,
     },
     {
       key: 'payment_amount',
@@ -200,13 +202,20 @@ export default function CreditControlPage() {
     { key: 'customer_name', header: t('credit.customer'), sortable: true },
     { key: 'customer_code', header: t('credit.customerCode'), sortable: true },
     { key: 'company_code', header: t('filters.company'), hidden: true },
-    { key: 'invoice_count', header: t('credit.invoices'), align: 'right', sortable: true },
+    {
+      key: 'invoice_count',
+      header: t('credit.invoices'),
+      align: 'right',
+      sortable: true,
+      total: 'sum' as const,
+    },
     {
       key: 'total_invoice_amount',
       header: t('credit.invoiceValue'),
       align: 'right',
       sortable: true,
       render: (row) => formatAmount(row.total_invoice_amount),
+      total: 'sum' as const,
     },
     {
       key: 'net_invoice_amount',
@@ -229,6 +238,17 @@ export default function CreditControlPage() {
       align: 'right',
       sortable: true,
       render: (row) => formatAmount(row.outstanding_amount),
+      // The backend's exposure total leaves out a negative balance
+      // (BALANCE_NEGATIVE) so an over-adjusted invoice cannot net off
+      // against real debt. This footer sits under that KPI, so it applies
+      // the same exclusion rather than disagreeing with the card above it.
+      total: (totalled: CreditCustomerRow[]) =>
+        renderTotalValue(
+          sumWhere(totalled, 'outstanding_amount', (row) =>
+            (row.outstanding_amount ?? 0) >= 0),
+          'outstanding_amount',
+          t,
+        ),
     },
     {
       key: 'overdue_amount',
@@ -236,6 +256,7 @@ export default function CreditControlPage() {
       align: 'right',
       sortable: true,
       render: (row) => formatAmount(row.overdue_amount),
+      total: 'sum' as const,
     },
     {
       key: 'credit_exposure_percent',

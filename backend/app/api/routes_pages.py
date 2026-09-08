@@ -94,8 +94,15 @@ def sales_page(
             "growth": growth,
             "daily_trend": run(ctx, "get_sales_trend", date_range, filters,
                                granularity="day", limit=200),
+            # Three years and the target on one axis. The comparison windows
+            # are this one shifted back by whole years, so the date filter is
+            # honoured rather than replaced — see ``TrendToolInput``. Only for a
+            # window longer than a month: two years of a single month is two
+            # points and a legend, which a KPI card already says better.
             "monthly_trend": run(ctx, "get_sales_trend", date_range, filters,
-                                 granularity="month", limit=60) if span > 31 else None,
+                                 granularity="month", limit=60,
+                                 compare_years=2,
+                                 include_target=True) if span > 31 else None,
             "target_vs_actual": run(ctx, "get_sales_achievement", date_range, filters,
                                     group_by=GroupBy.REGION.value, limit=20),
             "region_performance": run(ctx, "get_region_performance", date_range, filters,
@@ -206,6 +213,14 @@ def target_page(
                                      limit=50),
             "gap": run(ctx, "get_target_gap", date_range, filters,
                        group_by=GroupBy.REGION.value, limit=50),
+            # The Target page had no trend at all — only a bar chart of one
+            # period. Target beside three years of actuals is the question this
+            # page exists to answer, and it is the same tool every other page
+            # uses rather than a second way of asking it.
+            "monthly_trend": run(ctx, "get_sales_trend", date_range, filters,
+                                 granularity="month", limit=60,
+                                 compare_years=2, include_target=True)
+            if (date_range.date_to - date_range.date_from).days > 31 else None,
         }
     return _page(build, page="target")(request, date_range, filters, session, user)
 
@@ -382,8 +397,12 @@ def _brand_detail(ctx, date_range, filters: ScopeFilters) -> dict[str, Any] | No
                       group_by=GroupBy.MATERIAL_GROUP.value, limit=50),
         "materials": run(ctx, "get_material_performance", date_range, filters,
                          group_by=GroupBy.MATERIAL.value, limit=100),
+        # The same three-year, target-bearing trend the other pages draw. This
+        # panel is inside a single brand's breakdown, so the filters already
+        # name the brand and every series is that brand's.
         "monthly_trend": run(ctx, "get_sales_trend", date_range, filters,
-                             granularity="month", limit=60),
+                             granularity="month", limit=60,
+                             compare_years=2, include_target=True),
         "territories": run(ctx, "get_territory_performance", date_range, filters,
                            group_by=GroupBy.TERRITORY.value, limit=50),
         "customers": run(ctx, "get_customer_performance", date_range, filters,

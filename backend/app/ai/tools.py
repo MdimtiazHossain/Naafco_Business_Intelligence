@@ -22,6 +22,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..etl.calendar import months_between, shift_years
 from ..etl.transforms import achievement_percent, growth_percent
 from ..etl.validation import safe_divide
 from . import queries as q
@@ -348,6 +349,9 @@ def _grouped_sales(tool: str, ctx: ToolContext, arguments: GroupedToolInput,
           TrendToolInput, [Intent.SALES_TREND])
 def get_sales_trend(ctx: ToolContext, arguments: TrendToolInput) -> ToolResult:
     filters = ctx.scoped(arguments.filters)
+    if arguments.compare_years or arguments.include_target:
+        return _multi_year_trend(ctx, arguments, filters)
+
     rows = q.time_series(ctx.session, q.SALES_MEASURES, filters, arguments.date_from,
                          arguments.date_to, arguments.granularity, arguments.limit)
     result = _base("get_sales_trend", arguments, filters, "net_sales")
@@ -372,6 +376,169 @@ def get_sales_trend(ctx: ToolContext, arguments: TrendToolInput) -> ToolResult:
             "the trend of every point in between."
         )
     return result
+
+
+def _multi_year_trend(ctx: ToolContext, arguments: TrendToolInput,
+                      filters: ScopeFilters) -> ToolResult:
+    """The requested window, earlier years beside it, and optionally the target.
+
+    **The comparison is the caller's own window shifted back by whole years.**
+    March to September 2026 is drawn against March to September 2025 and 2024,
+    which honours the date filter rather than replacing it with a period this
+    tool chose. It also removes the question of which financial year anchors a
+    window that straddles two — there is no anchor, only an offset — and it is
+    the same comparison ``get_sales_growth`` makes, so the platform keeps one
+    idea of "the same period last year".
+
+    **Series are aligned on position within the window**, never on calendar
+    month: position 0 is each window's first month. Aligning on the calendar
+    would put July against January for a window starting in July, and the chart
+    would look entirely reasonable while comparing unrelated months.
+
+    **A year that returned nothing is dropped, not drawn.** A flat line along
+    the bottom says the business traded and sold nothing; an absent series says
+    there is no history there, which is what a year before the data starts
+    actually means.
+    """
+    result = _base("get_sales_trend", arguments, filters, "net_sales")
+    positions = months_between(arguments.date_from, arguments.date_to)
+    if not positions:
+        return _empty(result)
+
+    windows = [(arguments.date_from, arguments.date_to)]
+    for offset in range(1, arguments.compare_years + 1):
+        windows.append((shift_years(arguments.date_from, -offset),
+                        shift_years(arguments.date_to, -offset)))
+
+    series: list[q.TrendSeries] = []
+    for offset, (start, end) in enumerate(windows):
+        # The key names the offset rather than the year, so the browser can name
+        # a dataKey without parsing a label; the label is the platform's own
+        # period name, so this tool invents no second way of naming a range.
+        found = q.aligned_series(
+            ctx.session, q.SALES_MEASURES, filters, start, end,
+            measure="net_sales",
+            key="net_sales" if offset == 0 else f"net_sales_minus_{offset}",
+            label=ctx.period_name(start, end),
+        )
+        if not found.is_empty:
+            series.append(found)
+
+    if arguments.include_target:
+        # Aggregated from the target side independently and joined on position,
+        # never row against row — the pattern
+        # ``get_material_brand_target_performance`` follows, and for the same
+        # reason: one target row meeting three sales rows would otherwise become
+        # three inflated combinations. A target is a month of a financial year,
+        # which is what decides the rows inside each window.
+        target = q.aligned_series(
+            ctx.session, q.TARGET_MEASURES, filters,
+            arguments.date_from, arguments.date_to,
+            measure="target_amount", key="target_amount",
+            label=ctx.period_name(arguments.date_from, arguments.date_to),
+        )
+        if not target.is_empty:
+            series.append(target)
+        else:
+            # Asked for and not drawn, so it has to be said. A target line that
+            # is simply missing reads as a chart that forgot it rather than as a
+            # period nobody has set targets for, and the two send a reader to
+            # completely different places.
+            result.notes.append(
+                "No target is set for any month of this period, so no target "
+                "line is drawn."
+            )
+
+    if not series:
+        return _empty(result)
+
+    # One row per position, carrying every series that has a figure there. A
+    # series with nothing at a position contributes no key at all rather than a
+    # zero, which is what lets the line break instead of dropping to the floor.
+    #
+    # The two derived percentages are added only where the series they read is
+    # actually drawn — gated on the series rather than on the *request*, because
+    # a caller can ask for a target that no month of the period has, and a
+    # column of nothing but nulls is the empty column this gate exists to
+    # prevent. Both conditions imply the argument anyway: there is no
+    # ``target_amount`` without ``include_target`` and no ``net_sales_minus_1``
+    # without ``compare_years``.
+    drawn = {line.key for line in series}
+    with_achievement = "target_amount" in drawn
+    with_growth = "net_sales_minus_1" in drawn
+
+    labels = _position_labels(ctx, arguments.date_from, arguments.date_to)
+    rows: list[dict[str, Any]] = []
+    for index, (year, month) in enumerate(positions):
+        row: dict[str, Any] = {"position": index + 1, "label": labels[index],
+                               "year": year, "month": month}
+        for line in series:
+            row[line.key] = line.values[index]
+        # Both helpers answer ``None`` when either side is absent and when the
+        # denominator is zero, which is the whole reason they are used here
+        # rather than a ratio written inline: a month with no target has no
+        # achievement and a month the prior year did not record has no growth,
+        # and neither is 0% or -100%.
+        if with_achievement:
+            row["achievement_percent"] = _percent(achievement_percent(
+                row.get("net_sales"), row.get("target_amount")))
+        if with_growth:
+            row["growth_percent"] = _percent(growth_percent(
+                row.get("net_sales"), row.get("net_sales_minus_1")))
+        rows.append(row)
+
+    result.rows = rows
+    result.row_count = len(rows)
+    result.sources = [q.SALES_VIEW] + (
+        [q.TARGET_VIEW] if arguments.include_target else []
+    )
+    # **The two percentages are deliberately absent from ``series``.** That list
+    # is what ``trendSeriesFrom`` turns into *lines on a taka axis*, and it is
+    # read by the dashboard's Sales Trend card and by /api/pages/sales's
+    # ``monthly_trend`` — neither of which is changing. A percentage in here
+    # would be plotted against the money axis on both of them, where an
+    # achievement of 93 sits on the floor beside figures in the crores. The
+    # combo card that draws them names its own bars and lines instead, and the
+    # percentages travel on the rows for it to find.
+    result.chart = ChartSpec(
+        type="line", x_axis="label", y_axis="net_sales", data=rows,
+        series=[{"key": line.key, "label": line.label} for line in series],
+    )
+    result.facts.append(
+        f"{len(series)} series over {len(rows)} months, aligned on position "
+        f"within the window rather than on calendar month."
+    )
+    dropped = 1 + arguments.compare_years - sum(
+        1 for line in series if line.key.startswith("net_sales")
+    )
+    if dropped > 0:
+        result.notes.append(
+            f"{dropped} earlier year(s) had no sales in this window and are not "
+            "drawn: no history there is not a year of zero sales."
+        )
+    return result
+
+
+def _percent(value: Any) -> float | None:
+    """A ratio helper's ``Decimal`` as a float, keeping ``None`` as ``None``.
+
+    The percentage helpers in ``etl.transforms`` answer in ``Decimal`` and the
+    result travels as JSON, so it is converted once here rather than at each
+    call site — and ``None`` has to survive the conversion, since it is the
+    difference between "no target" and "no achievement against a real target".
+    """
+    return None if value is None else float(value)
+
+
+def _position_labels(ctx: ToolContext, date_from: dt.date,
+                     date_to: dt.date) -> list[str]:
+    """The x-axis labels: the requested window's own months.
+
+    The earlier years share these positions, so the axis reads as the period the
+    caller asked about and the legend carries which year each line is.
+    """
+    return [dt.date(year, month, 1).strftime("%b %Y")
+            for year, month in months_between(date_from, date_to)]
 
 
 @register("get_sales_growth",
@@ -447,6 +614,7 @@ def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
         ctx.session, filters, arguments.date_from, arguments.date_to,
         arguments.group_by, arguments.limit,
         below_percent=arguments.below_percent, gap_only=gap_only,
+        compare_from=arguments.compare_from, compare_to=arguments.compare_to,
     )
     result = _base(tool, arguments, filters, "achievement_percent")
     result.sources = [q.TARGET_VIEW, q.SALES_VIEW]
@@ -489,6 +657,26 @@ def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
         )
     else:
         result.facts.append(f"Overall achievement is {totals['achievement_percent']:.1f}%.")
+
+    # The comparison, only where one was asked for. Naming the window matters as
+    # much as the figure: "up 12%" against an unnamed period is a number the
+    # reader cannot check.
+    if "previous" in totals:
+        result.facts.append(
+            f"Actual in {ctx.period_name(arguments.compare_from, arguments.compare_to)} "
+            f"was {totals['previous']:,.0f} BDT."
+        )
+        if totals["growth_percent"] is None:
+            # Nothing to grow *from*. Printing 0.0% would report no change where
+            # the honest answer is that the comparison cannot be made.
+            result.notes.append(
+                "Growth % cannot be calculated: there were no sales in the "
+                "comparison period for this scope."
+            )
+        else:
+            result.facts.append(
+                f"That is {totals['growth_percent']:+.1f}% against this period."
+            )
     return result
 
 

@@ -13,6 +13,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
@@ -28,6 +29,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import {
   formatAmount,
   formatCell,
+  formatPercent,
   formatQuantity,
   formatStock,
   humanizeColumn,
@@ -248,19 +250,129 @@ function tooltipStyle(theme: ReturnType<typeof useChartTheme>) {
   };
 }
 
+/**
+ * The lines a tool's chart spec asks for, coloured.
+ *
+ * One place, because four pages draw this chart and the target rule has to be
+ * the same on all of them: **the target is dashed and takes the palette's
+ * neutral**, while each year takes the next hue. Hue answers "which year", the
+ * dash answers "plan or measurement" — a target in the next palette colour
+ * would read as a fourth year, which is the one misreading this chart has to
+ * avoid.
+ *
+ * A spec with no `series` is a single line over `y_axis`, which is every other
+ * chart in the platform and is what a page gets before the backend starts
+ * sending comparisons.
+ */
+export function trendSeriesFrom(
+  chart: { y_axis: string; series?: { key: string; label: string }[] } | null | undefined,
+  fallbackLabel?: string,
+  targetLabel?: string,
+): TrendSeries[] {
+  if (!chart) return [];
+  if (!chart.series?.length) {
+    return [{ key: chart.y_axis, label: fallbackLabel ?? humanizeColumn(chart.y_axis) }];
+  }
+  return chart.series.map((line, index) => {
+    const isTarget = line.key.startsWith('target');
+    return {
+      key: line.key,
+      // `targetLabel` renames the target series, and a caller drawing one
+      // should pass it. The tool labels every series with the *window* it
+      // covers, so the target and this year's actual arrive carrying the same
+      // string — a legend with two entries reading "FY 2026-27" and no way to
+      // tell which is the plan. The colour and the dash already separate them;
+      // this is what lets the name do so too, in the reader's own language.
+      label: isTarget && targetLabel ? targetLabel : line.label,
+      dashed: isTarget,
+      color: isTarget ? CHART_COLORS[7] : CHART_COLORS[index % CHART_COLORS.length],
+    };
+  });
+}
+
+/**
+ * The same series, ordered and coloured for the combo card's *bars*.
+ *
+ * Built on `trendSeriesFrom` rather than beside it, so the colour rule is
+ * written once: a year keeps the hue it has on the Sales Trend line chart
+ * directly above, and the target keeps the neutral. Two cards on one page
+ * drawing the same series in different colours would be worse than either
+ * alone — the hue is what tells a reader which year a bar is.
+ *
+ * The **order** is the card's own, and it is not the backend's: prior years
+ * oldest-first, then Target, then this period's Actual, so a group of bars
+ * reads left to right as history → plan → outcome. The rank comes from the
+ * `_minus_N` suffix the tool puts on each earlier window, never from a
+ * hard-coded `net_sales_minus_1`, so a third comparison year needs no change
+ * here.
+ *
+ * `dashed` is dropped: it distinguishes a plan from a measurement on a *line*,
+ * and a bar cannot carry it. On this chart the target's neutral colour is what
+ * says the same thing.
+ */
+export function barSeriesFrom(
+  chart: { y_axis: string; series?: { key: string; label: string }[] } | null | undefined,
+  fallbackLabel?: string,
+  targetLabel?: string,
+): TrendSeries[] {
+  /** How many whole years back this series is, or `null` for the current one. */
+  const yearsBack = (key: string): number | null => {
+    const match = /_minus_(\d+)$/.exec(key);
+    return match ? Number(match[1]) : null;
+  };
+  const rank = (series: TrendSeries): number => {
+    const back = yearsBack(series.key);
+    if (back !== null) return -back;          // oldest first
+    if (series.key.startsWith('target')) return 1;
+    return 2;                                  // this period's actual, last
+  };
+  return trendSeriesFrom(chart, fallbackLabel, targetLabel)
+    .map(({ dashed: _dashed, ...bar }) => bar)
+    .sort((a, b) => rank(a) - rank(b));
+}
+
+/** One line of a trend. The same shape `ComparisonBarChart` takes for its bars. */
+export interface TrendSeries {
+  key: string;
+  label: string;
+  color?: string;
+  /**
+   * Draw this line dashed.
+   *
+   * For a series that is a different *kind* of thing rather than another of the
+   * same thing — a target beside three years of actuals. Hue carries which
+   * year; the dash carries plan-against-measurement. Giving the target a fourth
+   * colour would read as a fourth year, which is the one misreading this chart
+   * has to avoid.
+   */
+  dashed?: boolean;
+}
+
+/**
+ * A line (or area) chart over one or more series.
+ *
+ * `series` is the only way in, deliberately: a component with two ways to say
+ * the same thing grows a second behaviour on one of them, and the single-series
+ * form was already the reason no chart here could draw a year against a year.
+ *
+ * **`connectNulls` is false and must stay false.** A month with no figures is a
+ * gap — joining across it draws a straight line through months nobody measured
+ * and reads as a real trend, which is the same absent-is-not-zero rule the
+ * backend keeps by sending `null` rather than `0`.
+ */
 export function TrendChart({
   data,
   xKey,
-  yKey,
+  series,
   height = 260,
   valueKind = 'currency',
   emptyMessage,
   area = false,
-}: BaseChartProps & { area?: boolean }) {
+}: Omit<BaseChartProps, 'yKey'> & { series: TrendSeries[]; area?: boolean }) {
   const theme = useChartTheme();
   const format = useValueFormatter(valueKind);
   const narrow = useNarrowViewport();
-  if (!data?.length) return <EmptyState message={emptyMessage} />;
+  if (!data?.length || !series.length) return <EmptyState message={emptyMessage} />;
 
   const Chart = area ? AreaChart : LineChart;
   return (
@@ -281,24 +393,37 @@ export function TrendChart({
           width={valueAxisWidth(narrow)}
         />
         <Tooltip formatter={(value) => format(Number(value))} {...tooltipStyle(theme)} />
-        {area ? (
-          <Area
-            type="monotone"
-            dataKey={yKey}
-            stroke={CHART_COLORS[0]}
-            fill={CHART_COLORS[0]}
-            fillOpacity={0.15}
-            strokeWidth={2}
-          />
-        ) : (
-          <Line
-            type="monotone"
-            dataKey={yKey}
-            stroke={CHART_COLORS[0]}
-            strokeWidth={2}
-            dot={false}
-          />
-        )}
+        {/* A legend only where there is more than one line to tell apart. */}
+        {series.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
+        {series.map((line, index) => {
+          const color = line.color ?? CHART_COLORS[index % CHART_COLORS.length];
+          return area ? (
+            <Area
+              key={line.key}
+              type="monotone"
+              dataKey={line.key}
+              name={line.label}
+              stroke={color}
+              fill={color}
+              fillOpacity={0.15}
+              strokeWidth={2}
+              strokeDasharray={line.dashed ? '6 4' : undefined}
+              connectNulls={false}
+            />
+          ) : (
+            <Line
+              key={line.key}
+              type="monotone"
+              dataKey={line.key}
+              name={line.label}
+              stroke={color}
+              strokeWidth={2}
+              strokeDasharray={line.dashed ? '6 4' : undefined}
+              dot={false}
+              connectNulls={false}
+            />
+          );
+        })}
       </Chart>
     </ResponsiveContainer>
   );
@@ -465,6 +590,124 @@ export function ComparisonBarChart({
   );
 }
 
+/**
+ * Money as grouped bars, ratios as lines on a second axis.
+ *
+ * The one chart in this platform that plots two *kinds* of quantity at once, so
+ * the axes carry the whole burden of not being misread: taka on the left,
+ * percent on the right, both labelled, and **neither ever hidden** — a 90%
+ * achievement line read against a scale that tops out at nine crore is a
+ * catastrophic misreading and the reader would have no way to notice it.
+ *
+ * The formatter is chosen per *series* rather than per chart, because the
+ * tooltip is where the two kinds meet: one entry reads `BDT 3.86 Cr` and the
+ * one under it reads `48.7%`, and a single chart-wide formatter would have to
+ * be wrong about one of them.
+ *
+ * `connectNulls={false}` on the lines, for the reason it is false everywhere
+ * else here: a region absent from the comparison window has no growth, and
+ * joining across it draws a slope nobody measured.
+ */
+export function ComboBarLineChart({
+  data,
+  xKey,
+  bars,
+  lines,
+  height = 340,
+  emptyMessage,
+}: {
+  data: Record<string, any>[];
+  xKey: string;
+  bars: TrendSeries[];
+  lines: TrendSeries[];
+  height?: number;
+  emptyMessage?: string;
+}) {
+  const theme = useChartTheme();
+  // The same money formatter every other chart here uses, so a figure reads
+  // identically on the axis, in the tooltip and on the card above.
+  const format = useValueFormatter();
+  const narrow = useNarrowViewport();
+  if (!data?.length) return <EmptyState message={emptyMessage} />;
+
+  const xAxis = categoryAxis(data.length, narrow);
+  const percentKeys = new Set(lines.map((line) => line.key));
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <ComposedChart
+        data={data}
+        margin={{ top: 8, right: 12, bottom: 4, left: narrow ? 14 : 4 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
+        <XAxis
+          dataKey={xKey}
+          tick={{ fontSize: 11, fill: theme.axis }}
+          tickFormatter={(value) => shortTick(value, narrow)}
+          {...xAxis}
+        />
+        <YAxis
+          yAxisId="value"
+          tick={{ fontSize: 11, fill: theme.axis }}
+          tickFormatter={(value) => format(Number(value))}
+          width={valueAxisWidth(narrow)}
+        />
+        {/* Kept at full width on a phone too. It is narrower content than the
+            money axis, and dropping it to save room would leave the lines
+            plotted against nothing a reader could check them against. */}
+        <YAxis
+          yAxisId="percent"
+          orientation="right"
+          tick={{ fontSize: 11, fill: theme.axis }}
+          tickFormatter={(value) => formatPercent(Number(value))}
+          width={narrow ? 44 : 52}
+        />
+        <Tooltip
+          // Per series: the bars are money and the lines are ratios, and one
+          // formatter for both would misreport whichever it was not written for.
+          formatter={(value, _name, entry) =>
+            percentKeys.has(String((entry as { dataKey?: string })?.dataKey))
+              ? formatPercent(Number(value))
+              : format(Number(value))
+          }
+          {...tooltipStyle(theme)}
+        />
+        {/* Same placement rule as ComparisonBarChart: on a phone the rotated
+            category names own the bottom of the plot. */}
+        <Legend
+          wrapperStyle={{ fontSize: 12 }}
+          verticalAlign={narrow ? 'top' : 'bottom'}
+        />
+        {bars.map((bar, index) => (
+          <Bar
+            key={bar.key}
+            yAxisId="value"
+            dataKey={bar.key}
+            name={bar.label}
+            fill={bar.color ?? CHART_COLORS[index % CHART_COLORS.length]}
+            radius={[4, 4, 0, 0]}
+          />
+        ))}
+        {lines.map((line, index) => (
+          <Line
+            key={line.key}
+            yAxisId="percent"
+            type="monotone"
+            dataKey={line.key}
+            name={line.label}
+            stroke={line.color ?? CHART_COLORS[(bars.length + index) % CHART_COLORS.length]}
+            strokeWidth={2}
+            strokeDasharray={line.dashed ? '6 4' : undefined}
+            // A dot per region, unlike the trend: these are ten discrete
+            // categories rather than a continuum, so the point *is* the reading.
+            dot={{ r: 3 }}
+            connectNulls={false}
+          />
+        ))}
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
 export function DonutChart({
   data,
   xKey,
@@ -518,7 +761,13 @@ export function AutoChart({
   spec,
   height = 260,
 }: {
-  spec: { type: string; x_axis: string; y_axis: string; data: Record<string, any>[] };
+  spec: {
+    type: string;
+    x_axis: string;
+    y_axis: string;
+    data: Record<string, any>[];
+    series?: { key: string; label: string }[];
+  };
   height?: number;
 }) {
   const { resolved } = useTheme();
@@ -537,11 +786,13 @@ export function AutoChart({
       ? { valueKind: 'stock' as ChartValueKind, valueLabel: humanizeColumn(spec.y_axis) }
       : {}),
   };
+  const lines = trendSeriesFrom(spec);
+
   switch (spec.type) {
     case 'line':
-      return <TrendChart {...props} />;
+      return <TrendChart {...props} series={lines} />;
     case 'area':
-      return <TrendChart {...props} area />;
+      return <TrendChart {...props} series={lines} area />;
     case 'pie':
       return <DonutChart {...props} useAgingColors />;
     default:

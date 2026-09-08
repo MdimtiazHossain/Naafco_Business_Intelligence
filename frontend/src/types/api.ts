@@ -719,6 +719,15 @@ export interface ChartSpec {
   x_axis: string;
   y_axis: string;
   data: Record<string, unknown>[];
+  /**
+   * The lines to draw, when a chart has more than one.
+   *
+   * Absent on every single-series chart, which is most of them — `y_axis` names
+   * the measure there and nothing changed. `get_sales_trend` populates it for a
+   * year-against-year trend, keyed by a column present on each row of `data`
+   * and *absent* at a position that series has no figure for.
+   */
+  series?: { key: string; label: string }[];
 }
 
 /** The uniform shape every Phase 3 tool returns. */
@@ -767,8 +776,18 @@ export interface DashboardResponse {
   kpis: Kpi[];
   summary: ToolResult;
   sales_trend: ToolResult;
-  region_performance: ToolResult;
-  target_achievement: ToolResult;
+  /**
+   * Region target, actual, last-period actual, achievement % and growth % —
+   * one call where there were two.
+   *
+   * Replaces `region_performance` + `target_achievement`. The first was drawing
+   * the net sales the second already carried as `actual_sales`, so the two
+   * cards read the same column of the same view twice and could drift apart.
+   *
+   * **Not** named `region_performance`: that key belongs to the sales-only tool
+   * and is still what `/api/pages/sales` returns, which is a different shape.
+   */
+  region_overview: ToolResult;
   /**
    * Brand-wise ranking with targets beside actuals — the dashboard's general
    * performance view. Ranked by net sales, as every brand table here is.
@@ -1012,6 +1031,13 @@ export interface CreditInvoiceDetail {
 
 export interface TargetPage extends PageResponse {
   summary: ToolResult;
+  /**
+   * The target drawn over time beside the last three years of actuals.
+   *
+   * Null for a window of a month or less, where two years of one month is two
+   * points and a legend — the KPI cards above already say that better.
+   */
+  monthly_trend: ToolResult | null;
   region_achievement: ToolResult;
   territory_achievement: ToolResult;
   /**

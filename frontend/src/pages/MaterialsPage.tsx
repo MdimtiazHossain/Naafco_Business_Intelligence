@@ -10,7 +10,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { CategoryBarChart, TrendChart } from '../charts/Charts';
+import { CategoryBarChart, TrendChart, trendSeriesFrom } from '../charts/Charts';
 import { ExportButtons } from '../components/ExportButtons';
 import { PageHeader, ResultNotes, Section } from '../components/PageHeader';
 import { CardSkeleton, QueryState } from '../components/States';
@@ -18,7 +18,8 @@ import { useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
 import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { materialService } from '../services';
-import { DataTable } from '../tables/DataTable';
+import { DataTable, renderTotalValue } from '../tables/DataTable';
+import { growthNumerator, percentOfTotals, sumColumn } from '../tables/totals';
 import type { MaterialAnalysisLevel } from '../types/api';
 
 const LEVELS: MaterialAnalysisLevel[] = [
@@ -68,27 +69,75 @@ export default function MaterialsPage() {
   const materialColumns = [
     { key: 'code', header: t('filters.materialCode') },
     { key: 'label', header: t('filters.material') },
-    { key: 'quantity', header: t('sales.quantity') },
-    { key: 'volume', header: t('sales.volume') },
-    { key: 'net_sales', header: t('sales.netSales') },
-    { key: 'growth_percent', header: t('common.growth') },
+    { key: 'quantity', header: t('sales.quantity'), total: 'sum' as const },
+    { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
+    { key: 'net_sales', header: t('sales.netSales'), total: 'sum' as const },
+    {
+      key: 'growth_percent',
+      header: t('common.growth'),
+      // Recomputed from the two totals, never averaged: a material that
+      // grew 400% on eight hundred taka would otherwise pull the column
+      // as hard as one that grew 4% on four crore. `previous_net_sales`
+      // travels on every row for exactly this (routes_pages.materials).
+      total: (totalled: Record<string, any>[]) =>
+        renderTotalValue(
+          percentOfTotals(
+            growthNumerator(totalled),
+            sumColumn(totalled, 'previous_net_sales'),
+          ),
+          'growth_percent',
+          t,
+        ),
+    },
   ];
 
   const brandColumns = [
     { key: 'rank', header: t('common.rank') },
     { key: 'label', header: t('filters.materialBrand') },
-    { key: 'quantity', header: t('sales.quantity') },
-    { key: 'volume', header: t('sales.volume') },
-    { key: 'net_sales', header: t('sales.netSales') },
-    { key: 'growth_percent', header: t('common.growth') },
+    { key: 'quantity', header: t('sales.quantity'), total: 'sum' as const },
+    { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
+    { key: 'net_sales', header: t('sales.netSales'), total: 'sum' as const },
+    {
+      key: 'growth_percent',
+      header: t('common.growth'),
+      // Recomputed from the two totals, never averaged: a material that
+      // grew 400% on eight hundred taka would otherwise pull the column
+      // as hard as one that grew 4% on four crore. `previous_net_sales`
+      // travels on every row for exactly this (routes_pages.materials).
+      total: (totalled: Record<string, any>[]) =>
+        renderTotalValue(
+          percentOfTotals(
+            growthNumerator(totalled),
+            sumColumn(totalled, 'previous_net_sales'),
+          ),
+          'growth_percent',
+          t,
+        ),
+    },
   ];
 
   const groupColumns = [
     { key: 'label', header: t('filters.materialGroup') },
-    { key: 'quantity', header: t('sales.quantity') },
-    { key: 'volume', header: t('sales.volume') },
-    { key: 'net_sales', header: t('sales.netSales') },
-    { key: 'growth_percent', header: t('common.growth') },
+    { key: 'quantity', header: t('sales.quantity'), total: 'sum' as const },
+    { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
+    { key: 'net_sales', header: t('sales.netSales'), total: 'sum' as const },
+    {
+      key: 'growth_percent',
+      header: t('common.growth'),
+      // Recomputed from the two totals, never averaged: a material that
+      // grew 400% on eight hundred taka would otherwise pull the column
+      // as hard as one that grew 4% on four crore. `previous_net_sales`
+      // travels on every row for exactly this (routes_pages.materials).
+      total: (totalled: Record<string, any>[]) =>
+        renderTotalValue(
+          percentOfTotals(
+            growthNumerator(totalled),
+            sumColumn(totalled, 'previous_net_sales'),
+          ),
+          'growth_percent',
+          t,
+        ),
+    },
   ];
 
   const columns =
@@ -165,7 +214,8 @@ export default function MaterialsPage() {
                 <TrendChart
                   data={detail.monthly_trend.rows ?? []}
                   xKey="label"
-                  yKey="net_sales"
+                  series={trendSeriesFrom(detail.monthly_trend.chart,
+                                          t('sales.netSales'), t('kpi.target'))}
                   area
                 />
 
@@ -187,9 +237,9 @@ export default function MaterialsPage() {
                       columns={[
                         { key: 'code', header: t('filters.materialCode') },
                         { key: 'label', header: t('filters.material') },
-                        { key: 'quantity', header: t('sales.quantity') },
-                        { key: 'volume', header: t('sales.volume') },
-                        { key: 'net_sales', header: t('sales.netSales') },
+                        { key: 'quantity', header: t('sales.quantity'), total: 'sum' as const },
+                        { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
+                        { key: 'net_sales', header: t('sales.netSales'), total: 'sum' as const },
                       ]}
                       searchable={false}
                       pageSize={10}
@@ -202,9 +252,9 @@ export default function MaterialsPage() {
                       rows={detail.territories.rows ?? []}
                       columns={[
                         { key: 'label', header: t('filters.territory') },
-                        { key: 'quantity', header: t('sales.quantity') },
-                        { key: 'volume', header: t('sales.volume') },
-                        { key: 'net_sales', header: t('sales.netSales') },
+                        { key: 'quantity', header: t('sales.quantity'), total: 'sum' as const },
+                        { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
+                        { key: 'net_sales', header: t('sales.netSales'), total: 'sum' as const },
                       ]}
                       searchable={false}
                       pageSize={10}
@@ -217,9 +267,9 @@ export default function MaterialsPage() {
                       rows={detail.customers.rows ?? []}
                       columns={[
                         { key: 'label', header: t('filters.customer') },
-                        { key: 'quantity', header: t('sales.quantity') },
-                        { key: 'volume', header: t('sales.volume') },
-                        { key: 'net_sales', header: t('sales.netSales') },
+                        { key: 'quantity', header: t('sales.quantity'), total: 'sum' as const },
+                        { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
+                        { key: 'net_sales', header: t('sales.netSales'), total: 'sum' as const },
                       ]}
                       searchable={false}
                       pageSize={10}
@@ -249,7 +299,7 @@ export default function MaterialsPage() {
                 rows={data?.top ?? []}
                 columns={[
                   { key: 'label', header: nameHeader },
-                  { key: 'volume', header: t('sales.volume') },
+                  { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
                   { key: 'volume_growth_percent', header: t('common.growth') },
                 ]}
                 searchable={false}
@@ -263,7 +313,7 @@ export default function MaterialsPage() {
                 rows={data?.bottom ?? []}
                 columns={[
                   { key: 'label', header: nameHeader },
-                  { key: 'volume', header: t('sales.volume') },
+                  { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
                   { key: 'volume_growth_percent', header: t('common.growth') },
                 ]}
                 searchable={false}

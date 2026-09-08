@@ -87,9 +87,36 @@ const DASHBOARD = {
   filters: {},
   kpis: KPIS,
   summary: { rows: [], values: {}, notes: [] },
-  sales_trend: { rows: [] },
-  region_performance: { rows: [] },
-  target_achievement: { rows: [] },
+  // A realistic monthly shape, because two cards now read this one section: the
+  // Sales Trend line chart and the Monthly Country Performance combo. Each of
+  // the three months is missing something different, which is what the two
+  // nullable percentages exist for.
+  sales_trend: {
+    rows: [
+      { label: 'Jul 2026', net_sales: 161_449_437, net_sales_minus_1: 166_802_869,
+        net_sales_minus_2: 203_202_529, target_amount: 168_912_348,
+        achievement_percent: 95.6, growth_percent: -3.2 },
+      // No target this month, so no achievement — never 0%.
+      { label: 'Aug 2026', net_sales: 223_891_243, net_sales_minus_1: 197_823_740,
+        net_sales_minus_2: 196_332_347, target_amount: null,
+        achievement_percent: null, growth_percent: 13.2 },
+      // The prior year recorded nothing here, so no growth — never -100%.
+      { label: 'Sep 2026', net_sales: 58_765, net_sales_minus_1: null,
+        net_sales_minus_2: 217_259_641, target_amount: 390_667_700,
+        achievement_percent: 0.0, growth_percent: null },
+    ],
+    chart: {
+      type: 'line', x_axis: 'label', y_axis: 'net_sales',
+      series: [
+        { key: 'net_sales', label: 'Jul 2026 - Sep 2026' },
+        { key: 'net_sales_minus_1', label: 'Jul 2025 - Sep 2025' },
+        { key: 'net_sales_minus_2', label: 'Jul 2024 - Sep 2024' },
+        { key: 'target_amount', label: 'Jul 2026 - Sep 2026' },
+      ],
+    },
+    notes: [],
+  },
+  region_overview: { rows: [] },
   top_brands: { rows: BRAND_ROWS, notes: [] },
 };
 

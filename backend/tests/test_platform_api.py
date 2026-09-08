@@ -226,7 +226,105 @@ def test_dashboard_returns_kpis_and_charts(platform: TestClient) -> None:
     assert sales["previous_value"] is not None
     assert sales["growth_percent"] is not None
     assert body["sales_trend"]["rows"]
-    assert body["region_performance"]["rows"]
+    # One card where there were two. ``region_performance`` and
+    # ``target_achievement`` were merged into ``region_overview``, because the
+    # first drew a region's net sales beside a card already carrying it as
+    # ``actual_sales``. The old keys are asserted gone rather than left
+    # unmentioned: a name that outlives what it named is what this codebase
+    # keeps tripping over.
+    assert body["region_overview"]["rows"]
+    assert "region_performance" not in body
+    assert "target_achievement" not in body
+
+
+def test_one_trend_section_feeds_both_cards(platform: TestClient) -> None:
+    """The Sales Trend line chart and the monthly combo card read one result.
+
+    A second query for the same measure over the same window is how two cards
+    on one screen come to disagree about a month, so there is one
+    ``sales_trend`` section and the percentages travel on its rows. They are
+    kept out of ``chart.series``, which is what the *line* chart turns into
+    lines on a taka axis.
+    """
+    token = login(platform, "ceo")
+    body = platform.get("/api/dashboard?date_from=2026-07-01&date_to=2026-10-31",
+                        headers=auth(token)).json()
+
+    trend = body["sales_trend"]
+    months = {row["label"]: row for row in trend["rows"]}
+    assert list(months) == ["Jul 2026", "Aug 2026", "Sep 2026", "Oct 2026"]
+
+    # August is the only month the seeded targets cover.
+    assert months["Aug 2026"]["achievement_percent"] == pytest.approx(60.0)
+    assert months["Jul 2026"]["target_amount"] is None
+    assert months["Jul 2026"]["achievement_percent"] is None, "0% would be a lie"
+
+    # Nothing was sold in the earlier years, so those series are dropped and
+    # the growth column goes with them rather than arriving full of nulls.
+    keys = {line["key"] for line in trend["chart"]["series"]}
+    assert "net_sales_minus_1" not in keys
+    assert all("growth_percent" not in row for row in trend["rows"])
+    assert any("no sales in this window" in note for note in trend["notes"])
+
+    # The list the line chart draws carries money and nothing else.
+    assert keys.isdisjoint({"achievement_percent", "growth_percent"})
+
+
+def test_the_country_card_says_when_it_is_not_the_country(
+    platform: TestClient,
+) -> None:
+    """Narrowed and labelled, never hidden.
+
+    Every tool is scoped, so a regional manager's "Monthly Country Performance"
+    is their region's months. Withholding the card would deny them the one view
+    of their own year; leaving the country label over a partial figure is the
+    unexplained number this platform does not put on a screen.
+    """
+    window = "?date_from=2026-07-01&date_to=2026-10-31"
+    national = platform.get("/api/dashboard" + window,
+                            headers=auth(login(platform, "ceo"))).json()
+    scoped = platform.get("/api/dashboard" + window,
+                          headers=auth(login(platform, "dhaka_rm"))).json()
+
+    assert not any("not the whole country" in note
+                   for note in national["sales_trend"]["notes"])
+    assert any("not the whole country" in note
+               for note in scoped["sales_trend"]["notes"])
+    # And the card is still there, with figures in it.
+    assert scoped["sales_trend"]["rows"]
+
+
+def test_region_overview_grows_against_the_window_the_kpi_uses(
+    platform: TestClient,
+) -> None:
+    """The card's bars, its growth line and the headline answer to one window.
+
+    A custom range from 1 to 31 August compares against the whole of July, which
+    is the window the Total Sales KPI beside it grows against. Reading the
+    last-period figure from a second call would be two reads of one view, and
+    two reads of one number is how two cards on one screen come to disagree.
+    """
+    token = login(platform, "ceo")
+    body = platform.get("/api/dashboard?date_from=2026-08-01&date_to=2026-08-31",
+                        headers=auth(token)).json()
+
+    totals = body["region_overview"]["values"]
+    assert totals["compare_from"] == "2026-07-01"
+    assert totals["compare_to"] == "2026-07-31"
+    assert totals["previous"] == pytest.approx(2_400_000)
+
+    kpi = next(k for k in body["kpis"] if k["key"] == "total_sales")
+    assert totals["previous"] == pytest.approx(kpi["previous_value"])
+    assert totals["growth_percent"] == pytest.approx(kpi["growth_percent"])
+
+    rows = {row["code"]: row for row in body["region_overview"]["rows"]}
+    # Every bar the card draws comes from this one row: target, actual and last
+    # period's actual, with the two percentage lines beside them.
+    for key in ("target_amount", "actual_sales", "previous_sales",
+                "achievement_percent", "growth_percent"):
+        assert key in rows["REG001"], key
+    assert rows["REG001"]["previous_sales"] == pytest.approx(2_000_000)
+    assert rows["REG001"]["growth_percent"] == pytest.approx(-25.0)
 
 
 def test_dashboard_is_scoped_by_role(platform: TestClient) -> None:

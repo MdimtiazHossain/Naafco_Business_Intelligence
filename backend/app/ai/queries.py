@@ -25,6 +25,7 @@ from typing import Any, Iterable, Sequence
 from sqlalchemy import MetaData, Table, and_, asc, case, desc, func, select
 from sqlalchemy.orm import Session
 
+from ..etl.calendar import months_between
 from ..etl.transforms import achievement_percent, growth_percent
 from ..etl.validation import safe_divide
 from .schemas import GroupBy, ScopeFilters
@@ -709,6 +710,56 @@ def time_series(session: Session, measures: MeasureSet, filters: ScopeFilters,
     return _rows(session.execute(statement.limit(max(1, min(limit, MAX_ROWS)))))
 
 
+@dataclass
+class TrendSeries:
+    """One line of a multi-year trend, already aligned to the window's positions.
+
+    ``values`` is one entry per position, and a position the series has no rows
+    for is ``None`` rather than ``0.0`` — the distinction the whole platform
+    keeps, and the one that decides whether a chart draws a gap or a straight
+    line along the floor. ``key`` is what the row dictionaries carry it under,
+    so the browser names a dataKey rather than an index.
+    """
+
+    key: str
+    label: str
+    values: list[float | None]
+
+    @property
+    def is_empty(self) -> bool:
+        """True when the window held no rows at all, at any position.
+
+        Distinct from a series of zeros. A year the business was not trading in
+        is *absent* — it is dropped rather than drawn flat, because a flat line
+        along the bottom is a claim that it traded and sold nothing.
+        """
+        return all(value is None for value in self.values)
+
+
+def aligned_series(session: Session, measures: MeasureSet, filters: ScopeFilters,
+                   date_from: dt.date, date_to: dt.date, measure: str,
+                   key: str, label: str) -> TrendSeries:
+    """One window's monthly figures, positioned by offset within that window.
+
+    **Aligned on position, not on calendar month and not on month-of-financial-
+    year.** The comparison is the reader's own window shifted back by whole
+    years, so position 0 is the window's first month whatever month that is —
+    which is what lets a March-to-September window compare against March to
+    September, and needs no anchoring rule at a financial-year boundary.
+
+    The positions come from the window (:func:`months_between`) rather than from
+    the rows, so a month with no trade keeps its place and reports ``None``.
+    """
+    rows = time_series(session, measures, filters, date_from, date_to,
+                       granularity="month", limit=MAX_ROWS)
+    by_month = {(int(row["year"]), int(row["month"])): row for row in rows}
+    values: list[float | None] = []
+    for year, month in months_between(date_from, date_to):
+        row = by_month.get((year, month))
+        values.append(None if row is None else _f(row.get(measure)))
+    return TrendSeries(key=key, label=label, values=values)
+
+
 def detail_rows(session: Session, view_name: str, filters: ScopeFilters,
                 date_from: dt.date, date_to: dt.date, columns: Sequence[str],
                 order_by: str | None = None, direction: str = "desc",
@@ -783,6 +834,8 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
                      date_to: dt.date, group_by: GroupBy = GroupBy.REGION,
                      limit: int = 20, below_percent: float | None = None,
                      gap_only: bool = False,
+                     compare_from: dt.date | None = None,
+                     compare_to: dt.date | None = None,
                      ) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
     """Target and actual side by side, grouped by one dimension.
 
@@ -797,6 +850,13 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
     the threshold against the best ones and answered "none" while dozens were
     short. Selecting the tail and then keeping the head is not a truncated
     answer, it is the opposite answer, and it renders identically.
+
+    ``compare_from`` / ``compare_to`` are optional as a pair. Given them, each
+    row gains ``previous_sales`` and ``growth_percent`` against that window;
+    without them neither key is present at all — not present-and-null. Two empty
+    columns on every achievement table the assistant renders would be two
+    columns a reader has to learn to ignore, and a growth against a window the
+    caller did not name would be a figure this tool invented.
 
     Returns ``(rows, totals, matched)``. ``totals`` covers the whole scope
     whatever the narrowing, because the headline answers "how did we do" and the
@@ -813,6 +873,18 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         session, SALES_MEASURES, filters, date_from, date_to, group_by,
         limit=MAX_ROWS, sort_field="net_sales",
     )
+
+    # The comparison window, aggregated independently and joined on the group
+    # code like the other two — never a raw row meeting a raw row.
+    comparing = compare_from is not None and compare_to is not None
+    previous_sales: dict[str, float] = {}
+    if comparing:
+        previous_rows, _ = aggregate_by(
+            session, SALES_MEASURES, filters, compare_from, compare_to, group_by,
+            limit=MAX_ROWS, sort_field="net_sales",
+        )
+        previous_sales = {str(row["code"]): (row.get("net_sales") or 0.0)
+                          for row in previous_rows}
 
     # Volume on both sides, one figure per group, read the same way on each:
     # both are the number the source file stated and neither carries a unit, so
@@ -858,6 +930,18 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         entry["quantity_gap"] = entry["target_quantity"] - entry["actual_quantity"]
         entry["target_volume"] = target_volume.get(str(code))
         entry["actual_volume"] = actual_volume.get(str(code))
+        if comparing:
+            # A group the comparison window has no row for did not sell zero
+            # there — it is absent from it, which is a different statement and
+            # the reason both keys stay ``None`` rather than becoming 0.0 and
+            # -100%. A region that opened this year has no growth, and printing
+            # one would be this layer inventing its history.
+            before = previous_sales.get(str(code))
+            entry["previous_sales"] = before
+            entry["growth_percent"] = (
+                None if before is None
+                else _f(growth_percent(entry["actual_sales"], before))
+            )
 
     rows = list(combined.values())
     totals_target = sum(r["target_amount"] for r in rows)
@@ -891,6 +975,20 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         "group_by": group_by.value,
         "group_column": code_column,
     }
+    if comparing:
+        # Summed over the groups the rows carry rather than re-queried, for the
+        # reason the volume totals above give: a scope-wide figure here would
+        # cover more groups than the actual it is growing against.
+        previous_total = sum(
+            value for value in (r.get("previous_sales") for r in rows)
+            if value is not None
+        )
+        totals["previous"] = previous_total
+        totals["growth_percent"] = _f(
+            growth_percent(totals_actual, previous_total)
+        )
+        totals["compare_from"] = compare_from.isoformat()
+        totals["compare_to"] = compare_to.isoformat()
 
     # Narrow first. A group with no target has no achievement, so it satisfies
     # no threshold — "below 80%" is a statement about a ratio, and there is no

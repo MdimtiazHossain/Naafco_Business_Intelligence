@@ -16,6 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 MAX_LIMIT = 500
 DEFAULT_LIMIT = 100
+#: How many earlier years a trend may bring back beside the requested window.
+#:
+#: Four lines is already the most a reader can tell apart on one axis, and each
+#: one is another pass over the fact view — the ceiling is as much about the
+#: chart being readable as about the query being bounded.
+MAX_COMPARE_YEARS = 4
 DEFAULT_TABLE_LIMIT = 20
 
 
@@ -392,15 +398,56 @@ class VolumeToolInput(BaseToolInput):
 
 
 class TrendToolInput(BaseToolInput):
-    """A time series."""
+    """A time series, optionally against earlier years and the period's target.
+
+    The comparison is **the caller's own window shifted back by whole years** —
+    March to September against March to September — rather than a window this
+    schema picks. That honours the date filter instead of overriding it, needs
+    no rule about which financial year anchors a window that straddles two, and
+    is the comparison ``get_sales_growth`` already makes, so the platform has
+    one idea of what "the same period last year" means rather than two.
+    """
 
     granularity: Literal["day", "month"] = "day"
     limit: int = DEFAULT_LIMIT
+    #: How many earlier years to bring back beside the requested window.
+    compare_years: int = 0
+    #: Whether the period's target is drawn beside the actuals.
+    include_target: bool = False
 
     @field_validator("limit")
     @classmethod
     def _bound_limit(cls, value: int) -> int:
         return max(1, min(value, MAX_LIMIT))
+
+    @field_validator("compare_years")
+    @classmethod
+    def _bound_compare_years(cls, value: int) -> int:
+        return max(0, min(value, MAX_COMPARE_YEARS))
+
+    @model_validator(mode="after")
+    def _monthly_only(self) -> "TrendToolInput":
+        """Both extras are monthly, and refusing is better than coercing.
+
+        Aligning *days* across years compares a Tuesday with a Thursday and
+        February with a month that has thirty-one of them, so a daily comparison
+        would be a chart of the calendar rather than of the business. And a
+        target is a month of a financial year — ``fact_target`` carries no date
+        at all — so there is no daily target to draw. Silently switching the
+        caller to monthly would answer a question they did not ask.
+        """
+        if self.granularity != "month":
+            if self.compare_years:
+                raise ValueError(
+                    "compare_years needs granularity='month': aligning days "
+                    "across years compares different weekdays and month lengths."
+                )
+            if self.include_target:
+                raise ValueError(
+                    "include_target needs granularity='month': a target is a "
+                    "month of a financial year and has no daily figure."
+                )
+        return self
 
 
 class GrowthToolInput(BaseToolInput):
@@ -493,14 +540,36 @@ class StockToolInput(BaseToolInput):
 
 
 class AchievementToolInput(BaseToolInput):
+    """Target against actual, by group.
+
+    ``compare_from`` / ``compare_to`` are optional **as a pair**, the same shape
+    and for the same reason as :class:`MapLayerToolInput`: with them each row
+    carries its actual for that window and the growth against it, without them
+    growth is absent — never a growth against a window this tool chose for
+    itself. A caller who has not said what to compare with has not asked for a
+    comparison, and answering one anyway is the invented figure this platform
+    exists to refuse.
+    """
+
     group_by: GroupBy = GroupBy.REGION
     below_percent: float | None = None
     limit: int = DEFAULT_TABLE_LIMIT
+    compare_from: dt.date | None = None
+    compare_to: dt.date | None = None
 
     @field_validator("limit")
     @classmethod
     def _bound_limit(cls, value: int) -> int:
         return max(1, min(value, MAX_LIMIT))
+
+    @model_validator(mode="after")
+    def _comparison_is_a_pair(self) -> "AchievementToolInput":
+        if (self.compare_from is None) != (self.compare_to is None):
+            raise ValueError("compare_from and compare_to must be given together")
+        if (self.compare_from is not None and self.compare_to is not None
+                and self.compare_to < self.compare_from):
+            raise ValueError("compare_to must not precede compare_from")
+        return self
 
 
 class RootCauseToolInput(BaseToolInput):
@@ -540,6 +609,14 @@ class ChartSpec(BaseModel):
     x_axis: str
     y_axis: str
     data: list[dict[str, Any]] = Field(default_factory=list)
+    #: The lines to draw, when there is more than one.
+    #:
+    #: ``y_axis`` names the primary measure and stays what it always was, so a
+    #: single-series chart is unchanged and every existing reader keeps working.
+    #: A chart carrying this draws one line per entry, keyed by ``key`` — which
+    #: is a column of every row in ``data``, absent at a position the series has
+    #: no figure for.
+    series: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ToolResult(BaseModel):

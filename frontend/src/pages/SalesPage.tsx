@@ -6,7 +6,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { CategoryBarChart, ComparisonBarChart, TrendChart } from '../charts/Charts';
+import {
+  CategoryBarChart,
+  ComparisonBarChart,
+  TrendChart,
+  trendSeriesFrom,
+} from '../charts/Charts';
 import { ExportButtons } from '../components/ExportButtons';
 import { StatCard } from '../components/KpiCard';
 import { PageHeader, ResultNotes, Section } from '../components/PageHeader';
@@ -15,7 +20,7 @@ import { useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
 import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { salesService } from '../services';
-import { DataTable } from '../tables/DataTable';
+import { DataTable, type Column } from '../tables/DataTable';
 import { TransactionTable } from '../tables/TransactionTable';
 import { formatAmount, formatPercent } from '../utils/format';
 
@@ -23,20 +28,23 @@ import { formatAmount, formatPercent } from '../utils/format';
 // performance table reports all three — the same set the brand ranking shows.
 // Volume is one figure with no unit column beside it: the source states a Total
 // Volume per line and the group's figure is their sum.
-const PERFORMANCE_COLUMNS = (t: (key: string) => string) => [
+// The three measures total; the name does not, and neither does the rank — a
+// ranking position is an ordinal, and adding the ranks of fifteen brands gives
+// 120, which is a number about nothing.
+const PERFORMANCE_COLUMNS = (t: (key: string) => string): Column<any>[] => [
   { key: 'label', header: t('common.total') === 'Total' ? 'Name' : 'নাম' },
-  { key: 'quantity', header: t('sales.quantity') },
-  { key: 'volume', header: t('sales.volume') },
-  { key: 'net_sales', header: t('sales.netSales') },
+  { key: 'quantity', header: t('sales.quantity'), total: 'sum' },
+  { key: 'volume', header: t('sales.volume'), total: 'sum' },
+  { key: 'net_sales', header: t('sales.netSales'), total: 'sum' },
 ];
 
 /** Brand ranking: the three transactional measures, one Volume column. */
-const BRAND_COLUMNS = (t: (key: string) => string) => [
+const BRAND_COLUMNS = (t: (key: string) => string): Column<any>[] => [
   { key: 'rank', header: t('common.rank') },
   { key: 'label', header: t('filters.materialBrand') },
-  { key: 'quantity', header: t('sales.quantity') },
-  { key: 'volume', header: t('sales.volume') },
-  { key: 'net_sales', header: t('sales.netSales') },
+  { key: 'quantity', header: t('sales.quantity'), total: 'sum' },
+  { key: 'volume', header: t('sales.volume'), total: 'sum' },
+  { key: 'net_sales', header: t('sales.netSales'), total: 'sum' },
 ];
 
 export default function SalesPage() {
@@ -137,7 +145,7 @@ export default function SalesPage() {
               <TrendChart
                 data={dailyRows}
                 xKey={dailyRows[0]?.date ? 'date' : 'label'}
-                yKey="net_sales"
+                series={[{ key: 'net_sales', label: t('sales.netSales') }]}
               />
             </Section>
 
@@ -158,8 +166,11 @@ export default function SalesPage() {
               <TrendChart
                 data={data.monthly_trend.rows}
                 xKey="label"
-                yKey="net_sales"
-                area
+                // The lines the tool sent: this window, the two years before
+                // it, and the period's target. Not `area` any more — three
+                // filled areas over one axis hide each other.
+                series={trendSeriesFrom(data.monthly_trend.chart, t('sales.netSales'),
+                                        t('kpi.target'))}
               />
             </Section>
           ) : null}

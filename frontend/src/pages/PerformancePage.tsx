@@ -18,7 +18,8 @@ import { HIERARCHY_ORDER, useFilters } from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
 import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { performanceService } from '../services';
-import { DataTable } from '../tables/DataTable';
+import { DataTable, renderTotalValue } from '../tables/DataTable';
+import { percentOfTotals, sumColumn } from '../tables/totals';
 import { formatPercent } from '../utils/format';
 import type { FilterLevel } from '../types/api';
 
@@ -87,14 +88,39 @@ export default function PerformancePage() {
     value: filters[key] as string,
   }));
 
+  /**
+   * The achievement rows behind the codes this table is showing.
+   *
+   * The footer's achievement is recomputed from these — summed actual over
+   * summed target — and never from the percentage column, which would weight a
+   * territory selling two hundred taka exactly as heavily as one selling two
+   * crore. Restricted to the visible codes so the footer describes the table
+   * rather than the whole achievement result.
+   */
+  const achievementRows = rows
+    .map((row) => achievementByCode.get(row.code))
+    .filter((row): row is Record<string, any> => row !== undefined);
+
   const columns = [
     { key: 'label', header: t(LEVEL_LABELS[level] ?? 'common.total') },
-    { key: 'quantity', header: t('sales.quantity') },
-    { key: 'volume', header: t('sales.volume') },
-    { key: 'net_sales', header: t('sales.netSales') },
+    { key: 'quantity', header: t('sales.quantity'), total: 'sum' as const },
+    { key: 'volume', header: t('sales.volume'), total: 'sum' as const },
+    { key: 'net_sales', header: t('sales.netSales'), total: 'sum' as const },
     {
       key: 'achievement',
       header: t('target.achievement'),
+      // Recomputed, and suppressed where any entity states no target: summing
+      // actual over a target that is short by an unknown amount would report an
+      // achievement higher than the business actually reached.
+      total: () =>
+        renderTotalValue(
+          percentOfTotals(
+            sumColumn(achievementRows, 'actual_sales'),
+            sumColumn(achievementRows, 'target_amount'),
+          ),
+          'achievement_percent',
+          t,
+        ),
       render: (row: Record<string, any>) => {
         const match = achievementByCode.get(row.code);
         const value = match?.achievement_percent ?? null;

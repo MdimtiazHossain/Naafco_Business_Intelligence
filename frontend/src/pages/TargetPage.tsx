@@ -3,7 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ComparisonBarChart } from '../charts/Charts';
+import { ComparisonBarChart, TrendChart, trendSeriesFrom } from '../charts/Charts';
 import { ExportButtons } from '../components/ExportButtons';
 import { StatCard } from '../components/KpiCard';
 import { PageHeader, ResultNotes, Section } from '../components/PageHeader';
@@ -197,6 +197,31 @@ export default function TargetPage() {
           </div>
 
           <ResultNotes notes={data?.summary.notes} />
+
+          {data?.monthly_trend?.rows?.length ? (
+            <Section title={t('target.trend')}>
+              {/*
+                The page's first trend. Its bar chart below answers "how did
+                each region do this period"; this answers "is the target being
+                met over time, and how does that compare with the years before"
+                — the question a target page exists for, and one no chart here
+                could draw until `TrendChart` took more than one series.
+              */}
+              <TrendChart
+                data={data.monthly_trend.rows}
+                xKey="label"
+                // The same word twice, in two different positions: the second
+                // argument names a chart that arrived with no series list at
+                // all, the third renames the target *within* one. Only the
+                // third is doing anything here — this trend always asks for
+                // comparison years and a target, so it always has a list —
+                // and without it the legend shows the window's period name on
+                // both the target and this year's actual.
+                series={trendSeriesFrom(data.monthly_trend.chart, t('kpi.target'),
+                                        t('kpi.target'))}
+              />
+            </Section>
+          ) : null}
 
           <Section title={t('target.vsActual')}>
             <ComparisonBarChart

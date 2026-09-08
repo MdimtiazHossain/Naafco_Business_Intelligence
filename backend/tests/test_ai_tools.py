@@ -419,6 +419,90 @@ def test_target_achievement_can_list_only_underperformers(ctx: ToolContext) -> N
     assert [row["code"] for row in result.rows] == ["REG002"]   # 300k / 1000k = 30%
 
 
+# The comparison window on the achievement tool. It exists because the dashboard
+# draws target, actual and *last period's* actual as three bars of one group,
+# and reading the third from a second call would be two reads of one view that
+# could disagree. Everything below is about the pair being optional and about
+# absent staying absent.
+#
+# The fixture's comparison window is deliberately narrow — 15 to 31 July catches
+# INV-P2 (Khulna, 400,000) and nothing of Dhaka's, so one region has a history
+# in it and the other has none.
+COMPARISON = {"compare_from": "2026-07-15", "compare_to": "2026-07-31"}
+
+
+def test_achievement_carries_the_named_comparison_window(ctx: ToolContext) -> None:
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 **COMPARISON)
+    rows = {row["code"]: row for row in result.rows}
+
+    # Khulna sold 400,000 in that window and 300,000 in this one.
+    assert rows["REG002"]["previous_sales"] == pytest.approx(400_000)
+    assert rows["REG002"]["growth_percent"] == pytest.approx(-25.0)
+
+    # The headline grows the same actual against the same window, so the card
+    # and the table cannot tell different stories about one period.
+    assert result.values["previous"] == pytest.approx(400_000)
+    assert result.values["growth_percent"] == pytest.approx(350.0)
+    # And it says which window, because "growth" without two dates is a claim
+    # the reader cannot check.
+    assert result.values["compare_from"] == "2026-07-15"
+    assert result.values["compare_to"] == "2026-07-31"
+
+
+def test_a_group_absent_from_the_comparison_window_has_no_growth(
+    ctx: ToolContext,
+) -> None:
+    """Absent is not zero, and growth from nothing is not -100%.
+
+    Dhaka has no sale between 15 and 31 July. Filling ``previous_sales`` with
+    0.0 would draw a last-period bar at the axis for a period nobody measured,
+    and the -100% that follows from it would be the worst figure on the chart.
+    """
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 **COMPARISON)
+    dhaka = next(row for row in result.rows if row["code"] == "REG001")
+
+    assert dhaka["actual_sales"] == pytest.approx(1_500_000)
+    assert dhaka["previous_sales"] is None
+    assert dhaka["growth_percent"] is None
+
+
+def test_without_the_pair_neither_key_exists(ctx: ToolContext) -> None:
+    """Not present-and-null: absent.
+
+    Every achievement table the assistant renders is built from these keys, so
+    two columns of dashes on every one of them would be two columns a reader
+    learns to ignore — and a growth against a window the caller never named
+    would be this layer inventing the comparison.
+    """
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20)
+
+    for row in result.rows:
+        assert "previous_sales" not in row
+        assert "growth_percent" not in row
+    for key in ("previous", "growth_percent", "compare_from", "compare_to"):
+        assert key not in result.values
+
+
+@pytest.mark.parametrize("half", ["compare_from", "compare_to"])
+def test_half_a_comparison_window_is_refused(ctx: ToolContext, half: str) -> None:
+    """One date without the other has no window to measure, so it is rejected.
+
+    Reading the missing half as "the start of the report window" would answer a
+    question nobody asked and label it as the caller's own. The refusal is the
+    ordinary argument refusal rather than an exception, because that is what a
+    caller — the planner or a page — has to be able to act on.
+    """
+    invocation = execute_tool(ctx, "get_target_achievement", {
+        "date_from": "2026-08-01", "date_to": "2026-08-31", "filters": {},
+        "group_by": "region", "limit": 20, half: COMPARISON[half],
+    })
+    assert invocation.success is False
+    assert invocation.error_code == "INVALID_ARGUMENTS"
+    assert invocation.result is None
+
+
 def test_target_gap_lists_shortfalls_largest_first(ctx: ToolContext) -> None:
     result = run(ctx, "get_target_gap", group_by="region", limit=20)
     gaps = [row["gap"] for row in result.rows]

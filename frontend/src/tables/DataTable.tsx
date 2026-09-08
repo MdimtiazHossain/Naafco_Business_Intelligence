@@ -39,6 +39,13 @@ import {
   isNumericColumn,
   stockStatusClass,
 } from '../utils/format';
+import {
+  isSuppressed,
+  sumColumn,
+  totalsScope,
+  type ColumnTotal,
+  type TotalValue,
+} from './totals';
 
 export interface Column<T> {
   key: string;
@@ -50,6 +57,16 @@ export interface Column<T> {
   /** Hidden by default but available from the column picker. */
   hidden?: boolean;
   width?: string;
+  /**
+   * How this column's footer cell is produced, if it has one.
+   *
+   * `'sum'` for an additive measure. A function for anything that must be
+   * *recomputed* rather than added — achievement is the summed actual over the
+   * summed target, and averaging the column would be a different number that
+   * looks equally plausible. Leaving it out is the right answer for a code, a
+   * name, a date, and for any ratio whose parts are not on the row.
+   */
+  total?: ColumnTotal<T>;
 }
 
 export interface DataTableProps<T extends Record<string, any>> {
@@ -117,6 +134,17 @@ export interface DataTableProps<T extends Record<string, any>> {
    * selection into the id rather than share one with a different column set.
    */
   tableId?: string;
+  /**
+   * A grand total the backend computed, keyed by column.
+   *
+   * The browser can only add the rows it holds, which on a server-paged table
+   * is one page — so a footer built from them is a page subtotal and is
+   * labelled as one. Passing this says the figures cover the whole result set,
+   * and the footer says *that* instead. It is the preferred shape wherever an
+   * endpoint can produce it; the client-side sum is what a table gets until
+   * then, rather than nothing.
+   */
+  serverTotals?: Record<string, unknown>;
   /** Replaces "Showing N of M" when the server knows the real range. */
   rangeLabel?: string;
 }
@@ -154,6 +182,7 @@ export function DataTable<T extends Record<string, any>>({
   hiddenColumns,
   onHiddenColumnsChange,
   rangeLabel,
+  serverTotals,
   tableId,
 }: DataTableProps<T>) {
   const t = useT();
@@ -343,6 +372,39 @@ export function DataTable<T extends Record<string, any>>({
   const visibleRows = serverMode
     ? processed
     : processed.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  // A footer is drawn only where a column asked for one — no column declaring a
+  // total means the table has nothing summable in it, and an empty row under it
+  // would be furniture.
+  const hasTotals = visibleColumns.some((column) => column.total !== undefined);
+  /**
+   * The rows a total is computed over — every row the table holds, not the page.
+   *
+   * In client mode the browser already has the whole result set and merely
+   * shows ten of it at a time, so totalling the page would throw away the
+   * preferred answer for no reason. `processed` is post-search, which is right:
+   * the result set is what the reader has narrowed to. Server mode has only the
+   * page, and says so.
+   */
+  const totalsRows = serverMode ? visibleRows : processed;
+  const scope = totalsScope({
+    rowsOnScreen: totalsRows.length,
+    rowCount,
+    hasServerTotals: serverTotals !== undefined,
+  });
+  const scopeLabel =
+    scope === 'all'
+      ? t('table.totalAll')
+      : t('table.totalPage', { count: String(totalsRows.length) });
+  // The label goes in the first column that is *not* carrying a figure, which
+  // is normally the name column. It cannot simply take cell zero: a reader who
+  // moves a measure to the front would otherwise overwrite their own total, or
+  // — as this did before the test caught it — lose the label altogether and
+  // leave a row of figures with nothing saying what they cover. Where every
+  // visible column totals, there is no free cell and the label moves to the
+  // range line below the table rather than being dropped.
+  const labelAt = visibleColumns.findIndex((column) => column.total === undefined);
+  const labelBelowTable = hasTotals && labelAt === -1;
 
   function handleSort(column: Column<T>) {
     if (column.sortable === false) return;
@@ -773,6 +835,37 @@ export function DataTable<T extends Record<string, any>>({
                 );
               })}
             </tbody>
+            {hasTotals && totalsRows.length > 0 && (
+              // `visibleColumns` and nothing else: the footer is built from the
+              // same ordered, filtered list the header and the body are, so
+              // hiding a column, moving it or narrowing it carries the total
+              // with it. A footer that mapped over the *declared* columns would
+              // put figures under the wrong headings the moment anybody
+              // rearranged the table, which is worse than having no footer.
+              <tfoot className="border-t-2 border-slate-200 bg-slate-50 text-sm font-medium dark:border-slate-700 dark:bg-slate-800/60">
+                <tr>
+                  {selectable && <td className="px-3 py-2" />}
+                  {visibleColumns.map((column, index) => {
+                    const numeric =
+                      column.align === 'right' ||
+                      (column.align === undefined &&
+                        isNumericColumn(column.key, totalsRows[0]?.[column.key]));
+                    const label = index === labelAt ? scopeLabel : null;
+                    return (
+                      <td
+                        key={column.key}
+                        className={`px-3 ${dense ? 'py-1.5' : 'py-2'} ${
+                          numeric ? 'text-right tabular-nums' : 'text-left'
+                        } text-slate-900 dark:text-slate-100`}
+                      >
+                        {label ?? renderTotal(column, totalsRows, serverTotals, t)}
+                      </td>
+                    );
+                  })}
+                  {renderRowActions && <td className="px-3 py-2" />}
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}
@@ -785,6 +878,10 @@ export function DataTable<T extends Record<string, any>>({
               {t('common.rows')}
             </>
           )}
+          {/* Only when the footer had no free cell to put it in — see
+              `labelBelowTable`. A row of totals with nothing saying whether it
+              covers the result set or one page is the failure this avoids. */}
+          {labelBelowTable && <span className="ml-2 font-medium">· {scopeLabel}</span>}
         </span>
 
         <div className="flex items-center gap-2">
@@ -827,6 +924,64 @@ export function DataTable<T extends Record<string, any>>({
       </div>
     </div>
   );
+}
+
+/**
+ * One footer cell: the server's figure, the column's own rule, or nothing.
+ *
+ * The order matters. A backend total describes the whole result set and always
+ * wins over anything the browser could add from one page. Failing that the
+ * column's rule applies, and a column with no rule gets an empty cell rather
+ * than a guess — `formatCell` would happily render a sum of achievement
+ * percentages, and it would be meaningless.
+ *
+ * A suppressed sum renders as `n/a` with the count of rows that stopped it, the
+ * same answer Target Management gives for the same reason: a total short by the
+ * rows it skipped is worse than no total, and a reader who can see *why* can go
+ * and fix the data.
+ */
+function renderTotal<T extends Record<string, any>>(
+  column: Column<T>,
+  rows: T[],
+  serverTotals: Record<string, unknown> | undefined,
+  t: (key: string, vars?: Record<string, string>) => string,
+): ReactNode {
+  if (column.total === undefined) return null;
+  if (serverTotals && column.key in serverTotals) {
+    return formatCell(column.key, serverTotals[column.key]);
+  }
+  if (typeof column.total === 'function') return column.total(rows);
+
+  return renderTotalValue(sumColumn(rows, column.key), column.key, t);
+}
+
+/**
+ * A computed total as a cell: the figure, or `n/a` saying what stopped it.
+ *
+ * Exported because a column that recomputes a ratio returns one of these too —
+ * `percentOfTotals` inherits both suppressions, and a page rendering its own
+ * `n/a` would lose the reason with it.
+ */
+export function renderTotalValue(
+  value: TotalValue,
+  columnKey: string,
+  t: (key: string, vars?: Record<string, string>) => string,
+): ReactNode {
+  if (isSuppressed(value)) {
+    return (
+      <span
+        className="text-slate-400 dark:text-slate-500"
+        title={
+          value.reason === 'zeroDenominator'
+            ? t('table.totalNoDenominator')
+            : t('table.totalSuppressed', { count: String(value.missing) })
+        }
+      >
+        {t('common.notAvailable')}
+      </span>
+    );
+  }
+  return formatCell(columnKey, value);
 }
 
 /** Build table columns straight from a tool result's rows. */
