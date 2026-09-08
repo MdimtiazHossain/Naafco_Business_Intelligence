@@ -28,7 +28,7 @@ The virtualenv is `.venv/` at the repo root; on this machine use `.\.venv\Script
 There is no CI, no backend linter and no formatter config in this repo — `pytest` and the frontend's `typecheck`/`lint`/`build` are the whole gate, so run them yourself before calling work done.
 
 ```powershell
-# Tests (1342 backend tests; run from the repo root — pytest.ini sets pythonpath=backend)
+# Tests (1366 backend tests; run from the repo root — pytest.ini sets pythonpath=backend)
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pytest backend/tests/test_etl_pipeline.py
 .\.venv\Scripts\python.exe -m pytest backend/tests/test_ai_tools.py::test_name -x
@@ -75,10 +75,12 @@ python scripts/manage_users.py create ceo --role MANAGEMENT --name "..."
 python scripts/ask_agent.py "আজকের sales কত?" --user ceo [--interactive]
 python scripts/migrate_sqlite_to_postgres.py [--dry-run]   # SQLite -> Supabase, one transaction
 python scripts/mine_agent_signals.py [--dry-run] [--limit N]  # sweep stored chats for questions the agent mishandled
-python scripts/clear_data.py <groups>        # DESTRUCTIVE — confirm with the user before running
+python scripts/clear_data.py --groups <a,b,c> [--yes]   # DESTRUCTIVE — confirm with the user before running
 ```
 
 `clear_data.py` (renamed from `clear_demo_data.py`) empties named groups — `masters`, `transactions`, `uploads`, `changelog`, `history`, `users` — and must be told which. It is the one script here that destroys data; never run it speculatively.
+
+**It reports what it did not do, and its exit code says so** — `0` cleared, `1` at least one table refused (rolled back whole, tables named), `2` usage, `3` refused before writing anything. The refusal is the load-bearing part: a group whose parents are named without the group holding their children is rejected up front, by *counting the referencing rows* rather than by letting a DELETE fail, because the two dialects disagree about whether it would fail at all. PostgreSQL enforces the RESTRICT that every fact key carries; SQLite does not enforce foreign keys at all through `get_engine` (`_configure_sqlite` sets WAL and a busy timeout, not `PRAGMA foreign_keys`), so there the same command *succeeds* and leaves the facts pointing at nothing. Counting gives the same answer on both, so a dry run on `dev.db` predicts what production does. Groups are flattened in `GROUPS` declaration order, never in the order the operator typed them, and `test_clear_data.py` pins that order child-before-parent against the model metadata — plus that no group names a table the schema lacks, which `dim_product` did for three revisions after `0022` dropped it.
 
 ## Deployment (Hostinger VPS + Supabase)
 
