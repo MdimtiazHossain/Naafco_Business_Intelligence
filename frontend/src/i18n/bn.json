@@ -256,7 +256,7 @@
   "dashboard.growthLine": "প্রবৃদ্ধি %",
   "dashboard.growthShort": "প্রবৃদ্ধি%",
   "dashboard.lastPeriodActual": "পূর্ববর্তী সময়ের প্রকৃত",
-  "dashboard.monthlyCountry": "মাসভিত্তিক দেশব্যাপী পারফরম্যান্স",
+  "dashboard.monthlyPerformance": "মাসভিত্তিক পারফরম্যান্স",
   "dashboard.percentAxis": "অর্জন / প্রবৃদ্ধি (%)",
   "dashboard.regionOverview": "রিজিওন পারফরম্যান্স ও টার্গেট অর্জন",
   "dashboard.salesBdt": "বিক্রয় (৳)",

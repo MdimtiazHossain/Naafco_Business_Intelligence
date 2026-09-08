@@ -82,39 +82,51 @@ const KPIS = [
     previous_value: null, growth_percent: null, format: 'stock' },
 ];
 
+/**
+ * A monthly trend as the tool sends one: three years and a target, with each
+ * month missing something different. That is what the two nullable percentages
+ * exist for — no target means no achievement, no prior year means no growth.
+ */
+const TREND_ROWS = [
+  { label: 'Jul 2026', net_sales: 161_449_437, net_sales_minus_1: 166_802_869,
+    net_sales_minus_2: 203_202_529, target_amount: 168_912_348,
+    achievement_percent: 95.6, growth_percent: -3.2 },
+  // No target this month, so no achievement — never 0%.
+  { label: 'Aug 2026', net_sales: 223_891_243, net_sales_minus_1: 197_823_740,
+    net_sales_minus_2: 196_332_347, target_amount: null,
+    achievement_percent: null, growth_percent: 13.2 },
+  // The prior year recorded nothing here, so no growth — never -100%.
+  { label: 'Sep 2026', net_sales: 58_765, net_sales_minus_1: null,
+    net_sales_minus_2: 217_259_641, target_amount: 390_667_700,
+    achievement_percent: 0.0, growth_percent: null },
+];
+
+const TREND_CHART_SPEC = {
+  type: 'line', x_axis: 'label', y_axis: 'net_sales',
+  series: [
+    { key: 'net_sales', label: 'Jul 2026 - Sep 2026' },
+    { key: 'net_sales_minus_1', label: 'Jul 2025 - Sep 2025' },
+    { key: 'net_sales_minus_2', label: 'Jul 2024 - Sep 2024' },
+    { key: 'target_amount', label: 'Jul 2026 - Sep 2026' },
+  ],
+};
+
 const DASHBOARD = {
   period: PERIOD,
   filters: {},
   kpis: KPIS,
   summary: { rows: [], values: {}, notes: [] },
-  // A realistic monthly shape, because two cards now read this one section: the
-  // Sales Trend line chart and the Monthly Country Performance combo. Each of
-  // the three months is missing something different, which is what the two
-  // nullable percentages exist for.
-  sales_trend: {
-    rows: [
-      { label: 'Jul 2026', net_sales: 161_449_437, net_sales_minus_1: 166_802_869,
-        net_sales_minus_2: 203_202_529, target_amount: 168_912_348,
-        achievement_percent: 95.6, growth_percent: -3.2 },
-      // No target this month, so no achievement — never 0%.
-      { label: 'Aug 2026', net_sales: 223_891_243, net_sales_minus_1: 197_823_740,
-        net_sales_minus_2: 196_332_347, target_amount: null,
-        achievement_percent: null, growth_percent: 13.2 },
-      // The prior year recorded nothing here, so no growth — never -100%.
-      { label: 'Sep 2026', net_sales: 58_765, net_sales_minus_1: null,
-        net_sales_minus_2: 217_259_641, target_amount: 390_667_700,
-        achievement_percent: 0.0, growth_percent: null },
-    ],
-    chart: {
-      type: 'line', x_axis: 'label', y_axis: 'net_sales',
-      series: [
-        { key: 'net_sales', label: 'Jul 2026 - Sep 2026' },
-        { key: 'net_sales_minus_1', label: 'Jul 2025 - Sep 2025' },
-        { key: 'net_sales_minus_2', label: 'Jul 2024 - Sep 2024' },
-        { key: 'target_amount', label: 'Jul 2026 - Sep 2026' },
-      ],
-    },
-    notes: [],
+  // The Sales Trend line chart follows the reader's period. `monthly_performance`
+  // below is the combo card's own always-monthly section; the two are separate
+  // queries over different windows and the fixture keeps them apart.
+  sales_trend: { rows: TREND_ROWS, chart: TREND_CHART_SPEC, notes: [] },
+  // The combo card's own section: a full financial year, whatever period the
+  // reader picked. Sharing `sales_trend` is what put a bar per date under a
+  // title promising months.
+  monthly_performance: {
+    rows: TREND_ROWS,
+    chart: TREND_CHART_SPEC,
+    notes: ['Twelve months of FY 2026-27, the financial year of the selected period.'],
   },
   region_overview: { rows: [] },
   top_brands: { rows: BRAND_ROWS, notes: [] },

@@ -139,6 +139,9 @@ export default function Dashboard() {
   // throws on the missing key rather than falling back — which took the whole
   // page down behind the error boundary instead of leaving one chart empty.
   const trendRows = data?.sales_trend?.rows ?? [];
+  // Its own section, not `sales_trend`: this card is a year of months whatever
+  // period is chosen, and the line chart above follows the period exactly.
+  const monthlyRows = data?.monthly_performance?.rows ?? [];
   // One panel where there were two. The old Region Performance card drew the
   // net sales that this card's `actual_sales` already is — the same column of
   // the same view over the same window, read twice.
@@ -207,27 +210,26 @@ export default function Dashboard() {
           </Section>
 
           {/*
-            The same rows as the card above, drawn the other way. One request,
-            two questions: the line chart answers "what shape is the year" and
-            this answers "how did each month do against its plan and against
-            last year". Reading both off one `sales_trend` result is what stops
-            them disagreeing about a month — a second query for the same measure
-            over the same window is how two cards on one screen drift apart.
+            A year of months, and its own query. It read `sales_trend` while
+            that section was monthly, and drew one bar per *date* the moment a
+            reader picked a period short enough to be charted by day — under a
+            title promising months. The line chart above still follows the
+            period exactly, which is what it is for.
 
             Money on the left axis, ratios on the right, for the reason the
             region card below gives: an achievement of 93 shares a taka axis
             with figures in the crores only by becoming invisible.
           */}
-          <Section title={t('dashboard.monthlyCountry')}>
+          <Section title={t('dashboard.monthlyPerformance')}>
             <ComboBarLineChart
-              data={trendRows}
-              xKey={trendRows[0]?.date ? 'date' : 'label'}
+              data={monthlyRows}
+              xKey="label"
               height={320}
               // Named from the backend's own series list — prior years, target
               // and actual, ordered and coloured by `barSeriesFrom` — so a third
               // comparison year needs no change here and every year keeps the
               // hue it has on the line chart above.
-              bars={monthlyBars(data?.sales_trend?.chart, t)}
+              bars={monthlyBars(data?.monthly_performance?.chart, t)}
               // The percentages are named explicitly, because they are
               // deliberately absent from `chart.series`: that list is what the
               // line chart above turns into lines on a taka axis.
@@ -250,9 +252,10 @@ export default function Dashboard() {
               // is not reading a chart.
               showLineValues
             />
-            {/* Under this card only. Both cards read one result, so printing
-                its notes twice would say everything twice. */}
-            <ResultNotes notes={data?.sales_trend?.notes} />
+            {/* This card's own notes: which financial year it covers, any
+                year it could not draw, and whether the figures are narrower
+                than the country its title names. */}
+            <ResultNotes notes={data?.monthly_performance?.notes} />
           </Section>
 
           {/*

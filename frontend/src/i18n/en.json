@@ -256,7 +256,7 @@
   "dashboard.growthLine": "Growth %",
   "dashboard.growthShort": "Grw.%",
   "dashboard.lastPeriodActual": "Last-period Actual",
-  "dashboard.monthlyCountry": "Monthly Country Performance",
+  "dashboard.monthlyPerformance": "Monthly Performance",
   "dashboard.percentAxis": "Achievement / Growth (%)",
   "dashboard.regionOverview": "Region Performance and Target Achievement",
   "dashboard.salesBdt": "Sales BDT",

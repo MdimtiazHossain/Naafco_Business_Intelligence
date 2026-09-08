@@ -787,6 +787,16 @@ export interface DashboardResponse {
    * **Not** named `region_performance`: that key belongs to the sales-only tool
    * and is still what `/api/pages/sales` returns, which is a different shape.
    */
+  /**
+   * Twelve months of the financial year the selected period ends in, each with
+   * its target and the two years before it.
+   *
+   * **Not** `sales_trend`, although it is the same tool over the same measure.
+   * That section follows the reader's period, and a period short enough to be
+   * charted by day gives one row per date — which this card, titled "Monthly",
+   * cannot draw. The two deliberately cover different windows.
+   */
+  monthly_performance: ToolResult;
   region_overview: ToolResult;
   /**
    * Brand-wise ranking with targets beside actuals — the dashboard's general

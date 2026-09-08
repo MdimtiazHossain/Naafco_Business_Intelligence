@@ -155,7 +155,7 @@ def _narrower_than_the_country(user: UserContext,
                                filters: ScopeFilters) -> str | None:
     """Why the country card is not showing the country, when it is not.
 
-    Every tool is scoped, so a regional manager's "Monthly Country Performance"
+    Every tool is scoped, so a regional manager's "Monthly Performance"
     is their region's months — correct for what they may see, and a figure that
     is neither the whole nor labelled as partial is exactly what this platform
     does not put on a screen. The card is **narrowed and labelled**, never
@@ -254,6 +254,7 @@ def dashboard(
     """
     try:
         ctx = tool_context(session, user)
+        fy_resolver = DateResolver()
         summary = run(ctx, "get_business_summary", date_range, filters)
         growth = run(ctx, "get_sales_growth", date_range, filters,
                      compare_from=(date_range.compare_from or
@@ -277,22 +278,38 @@ def dashboard(
                     granularity=("month" if monthly else "day"),
                     limit=200,
                     **({"compare_years": 2, "include_target": True} if monthly else {}))
-        if isinstance(trend.get("notes"), list):
-            if not monthly:
-                # The combo card is still drawn, with one actual series and no
-                # percentage axis — but it has to say why, or a reader who saw
-                # target bars last week reads their absence as a fault. An
-                # absent card would be worse still: a section that vanishes
-                # reads as a rendering failure rather than as a period too short
-                # to answer the question.
-                trend["notes"].append(
-                    "This period is shorter than a quarter, so it is charted by "
-                    "day: there is no year-on-year monthly comparison and no "
-                    "monthly target to measure against."
-                )
+        # Monthly Performance is a year of months, and its window is
+        # its own. It used to draw ``sales_trend`` — one query, two cards —
+        # which held while the period was long enough to be charted by month
+        # and broke the moment it was not: on the default "This month" the
+        # trend is charted by day, so the card drew a bar per *date*, with no
+        # target and no earlier year to set it against, under a title
+        # promising months.
+        #
+        # Widening the shared query was the alternative and would have changed
+        # the Sales Trend card, which is not this card's business — a short
+        # period charted by day is exactly what that line chart is for. So this
+        # is a second call, and the cost is named rather than hidden: two reads
+        # of one view can disagree, and these two deliberately do, because they
+        # cover different windows.
+        #
+        # The financial year of the period's end, so choosing Last Year moves
+        # the card and choosing This Month does not shrink it to a single bar.
+        # The note says which year it is; every other filter still narrows it.
+        year_of_card = fy_resolver.financial_year(
+            fy_resolver.fy.start_year_of(date_range.date_to))
+        monthly_performance = run(
+            ctx, "get_sales_trend", year_of_card, filters,
+            granularity="month", limit=200, compare_years=2, include_target=True)
+        if isinstance(monthly_performance.get("notes"), list):
+            monthly_performance["notes"].insert(0, (
+                f"Twelve months of {year_of_card.label}, the financial year of "
+                "the selected period. This card is a year of months whatever "
+                "period is chosen; your other filters still narrow it."
+            ))
             narrowed = _narrower_than_the_country(user, filters)
             if narrowed:
-                trend["notes"].append(narrowed)
+                monthly_performance["notes"].append(narrowed)
         # One call where there were two, because there was only ever one
         # question. ``get_region_performance`` was drawing a region's net sales
         # beside a card that already carried it: ``target_vs_actual``'s
@@ -396,6 +413,9 @@ def dashboard(
         "kpis": kpis,
         "summary": summary,
         "sales_trend": trend,
+        # A year of months with its plan and its two earlier years, over
+        # its own window — see the call for why it is not ``sales_trend``.
+        "monthly_performance": monthly_performance,
         # Not ``region_performance``: that name belongs to the sales-only tool,
         # which still runs on /api/pages/sales and is untouched there. A key
         # that outlived what it named would leave two different shapes under one

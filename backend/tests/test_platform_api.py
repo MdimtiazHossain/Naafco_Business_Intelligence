@@ -237,22 +237,47 @@ def test_dashboard_returns_kpis_and_charts(platform: TestClient) -> None:
     assert "target_achievement" not in body
 
 
-def test_one_trend_section_feeds_both_cards(platform: TestClient) -> None:
-    """The Sales Trend line chart and the monthly combo card read one result.
+def test_the_monthly_card_draws_months_whatever_period_is_chosen(
+    platform: TestClient,
+) -> None:
+    """The defect this section exists to fix.
 
-    A second query for the same measure over the same window is how two cards
-    on one screen come to disagree about a month, so there is one
-    ``sales_trend`` section and the percentages travel on its rows. They are
-    kept out of ``chart.series``, which is what the *line* chart turns into
-    lines on a taka axis.
+    It used to draw ``sales_trend``, which follows the reader's period — so on
+    the default "This month" the trend is charted by day and the card drew one
+    bar per *date*, with no target and no earlier year, under a title promising
+    months. Its window is now its own: the financial year the period ends in.
     """
+    token = login(platform, "ceo")
+    # A single day, which the shared section charts by day.
+    body = platform.get("/api/dashboard?date_from=2026-08-15&date_to=2026-08-15",
+                        headers=auth(token)).json()
+
+    daily = body["sales_trend"]["rows"]
+    assert daily and "date" in daily[0], "the line chart still follows the period"
+
+    card = body["monthly_performance"]
+    labels = [row["label"] for row in card["rows"]]
+    assert labels == [f"{m} 2026" for m in
+                      ("Jul", "Aug", "Sep", "Oct", "Nov", "Dec")] +                      [f"{m} 2027" for m in
+                      ("Jan", "Feb", "Mar", "Apr", "May", "Jun")]
+    assert any("FY 2026-27" in note for note in card["notes"])
+    # And it carries what the daily section cannot: a plan, and a year to
+    # measure against.
+    assert "target_amount" in card["rows"][0]
+    assert "achievement_percent" in card["rows"][0]
+
+
+def test_the_monthly_card_keeps_the_percentages_off_the_series_list(
+    platform: TestClient,
+) -> None:
+    """``chart.series`` is what the *line* chart turns into lines on a taka axis."""
     token = login(platform, "ceo")
     body = platform.get("/api/dashboard?date_from=2026-07-01&date_to=2026-10-31",
                         headers=auth(token)).json()
 
-    trend = body["sales_trend"]
+    trend = body["monthly_performance"]
     months = {row["label"]: row for row in trend["rows"]}
-    assert list(months) == ["Jul 2026", "Aug 2026", "Sep 2026", "Oct 2026"]
+    assert ["Jul 2026", "Aug 2026", "Sep 2026", "Oct 2026"] == list(months)[:4]
 
     # August is the only month the seeded targets cover.
     assert months["Aug 2026"]["achievement_percent"] == pytest.approx(60.0)
@@ -275,7 +300,7 @@ def test_the_country_card_says_when_it_is_not_the_country(
 ) -> None:
     """Narrowed and labelled, never hidden.
 
-    Every tool is scoped, so a regional manager's "Monthly Country Performance"
+    Every tool is scoped, so a regional manager's "Monthly Performance"
     is their region's months. Withholding the card would deny them the one view
     of their own year; leaving the country label over a partial figure is the
     unexplained number this platform does not put on a screen.
@@ -287,11 +312,11 @@ def test_the_country_card_says_when_it_is_not_the_country(
                           headers=auth(login(platform, "dhaka_rm"))).json()
 
     assert not any("not the whole country" in note
-                   for note in national["sales_trend"]["notes"])
+                   for note in national["monthly_performance"]["notes"])
     assert any("not the whole country" in note
-               for note in scoped["sales_trend"]["notes"])
+               for note in scoped["monthly_performance"]["notes"])
     # And the card is still there, with figures in it.
-    assert scoped["sales_trend"]["rows"]
+    assert scoped["monthly_performance"]["rows"]
 
 
 def test_region_overview_grows_against_the_window_the_kpi_uses(
