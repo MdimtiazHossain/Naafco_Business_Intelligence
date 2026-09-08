@@ -20,6 +20,7 @@ import {
   ComboBarLineChart,
   TrendChart,
   trendSeriesFrom,
+  type TrendSeries,
 } from '../charts/Charts';
 import { KpiCard } from '../components/KpiCard';
 import { PageHeader, ResultNotes, Section } from '../components/PageHeader';
@@ -35,6 +36,57 @@ import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { dashboardService } from '../services';
 import { DataTable } from '../tables/DataTable';
 import { formatAmount, formatPercent } from '../utils/format';
+
+/**
+ * The monthly card's bars, named and coloured as its reference design asks.
+ *
+ * Two things are card-specific and so live here rather than in
+ * `barSeriesFrom`, which every other trend also uses.
+ *
+ * **The names are compact.** The tool labels each series with the window it
+ * covers — "FY 2026-27" — which is right for a legend of three or four lines
+ * and too wide for one of six items. `A 26-27` and `T 26-27` say actual and
+ * target of that year in the width a legend has, and the prefixes come from
+ * i18n rather than being spelled here.
+ *
+ * **The hue follows the drawing order**, so the group reads left to right as
+ * the palette's first colours for the earlier years, the neutral for the plan,
+ * and the platform's green for what actually happened this year. This is the
+ * one place a series does *not* keep the colour it has on the Sales Trend line
+ * chart above: that chart is four years of one measure, where hue is the only
+ * thing telling them apart, and this one is a plan against an outcome, where
+ * the reader is looking at the last bar of each group.
+ *
+ * A window too short for months sends no series list at all — one actual and
+ * nothing to compare it with — and is returned untouched, or the prefix would
+ * rename it "A Net Sales".
+ */
+function monthlyBars(
+  chart: Parameters<typeof barSeriesFrom>[0],
+  t: (key: string) => string,
+): TrendSeries[] {
+  const ordered = barSeriesFrom(chart, t('sales.netSales'));
+  if (!chart?.series?.length) return ordered;
+  return ordered.map((bar, index) => {
+    const isTarget = bar.key.startsWith('target');
+    const isThisYear = !isTarget && index === ordered.length - 1;
+    return {
+      ...bar,
+      label: `${isTarget ? t('chart.targetShort') : t('chart.actualShort')} `
+        // "FY 2026-27" becomes "26-27": the century is the same on every
+        // series here, so printing it four times buys nothing and costs the
+        // legend the room it needs. A window that is not a financial year
+        // carries a different label shape, matches neither pattern and is
+        // left exactly as the tool wrote it.
+        + bar.label.replace(/^FY\s*/i, '').replace(/^\d{2}(\d{2}-\d{2})$/, '$1'),
+      color: isTarget
+        ? CHART_COLORS[7]
+        : isThisYear
+          ? CHART_COLORS[4]
+          : CHART_COLORS[index % CHART_COLORS.length],
+    };
+  });
+}
 
 const KPI_ICONS: Record<string, React.ReactNode> = {
   total_sales: <TrendingUp size={16} />,
@@ -175,15 +227,28 @@ export default function Dashboard() {
               // and actual, ordered and coloured by `barSeriesFrom` — so a third
               // comparison year needs no change here and every year keeps the
               // hue it has on the line chart above.
-              bars={barSeriesFrom(data?.sales_trend?.chart, t('sales.netSales'),
-                                  t('kpi.target'))}
+              bars={monthlyBars(data?.sales_trend?.chart, t)}
               // The percentages are named explicitly, because they are
               // deliberately absent from `chart.series`: that list is what the
               // line chart above turns into lines on a taka axis.
               lines={[
-                { key: 'achievement_percent', label: t('target.achievement') },
-                { key: 'growth_percent', label: t('dashboard.growthLine') },
+                { key: 'achievement_percent', label: t('dashboard.achievementShort'),
+                  color: CHART_COLORS[4] },
+                { key: 'growth_percent', label: t('dashboard.growthShort'),
+                  color: CHART_COLORS[3] },
               ]}
+              // Both axes are titled because they measure different kinds of
+              // thing, and a reader who takes the right-hand scale for taka
+              // reads every percentage as a rounding error.
+              valueAxisLabel={t('dashboard.valueAxis')}
+              percentAxisLabel={t('dashboard.percentAxis')}
+              // The window is stated in the page header, so a month need not
+              // repeat its year on every tick.
+              xTickFormatter={(value) => value.replace(/\s+\d{4}$/, '')}
+              // Twelve categories and two lines: the reading matters more here
+              // than the shape, and hovering twelve points to find one figure
+              // is not reading a chart.
+              showLineValues
             />
             {/* Under this card only. Both cards read one result, so printing
                 its notes twice would say everything twice. */}

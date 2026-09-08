@@ -40,6 +40,7 @@ vi.mock('recharts', () => {
     CartesianGrid: passthrough('CartesianGrid'),
     Tooltip: passthrough('Tooltip'),
     Legend: passthrough('Legend'),
+    Label: passthrough('Label'),
     LabelList: passthrough('LabelList'),
     ReferenceLine: passthrough('ReferenceLine'),
   };

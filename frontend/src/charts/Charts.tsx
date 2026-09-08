@@ -14,6 +14,8 @@ import {
   CartesianGrid,
   Cell,
   ComposedChart,
+  Label,
+  LabelList,
   Legend,
   Line,
   LineChart,
@@ -615,6 +617,10 @@ export function ComboBarLineChart({
   lines,
   height = 340,
   emptyMessage,
+  valueAxisLabel,
+  percentAxisLabel,
+  xTickFormatter,
+  showLineValues = false,
 }: {
   data: Record<string, any>[];
   xKey: string;
@@ -622,6 +628,14 @@ export function ComboBarLineChart({
   lines: TrendSeries[];
   height?: number;
   emptyMessage?: string;
+  /** Rotated title on the money axis, e.g. "Net Sales / Target (BDT)". */
+  valueAxisLabel?: string;
+  /** Rotated title on the percentage axis, e.g. "Achievement / Growth (%)". */
+  percentAxisLabel?: string;
+  /** Shorten a category name — a month label that need not repeat its year. */
+  xTickFormatter?: (value: string) => string;
+  /** Print each line's own reading above its point. */
+  showLineValues?: boolean;
 }) {
   const theme = useChartTheme();
   // The same money formatter every other chart here uses, so a figure reads
@@ -630,27 +644,58 @@ export function ComboBarLineChart({
   const narrow = useNarrowViewport();
   if (!data?.length) return <EmptyState message={emptyMessage} />;
 
-  const xAxis = categoryAxis(data.length, narrow);
+  const shortenX = (value: unknown) =>
+    xTickFormatter ? xTickFormatter(String(value ?? '')) : String(value ?? '');
+  // `categoryAxis` rotates anything past six categories, which is right for a
+  // region name and wrong for "Jul". The decision is really about how wide the
+  // labels are, so where the caller has shortened them to a few characters the
+  // rotation is dropped: twelve months sit level across the axis and read as a
+  // year rather than as a fan of diagonals.
+  const shortLabels = data.every((row) => shortenX(row[xKey]).length <= 4);
+  const xAxis = shortLabels
+    ? { ...categoryAxis(data.length, narrow), angle: 0,
+        textAnchor: 'middle' as const, height: narrow ? 26 : 30 }
+    : categoryAxis(data.length, narrow);
   const percentKeys = new Set(lines.map((line) => line.key));
+  const barColor = (bar: TrendSeries, index: number) =>
+    bar.color ?? CHART_COLORS[index % CHART_COLORS.length];
+  const lineColor = (line: TrendSeries, index: number) =>
+    line.color ?? CHART_COLORS[(bars.length + index) % CHART_COLORS.length];
+  // An axis title costs room the plot would otherwise have, so it is only
+  // asked for on a card whose two axes measure different kinds of thing.
+  const axisTitleRoom = (title: string | undefined) => (title ? 18 : 0);
+
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart
         data={data}
-        margin={{ top: 8, right: 12, bottom: 4, left: narrow ? 14 : 4 }}
+        margin={{ top: showLineValues ? 20 : 8, right: 12, bottom: 4,
+                  left: narrow ? 14 : 4 }}
       >
         <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} vertical={false} />
         <XAxis
           dataKey={xKey}
           tick={{ fontSize: 11, fill: theme.axis }}
-          tickFormatter={(value) => shortTick(value, narrow)}
+          // The caller shortens first — a month need not repeat the year the
+          // page header already states — and the phone rule truncates after.
+          tickFormatter={(value) => shortTick(shortenX(value), narrow)}
           {...xAxis}
         />
         <YAxis
           yAxisId="value"
           tick={{ fontSize: 11, fill: theme.axis }}
           tickFormatter={(value) => format(Number(value))}
-          width={valueAxisWidth(narrow)}
-        />
+          width={valueAxisWidth(narrow) + axisTitleRoom(valueAxisLabel)}
+        >
+          {valueAxisLabel ? (
+            <Label
+              value={valueAxisLabel}
+              angle={-90}
+              position="insideLeft"
+              style={{ fontSize: 11, fill: theme.axis, textAnchor: 'middle' }}
+            />
+          ) : null}
+        </YAxis>
         {/* Kept at full width on a phone too. It is narrower content than the
             money axis, and dropping it to save room would leave the lines
             plotted against nothing a reader could check them against. */}
@@ -659,8 +704,17 @@ export function ComboBarLineChart({
           orientation="right"
           tick={{ fontSize: 11, fill: theme.axis }}
           tickFormatter={(value) => formatPercent(Number(value))}
-          width={narrow ? 44 : 52}
-        />
+          width={(narrow ? 44 : 52) + axisTitleRoom(percentAxisLabel)}
+        >
+          {percentAxisLabel ? (
+            <Label
+              value={percentAxisLabel}
+              angle={90}
+              position="insideRight"
+              style={{ fontSize: 11, fill: theme.axis, textAnchor: 'middle' }}
+            />
+          ) : null}
+        </YAxis>
         <Tooltip
           // Per series: the bars are money and the lines are ratios, and one
           // formatter for both would misreport whichever it was not written for.
@@ -672,10 +726,55 @@ export function ComboBarLineChart({
           {...tooltipStyle(theme)}
         />
         {/* Same placement rule as ComparisonBarChart: on a phone the rotated
-            category names own the bottom of the plot. */}
+            category names own the bottom of the plot.
+
+            The legend is rendered here rather than left to Recharts, which
+            orders it by the order each series registers itself and put the two
+            lines in among the bars — an order that is neither the drawing order
+            nor any other a reader could name. Bars first, in the order they are
+            drawn, then the lines; a square for a bar and a line-with-dot for a
+            line, so the mark says which kind of series it names. (Recharts'
+            own `payload` prop is not on the public Legend type in this
+            version, so `content` is the supported way to say this.) */}
         <Legend
           wrapperStyle={{ fontSize: 12 }}
           verticalAlign={narrow ? 'top' : 'bottom'}
+          content={() => (
+            <ul style={{
+              display: 'flex', flexWrap: 'wrap', justifyContent: 'center',
+              gap: '4px 14px', listStyle: 'none', margin: 0, padding: 0,
+              color: theme.tooltipText, fontSize: 12,
+            }}>
+              {[
+                ...bars.map((bar, index) => ({
+                  key: bar.key, label: bar.label, colour: barColor(bar, index),
+                  line: false,
+                })),
+                ...lines.map((line, index) => ({
+                  key: line.key, label: line.label, colour: lineColor(line, index),
+                  line: true,
+                })),
+              ].map((item) => (
+                <li key={item.key}
+                    style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  {item.line ? (
+                    <svg width="18" height="10" aria-hidden="true">
+                      <line x1="0" y1="5" x2="18" y2="5"
+                            stroke={item.colour} strokeWidth="2" />
+                      <circle cx="9" cy="5" r="3.5" fill={theme.tooltipBg}
+                              stroke={item.colour} strokeWidth="2" />
+                    </svg>
+                  ) : (
+                    <span style={{
+                      width: 10, height: 10, borderRadius: 2,
+                      backgroundColor: item.colour, display: 'inline-block',
+                    }} />
+                  )}
+                  {item.label}
+                </li>
+              ))}
+            </ul>
+          )}
         />
         {bars.map((bar, index) => (
           <Bar
@@ -683,7 +782,7 @@ export function ComboBarLineChart({
             yAxisId="value"
             dataKey={bar.key}
             name={bar.label}
-            fill={bar.color ?? CHART_COLORS[index % CHART_COLORS.length]}
+            fill={barColor(bar, index)}
             radius={[4, 4, 0, 0]}
           />
         ))}
@@ -694,14 +793,32 @@ export function ComboBarLineChart({
             type="monotone"
             dataKey={line.key}
             name={line.label}
-            stroke={line.color ?? CHART_COLORS[(bars.length + index) % CHART_COLORS.length]}
+            stroke={lineColor(line, index)}
             strokeWidth={2}
             strokeDasharray={line.dashed ? '6 4' : undefined}
-            // A dot per region, unlike the trend: these are ten discrete
-            // categories rather than a continuum, so the point *is* the reading.
-            dot={{ r: 3 }}
+            // A dot per category, unlike the trend: these are discrete readings
+            // rather than a continuum, so the point *is* the reading. Hollow,
+            // so a printed value above it stays legible against the marker.
+            dot={{ r: 4, strokeWidth: 2, fill: theme.tooltipBg }}
             connectNulls={false}
-          />
+          >
+            {showLineValues ? (
+              <LabelList
+                dataKey={line.key}
+                position="top"
+                offset={8}
+                style={{ fontSize: 10, fill: lineColor(line, index),
+                         fontWeight: 600 }}
+                // A null is not labelled at all. Recharts hands the formatter
+                // every point including the ones with no reading, and "n/a"
+                // printed over a gap would put a label where the line
+                // deliberately breaks.
+                formatter={(value: unknown) =>
+                  value === null || value === undefined
+                    ? '' : formatPercent(Number(value), { decimals: 0 })}
+              />
+            ) : null}
+          </Line>
         ))}
       </ComposedChart>
     </ResponsiveContainer>

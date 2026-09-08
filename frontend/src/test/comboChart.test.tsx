@@ -41,6 +41,7 @@ vi.mock('recharts', () => {
     CartesianGrid: passthrough('CartesianGrid'),
     Tooltip: passthrough('Tooltip'),
     Legend: passthrough('Legend'),
+    Label: passthrough('Label'),
     LabelList: passthrough('LabelList'),
     ReferenceLine: passthrough('ReferenceLine'),
   };
@@ -232,5 +233,65 @@ describe('the monthly card reads the backend series list', () => {
       'net_sales', 'net_sales_minus_1', 'net_sales_minus_2', 'target_amount',
     ]);
     expect(lines.some((line) => line.key.endsWith('_percent'))).toBe(false);
+  });
+});
+
+describe('what the card was asked to show beyond the series', () => {
+  function drawWith(extra: Record<string, unknown>) {
+    for (const key of Object.keys(drawn)) delete drawn[key];
+    render(
+      <ThemeProvider>
+        <ComboBarLineChart data={ROWS} xKey="label" bars={BARS} lines={LINES}
+                           {...extra} />
+      </ThemeProvider>,
+    );
+    return drawn;
+  }
+
+  it('titles both axes when asked, and neither when not', () => {
+    // A reader who takes the right-hand scale for taka reads every percentage
+    // as a rounding error.
+    const titled = drawWith({ valueAxisLabel: 'Net Sales / Target (BDT)',
+                              percentAxisLabel: 'Achievement / Growth (%)' });
+    expect((titled.Label ?? []).map((l) => l.value)).toEqual([
+      'Net Sales / Target (BDT)', 'Achievement / Growth (%)',
+    ]);
+    // Rotated to sit along each axis, and each on its own side.
+    expect(titled.Label.map((l) => l.angle)).toEqual([-90, 90]);
+
+    expect(drawWith({}).Label).toBeUndefined();
+  });
+
+  it('lets the caller shorten a category before the phone rule runs', () => {
+    // The window is in the page header, so a month need not repeat its year.
+    const chart = drawWith({ xTickFormatter: (v: string) => v.replace(/\s+\d{4}$/, '') });
+    expect(chart.XAxis[0].tickFormatter('Jul 2026')).toBe('Jul');
+    // Untouched without one.
+    expect(drawWith({}).XAxis[0].tickFormatter('Jul 2026')).toBe('Jul 2026');
+  });
+
+  it('prints each line reading, and prints nothing where the line breaks', () => {
+    const chart = drawWith({ showLineValues: true });
+    const labels = chart.LabelList ?? [];
+    expect(labels.map((l) => l.dataKey))
+      .toEqual(['achievement_percent', 'growth_percent']);
+    expect(labels[0].formatter(75)).toBe('75%');
+    // Khulna has no growth. A label over a gap would put a reading where the
+    // chart is deliberately silent.
+    expect(labels[1].formatter(null)).toBe('');
+    expect(labels[1].formatter(undefined)).toBe('');
+
+    expect(drawWith({}).LabelList).toBeUndefined();
+  });
+
+  it('lists the legend as bars first, then lines', () => {
+    // Recharts orders it by the order each series registers itself, which put
+    // the two lines in among the bars.
+    const legend = drawWith({}).Legend[0];
+    const { container } = render(<ThemeProvider>{legend.content()}</ThemeProvider>);
+    expect([...container.querySelectorAll('li')].map((li) => li.textContent))
+      .toEqual([
+        'Target', 'Actual', 'Last-period Actual', 'Achievement %', 'Growth %',
+      ]);
   });
 });
