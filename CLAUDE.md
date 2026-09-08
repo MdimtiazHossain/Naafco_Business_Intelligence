@@ -511,11 +511,25 @@ other reason still fails it. `0036` exists because the old equality failed at
 1,124 of 1,139, the seeded design having hidden Unit and Sales Force and had no
 layer at all above Zone.
 
-**The two environments look nothing alike here, and it is the data.**
+**The two environments differ here, and it is the data rather than the code.**
 `data/dev.db`'s organisational coordinates are all centroids derived from its
-846 uploaded customers, so every level above Customer draws nothing there; the
-deployment uploaded its territories and sub-territories, so it draws 239 of 299
-with 60 centroids withheld. A hidden level is one
+846 uploaded customers, so every level above Customer draws nothing there: 846
+drawn, 293 withheld, 1,139 stored. The deployment has stated positions at six
+levels — customer, territory, sub-territory, area, unit and region — and draws
+1,903 of 2,134 with 231 centroids withheld.
+
+**Those deployment figures are a measurement on a date, not a property of this
+code, and they move in both directions.** Two uploads took them from the 239
+drawn / 60 withheld this file used to state. The first placed six areas and a
+region that had only ever been centroids, and the withheld count *fell* to 53
+while the total stayed at 299 — a row changed which side of the partition it
+sat on. The second placed 1,657 customers, and the withheld count *rose* to
+231, because every sub-territory and territory above a newly placed customer
+acquired a centroid it did not have before. Neither is drift: `drawn + derived
+== stored` held throughout, which is the whole reason the acid test is a
+partition rather than an equality. Re-measure before quoting these;
+`data/dev.db`'s are the stable pair, because nothing uploads to it. Last
+measured 2026-09-08. A hidden level is one
 fewer thing competing for the eye on a map of figures and a hidden **row** on a
 map of coordinates. The design lives in the same tables behind
 `map_designs.purpose`, so a reader is never offered the other map's design.

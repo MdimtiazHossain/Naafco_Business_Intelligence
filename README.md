@@ -1586,19 +1586,31 @@ The acid test therefore reads `drawn + derived = stored` rather than
 all*, since an entity whose only coordinate is computed is not unmapped. Both
 are pinned by `test_map_demarcation`, and the pair is strictly stronger than
 the old equality: a row dropped for any other reason fails it. On `data/dev.db`
-that is 846 drawn and 293 centroids of 1,139 stored; on the deployment 239 and
-60 of 299.
+that is 846 drawn and 293 centroids of 1,139 stored, and it stays that way
+because nothing uploads to it; on the deployment, measured 2026-09-08, 1,903 and
+231 of 2,134.
 
 The exclusion is **server-side**, so no `DERIVED` feature reaches the browser.
 Filtering in the renderer would leave the counts describing one set of points
 and the canvas showing another, which is the disagreement this tab exists to
 prevent.
 
-The shape of the data differs sharply between the two environments, and that is
-data rather than behaviour: `data/dev.db`'s organisational coordinates are all
-centroids derived from its 846 uploaded customers, so every level above
-Customer draws nothing there, while the deployment's territories and
-sub-territories were uploaded and keep their points.
+The shape of the data differs between the two environments, and that is data
+rather than behaviour: `data/dev.db`'s organisational coordinates are all
+centroids derived from its 846 uploaded customers, so every level above Customer
+draws nothing there, while the deployment has stated positions at six levels —
+customer, territory, sub-territory, area, unit and region.
+
+**The deployment's figures are a measurement on a date and they move in both
+directions**, so re-measure rather than quoting them. Two uploads took them
+from the 239 drawn / 60 withheld this file used to state. The first placed six
+areas and a region that had only ever been centroids: the withheld count *fell*
+to 53 and the total stayed at 299, because a row simply changed which side of
+the partition it sat on. The second placed 1,657 customers and the withheld
+count *rose* to 231, because every sub-territory and territory above a newly
+placed customer acquired a centroid it had not had. Neither is drift —
+`drawn + derived = stored` held throughout, which is exactly why the acid test
+is a partition and not an equality.
 
 Revision `0036_demarcation_all_levels` exists because the acid test — then the
 plain equality — failed at 1,124 of 1,139: the seeded design hid Unit and Sales
