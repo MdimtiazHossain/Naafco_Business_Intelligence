@@ -905,9 +905,14 @@ def test_raw_amount_is_available_uncompacted() -> None:
 
 
 def test_percentages_and_missing_ratios() -> None:
-    assert format_percent(89.44) == "89.4%"
-    assert format_percent(8.4, signed=True) == "+8.4%"
-    assert format_percent(-8.4, signed=True) == "-8.4%"
+    # Whole, and rounded rather than truncated: an achievement of 89.4% and one
+    # of 89% send a reader to the same place, and the decimal was one more thing
+    # to read on every row. The browser's ``formatPercent`` does the same, so a
+    # figure reads alike in a table, an export and an agent answer.
+    assert format_percent(89.44) == "89%"
+    assert format_percent(89.6) == "90%"
+    assert format_percent(8.4, signed=True) == "+8%"
+    assert format_percent(-8.4, signed=True) == "-8%"
     assert format_percent(None) == "n/a"       # never rendered as 0%
 
 
