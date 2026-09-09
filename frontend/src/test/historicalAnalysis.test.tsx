@@ -131,7 +131,7 @@ describe('HistoricalAnalysis', () => {
     const line = rowFor('TH-GROW');
     expect(within(line).getByText('1,000')).toBeTruthy();
     expect(within(line).getByText('1,500')).toBeTruthy();
-    expect(within(line).getByText('+50.0%')).toBeTruthy();
+    expect(within(line).getByText('+50%')).toBeTruthy();
     expect(within(line).getByText('Growth-weighted')).toBeTruthy();
   });
 

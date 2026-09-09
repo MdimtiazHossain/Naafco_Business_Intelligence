@@ -247,6 +247,6 @@ describe('Credit Control', () => {
   it('shows a customer exposure share rather than an invented limit', async () => {
     wrap(<CreditControlPage />);
     const row = (await screen.findByText('Rahman Traders')).closest('tr');
-    expect(within(row!).getByText(/20\.8/)).toBeInTheDocument();
+    expect(within(row!).getByText(/21/)).toBeInTheDocument();
   });
 });

@@ -71,16 +71,29 @@ export function formatPercent(
   options: { signed?: boolean; decimals?: number } = {},
 ): string {
   if (value === null || value === undefined || Number.isNaN(value)) return 'n/a';
-  const { signed = false, decimals = 1 } = options;
+  // Whole percentages: an achievement of 19.2% and one of 19% send a reader to
+  // the same place, and the decimal was one more thing to read on every row.
+  const { signed = false, decimals = 0 } = options;
   const rendered = value.toFixed(decimals);
   return signed && value > 0 ? `+${rendered}%` : `${rendered}%`;
 }
 
+/**
+ * A counted figure, always whole.
+ *
+ * Quantity, volume and stock are counts of things, and two decimal places on
+ * them were noise a reader had to look past on every row — `17,09,551.67` says
+ * nothing `17,09,552` does not. Rounded rather than truncated, so the figure is
+ * the nearest whole one rather than always the smaller.
+ *
+ * This is display only. Nothing stored or summed is rounded, so a total is
+ * still the sum of the real figures and not the sum of the rounded ones — which
+ * is why a column of these can be a unit or two from its own total, and why the
+ * total is computed from the values rather than from what is on screen.
+ */
 export function formatQuantity(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '—';
-  return Number.isInteger(value)
-    ? value.toLocaleString('en-IN')
-    : value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  return Math.round(value).toLocaleString('en-IN');
 }
 
 /**
@@ -136,8 +149,18 @@ const STOCK_MEASURE_COLUMNS = new Set([
  * answer different questions: a sales quantity is a case count, and this is a
  * plant's position in KG/LTR that must never be converted or re-based.
  */
+/**
+ * A material stock figure: the uploaded value, and no unit.
+ *
+ * **Not `formatQuantity` under another name any more.** That one rounds, and
+ * this one must not: the uploaded value *is* the reported value for stock,
+ * there is no factor in the source to convert with, and a figure this platform
+ * rounded is one the upload never stated. The unit lives on the label
+ * (`stockLabel`), which is the other half of the same rule.
+ */
 export function formatStock(value: number | null | undefined): string {
-  return formatQuantity(value);
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
 /**
@@ -239,9 +262,14 @@ export function formatFieldValue(kind: string, value: unknown, name?: string): s
       return formatDate(String(value));
     case 'decimal':
     case 'numeric':
+      // Not `formatQuantity`, which rounds. A stored decimal field is a stated
+      // figure — a transfer price, a conversion factor — shown on a record and
+      // on the form that edits it, so rounding it would put a number in front
+      // of somebody that the warehouse does not hold. Counts round; stated
+      // values do not.
       return name && COORDINATE_FIELDS.has(name)
         ? formatCoordinate(Number(value))
-        : formatQuantity(Number(value));
+        : Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 });
     case 'integer':
       return formatCount(Number(value));
     default:

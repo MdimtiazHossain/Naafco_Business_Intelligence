@@ -419,7 +419,7 @@ describe('Business Map page', () => {
     expect(await screen.findByRole('heading', { name: 'Dhaka' })).toBeInTheDocument();
     expect(screen.getByText('Selected: Region')).toBeInTheDocument();
     expect(screen.getAllByText(formatAmount(1_500_000)).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('75.0%').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('75%').length).toBeGreaterThan(0);
     expect(services.mapService.entity).toHaveBeenCalledWith('region', 'REG001');
     expect(await screen.findByText(/Dhaka Zone/)).toBeInTheDocument();
     // The ring follows the selection.
@@ -479,7 +479,7 @@ describe('Business Map page', () => {
     expect(within(tooltip).getByText('Dhaka')).toBeInTheDocument();
     expect(within(tooltip).getByText('Sales Amount')).toBeInTheDocument();
     expect(within(tooltip).getByText('Target Amount')).toBeInTheDocument();
-    expect(within(tooltip).getByText('+11.1%')).toBeInTheDocument();
+    expect(within(tooltip).getByText('+11%')).toBeInTheDocument();
     expect(map.canvas.style.cursor).toBe('pointer');
 
     fireOnMap(map, 'movestart');

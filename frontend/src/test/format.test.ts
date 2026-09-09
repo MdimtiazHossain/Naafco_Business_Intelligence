@@ -51,13 +51,16 @@ describe('currency', () => {
 });
 
 describe('percentages', () => {
-  it('renders one decimal place', () => {
-    expect(formatPercent(89.44)).toBe('89.4%');
+  it('renders a whole percentage, rounded', () => {
+    // An achievement of 89.4% and one of 89% send a reader to the same
+    // place, and the decimal was one more thing to read on every row.
+    expect(formatPercent(89.44)).toBe('89%');
+    expect(formatPercent(89.6)).toBe('90%');
   });
 
   it('signs growth', () => {
-    expect(formatPercent(8.4, { signed: true })).toBe('+8.4%');
-    expect(formatPercent(-8.4, { signed: true })).toBe('-8.4%');
+    expect(formatPercent(8.4, { signed: true })).toBe('+8%');
+    expect(formatPercent(-8.4, { signed: true })).toBe('-8%');
   });
 
   it('never renders a missing ratio as 0%', () => {
@@ -69,17 +72,19 @@ describe('percentages', () => {
 describe('formatByKind', () => {
   it('respects the semantic type the backend declared', () => {
     expect(formatByKind(1_500_000, 'currency')).toBe('৳15.00 L');
-    expect(formatByKind(89.4, 'percent')).toBe('89.4%');
+    expect(formatByKind(89.4, 'percent')).toBe('89%');
     expect(formatByKind(12, 'count')).toBe('12');
-    expect(formatByKind(12.5, 'quantity')).toBe('12.5');
+    // A quantity is a count, so it is whole. Material stock is the deliberate
+    // exception and keeps what the upload stated — see below.
+    expect(formatByKind(12.5, 'quantity')).toBe('13');
   });
 });
 
 describe('formatCell', () => {
   it('picks a formatter from the column name', () => {
     expect(formatCell('net_sales', 1_500_000)).toBe('৳15.00 L');
-    expect(formatCell('achievement_percent', 60)).toBe('60.0%');
-    expect(formatCell('growth_percent', 8.4)).toBe('+8.4%');
+    expect(formatCell('achievement_percent', 60)).toBe('60%');
+    expect(formatCell('growth_percent', 8.4)).toBe('+8%');
     expect(formatCell('quantity', 120)).toBe('120');
     expect(formatCell('stock_coverage_days', 3)).toBe('3.0 d');
     expect(formatCell('days_overdue', 61)).toBe('61 d');

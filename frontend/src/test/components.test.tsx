@@ -43,7 +43,7 @@ describe('DataTable', () => {
   it('formats currency and percentages by column name', () => {
     wrap(<DataTable rows={ROWS} columns={COLUMNS} />);
     expect(screen.getByText('৳1.50 Cr')).toBeInTheDocument();
-    expect(screen.getByText('31.4%')).toBeInTheDocument();
+    expect(screen.getByText('31%')).toBeInTheDocument();
   });
 
   // A detail table repeats `code` freely — one invoice has many lines — so the
@@ -103,7 +103,7 @@ describe('DataTable', () => {
     wrap(<DataTable rows={ROWS} columns={COLUMNS} />);
     fireEvent.click(screen.getByRole('button', { name: /Columns/ }));
     fireEvent.click(screen.getByLabelText('Achievement'));
-    expect(screen.queryByText('31.4%')).not.toBeInTheDocument();
+    expect(screen.queryByText('31%')).not.toBeInTheDocument();
   });
 
   it('shows an empty message rather than a blank table', () => {
@@ -188,7 +188,7 @@ describe('KpiCard', () => {
       />,
     );
     expect(screen.getByText('৳1.87 Cr')).toBeInTheDocument();
-    expect(screen.getByText('+8.4%')).toBeInTheDocument();
+    expect(screen.getByText('+8%')).toBeInTheDocument();
     expect(screen.getByText('(৳1.73 Cr)')).toBeInTheDocument();
   });
 

@@ -134,7 +134,7 @@ describe('the region combo card', () => {
     expect(formatter(1_500_000, 'Actual', { dataKey: 'actual_sales' }))
       .toBe('৳15.00 L');
     expect(formatter(75, 'Achievement %', { dataKey: 'achievement_percent' }))
-      .toBe('75.0%');
+      .toBe('75%');
   });
 });
 

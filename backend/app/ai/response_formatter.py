@@ -63,12 +63,17 @@ def format_amount(value: Any, *, compact: bool = True, symbol: str = TAKA) -> st
 
 
 def format_quantity(value: Any) -> str:
+    """A counted figure, always whole.
+
+    Quantity, volume and stock are counts of things, so the two decimals they
+    used to carry were noise on every row. Display only: nothing stored or
+    summed is rounded, so a total is the sum of the real figures rather than of
+    the rounded ones. ``utils/format.formatQuantity`` does the same, because a
+    figure must read the same in a table, in an export and in an agent answer.
+    """
     if value is None:
         return "—"
-    number = float(value)
-    if number == int(number):
-        return f"{int(number):,}"
-    return f"{number:,.2f}"
+    return f"{round(float(value)):,}"
 
 
 def stock_label(name: str) -> str:
@@ -84,17 +89,20 @@ def stock_label(name: str) -> str:
 def format_stock(value: Any) -> str:
     """A material stock figure: the uploaded value, and no unit.
 
-    The unit is on the label (:func:`stock_label`), which is why this is not
-    simply :func:`format_quantity` under another name — it marks the figures the
-    agent must never convert or re-base. There is no factor in the source to
-    convert with, so a converted figure would be an invented one.
+    The unit is on the label (:func:`stock_label`), and the figure is whatever
+    the upload stated — **including its decimal**. This is why it is no longer
+    :func:`format_quantity` under another name: that one rounds, because a
+    quantity or a volume is a count, while a stock figure this platform rounded
+    would be one the source never stated, and there is no factor here to
+    convert or re-base with.
     """
     if value is None:
         return "—"
-    return format_quantity(value)
+    number = float(value)
+    return f"{number:,.2f}".rstrip("0").rstrip(".") if number % 1 else f"{int(number):,}"
 
 
-def format_percent(value: Any, *, signed: bool = False, decimals: int = 1) -> str:
+def format_percent(value: Any, *, signed: bool = False, decimals: int = 0) -> str:
     """``None`` renders as ``n/a`` — a missing ratio is never shown as 0%."""
     if value is None:
         return "n/a"
