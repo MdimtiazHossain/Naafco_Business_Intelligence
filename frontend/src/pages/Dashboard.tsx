@@ -205,6 +205,18 @@ export default function Dashboard() {
               series={seriesHues(trendSeriesFrom(data?.sales_trend?.chart,
                                                  t('sales.netSales'),
                                                  t('kpi.target')))}
+              // The same two ratios the cards below draw, against a right-hand
+              // axis. They are honoured only where the rows carry them, which
+              // is a monthly window: a period charted by day has no monthly
+              // target and no aligned prior year, so `_multi_year_trend` puts
+              // neither key on those rows and the axis is not drawn at all.
+              percentSeries={[
+                { key: 'achievement_percent', label: t('dashboard.achievementShort'),
+                  color: CHART_COLORS[4] },
+                { key: 'growth_percent', label: t('dashboard.growthShort'),
+                  color: CHART_COLORS[3] },
+              ]}
+              percentAxisLabel={t('dashboard.percentAxis')}
               height={280}
             />
           </Section>

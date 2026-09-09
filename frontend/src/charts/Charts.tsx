@@ -401,11 +401,41 @@ export function TrendChart({
   valueKind = 'currency',
   emptyMessage,
   area = false,
-}: Omit<BaseChartProps, 'yKey'> & { series: TrendSeries[]; area?: boolean }) {
+  percentSeries,
+  percentAxisLabel,
+}: Omit<BaseChartProps, 'yKey'> & {
+  series: TrendSeries[];
+  area?: boolean;
+  /**
+   * Ratios to draw against a second axis on the right.
+   *
+   * Absent — which is every caller but the dashboard — the chart is exactly
+   * the single-axis one it has always been: no second axis, no `yAxisId`
+   * anywhere, nothing to lay out differently. Present, it is only honoured
+   * where the rows actually carry a reading, because a period charted by day
+   * has no monthly target to measure against and no aligned prior year, so
+   * the keys are not on those rows at all. Drawing the axis anyway would put
+   * an empty scale beside the plot, which reads as a measure at zero rather
+   * than as one this period cannot answer.
+   */
+  percentSeries?: TrendSeries[];
+  percentAxisLabel?: string;
+}) {
   const theme = useChartTheme();
   const format = useValueFormatter(valueKind);
   const narrow = useNarrowViewport();
   if (!data?.length || !series.length) return <EmptyState message={emptyMessage} />;
+
+  const ratios = (percentSeries ?? []).filter(
+    (one) => data.some((row) => row[one.key] !== null && row[one.key] !== undefined),
+  );
+  const dual = ratios.length > 0;
+  // Recharts needs every series to name an axis once there is more than one,
+  // and must see none while there is only one — so this is spread rather than
+  // set, and a caller drawing no ratio gets the markup it always got.
+  const onValue = dual ? { yAxisId: 'value' as const } : {};
+  const percentColour = (one: TrendSeries, index: number) =>
+    one.color ?? CHART_COLORS[(series.length + index) % CHART_COLORS.length];
 
   const Chart = area ? AreaChart : LineChart;
   return (
@@ -421,18 +451,68 @@ export function TrendChart({
           minTickGap={narrow ? 28 : 16}
         />
         <YAxis
+          {...onValue}
           tick={{ fontSize: 11, fill: theme.axis }}
           tickFormatter={format}
           width={valueAxisWidth(narrow)}
         />
-        <Tooltip formatter={(value) => format(Number(value))} {...tooltipStyle(theme)} />
-        {/* A legend only where there is more than one line to tell apart. */}
-        {series.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
+        {dual && (
+          <YAxis
+            yAxisId="percent"
+            orientation="right"
+            tick={{ fontSize: 11, fill: theme.axis }}
+            tickFormatter={(value) => formatPercent(Number(value))}
+            width={(narrow ? 44 : 52) + (percentAxisLabel ? 18 : 0)}
+          >
+            {percentAxisLabel ? (
+              <Label
+                value={percentAxisLabel}
+                angle={90}
+                position="insideRight"
+                style={{ fontSize: 11, fill: theme.axis, textAnchor: 'middle' }}
+              />
+            ) : null}
+          </YAxis>
+        )}
+        <Tooltip
+          // Per series once there are two axes: a ratio put through the money
+          // formatter reads as taka, which is the one misreading a second axis
+          // introduces.
+          formatter={(value, _name, entry) =>
+            dual && ratios.some(
+              (one) => one.key === String((entry as { dataKey?: string })?.dataKey))
+              ? formatPercent(Number(value))
+              : format(Number(value))
+          }
+          {...tooltipStyle(theme)}
+        />
+        {/* A legend only where there is more than one line to tell apart, and
+            one we draw ourselves once a ratio is among them — Recharts would
+            otherwise scatter the two kinds through each other. */}
+        {dual ? (
+          <Legend
+            wrapperStyle={{ fontSize: 11 }}
+            content={legendContent(theme, [
+              ...series.map((line, index) => ({
+                key: line.key, label: line.label,
+                colour: line.color ?? CHART_COLORS[index % CHART_COLORS.length],
+                line: false,
+              })),
+              ...ratios.map((one, index) => ({
+                key: one.key, label: one.label, colour: percentColour(one, index),
+                line: true,
+              })),
+            ])}
+          />
+        ) : (
+          series.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />
+        )}
         {series.map((line, index) => {
           const color = line.color ?? CHART_COLORS[index % CHART_COLORS.length];
           return area ? (
             <Area
               key={line.key}
+              {...onValue}
               type="monotone"
               dataKey={line.key}
               name={line.label}
@@ -446,6 +526,7 @@ export function TrendChart({
           ) : (
             <Line
               key={line.key}
+              {...onValue}
               type="monotone"
               dataKey={line.key}
               name={line.label}
@@ -457,6 +538,24 @@ export function TrendChart({
             />
           );
         })}
+        {/* After the money series, so a reading is drawn on top of the shape
+            it measures rather than under it. */}
+        {ratios.map((one, index) => (
+          <Line
+            key={one.key}
+            yAxisId="percent"
+            type="monotone"
+            dataKey={one.key}
+            name={one.label}
+            stroke={percentColour(one, index)}
+            strokeWidth={2}
+            // A dot here where the money lines have none: a ratio is a reading
+            // per period rather than a shape, and the months it can be
+            // calculated for are usually fewer than the months on the axis.
+            dot={{ r: 3, strokeWidth: 2, fill: theme.tooltipBg }}
+            connectNulls={false}
+          />
+        ))}
       </Chart>
     </ResponsiveContainer>
   );
@@ -641,6 +740,59 @@ export function ComparisonBarChart({
  * else here: a region absent from the comparison window has no growth, and
  * joining across it draws a slope nobody measured.
  */
+/** One entry of a legend we draw ourselves: a swatch, a colour and a name. */
+interface LegendItem {
+  key: string;
+  label: string;
+  colour: string;
+  /** A line-with-dot rather than a filled square. */
+  line: boolean;
+}
+
+/**
+ * The legend for a chart with two axes, drawn here rather than by Recharts.
+ *
+ * Recharts orders its own legend by the order each series registers itself,
+ * which on a composed chart puts the lines in among the bars — an order that
+ * is neither the drawing order nor any other a reader could name. Its
+ * `payload` prop is not on the public Legend type in this version, so
+ * `content` is the supported way to say what the order is.
+ *
+ * The mark carries the kind, because on these charts the two axes measure
+ * different things and which axis a series is on is the first thing a reader
+ * needs: a filled square is a bar or a money line on the left, a line with a
+ * dot is a percentage on the right.
+ */
+function legendContent(theme: ReturnType<typeof useChartTheme>,
+                       items: LegendItem[]) {
+  return () => (
+    <ul style={{
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'center',
+      gap: '4px 14px', listStyle: 'none', margin: 0, padding: 0,
+      color: theme.tooltipText, fontSize: 12,
+    }}>
+      {items.map((item) => (
+        <li key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          {item.line ? (
+            <svg width="18" height="10" aria-hidden="true">
+              <line x1="0" y1="5" x2="18" y2="5"
+                    stroke={item.colour} strokeWidth="2" />
+              <circle cx="9" cy="5" r="3.5" fill={theme.tooltipBg}
+                      stroke={item.colour} strokeWidth="2" />
+            </svg>
+          ) : (
+            <span style={{
+              width: 10, height: 10, borderRadius: 2,
+              backgroundColor: item.colour, display: 'inline-block',
+            }} />
+          )}
+          {item.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ComboBarLineChart({
   data,
   xKey,
@@ -770,42 +922,16 @@ export function ComboBarLineChart({
         <Legend
           wrapperStyle={{ fontSize: 12 }}
           verticalAlign={narrow ? 'top' : 'bottom'}
-          content={() => (
-            <ul style={{
-              display: 'flex', flexWrap: 'wrap', justifyContent: 'center',
-              gap: '4px 14px', listStyle: 'none', margin: 0, padding: 0,
-              color: theme.tooltipText, fontSize: 12,
-            }}>
-              {[
-                ...bars.map((bar, index) => ({
-                  key: bar.key, label: bar.label, colour: barColor(bar, index),
-                  line: false,
-                })),
-                ...lines.map((line, index) => ({
-                  key: line.key, label: line.label, colour: lineColor(line, index),
-                  line: true,
-                })),
-              ].map((item) => (
-                <li key={item.key}
-                    style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  {item.line ? (
-                    <svg width="18" height="10" aria-hidden="true">
-                      <line x1="0" y1="5" x2="18" y2="5"
-                            stroke={item.colour} strokeWidth="2" />
-                      <circle cx="9" cy="5" r="3.5" fill={theme.tooltipBg}
-                              stroke={item.colour} strokeWidth="2" />
-                    </svg>
-                  ) : (
-                    <span style={{
-                      width: 10, height: 10, borderRadius: 2,
-                      backgroundColor: item.colour, display: 'inline-block',
-                    }} />
-                  )}
-                  {item.label}
-                </li>
-              ))}
-            </ul>
-          )}
+          content={legendContent(theme, [
+            ...bars.map((bar, index) => ({
+              key: bar.key, label: bar.label, colour: barColor(bar, index),
+              line: false,
+            })),
+            ...lines.map((line, index) => ({
+              key: line.key, label: line.label, colour: lineColor(line, index),
+              line: true,
+            })),
+          ])}
         />
         {bars.map((bar, index) => (
           <Bar
