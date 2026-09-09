@@ -47,8 +47,8 @@ vi.mock('recharts', () => {
   };
 });
 
-const { ComboBarLineChart, barSeriesFrom, trendSeriesFrom, CHART_COLORS } =
-  await import('../charts/Charts');
+const { ComboBarLineChart, barSeriesFrom, trendSeriesFrom, seriesHues,
+        CHART_COLORS } = await import('../charts/Charts');
 
 const ROWS = [
   { label: 'Dhaka', target_amount: 2_000_000, actual_sales: 1_500_000,
@@ -293,5 +293,39 @@ describe('what the card was asked to show beyond the series', () => {
       .toEqual([
         'Target', 'Actual', 'Last-period Actual', 'Achievement %', 'Growth %',
       ]);
+  });
+});
+
+describe('the hue rule both dashboard charts read', () => {
+  it('runs the palette oldest year first, whatever order it is given', () => {
+    // The bar card draws oldest-first and the line chart draws current-first.
+    // Colouring by position would give one year two colours on one page, which
+    // is the whole reason the rank comes from the key.
+    const lines = seriesHues(trendSeriesFrom(TREND_CHART));
+    const bars = seriesHues(barSeriesFrom(TREND_CHART));
+
+    const hue = (list: typeof lines, key: string) =>
+      list.find((one) => one.key === key)?.color;
+    for (const key of ['net_sales', 'net_sales_minus_1', 'net_sales_minus_2',
+                       'target_amount']) {
+      expect(hue(lines, key)).toBe(hue(bars, key));
+    }
+    expect(hue(lines, 'net_sales_minus_2')).toBe(CHART_COLORS[0]);
+    expect(hue(lines, 'net_sales_minus_1')).toBe(CHART_COLORS[1]);
+  });
+
+  it('gives this period its own green and the target the neutral', () => {
+    const hues = seriesHues(trendSeriesFrom(TREND_CHART));
+    expect(hues.find((one) => one.key === 'net_sales')?.color)
+      .toBe(CHART_COLORS[4]);
+    expect(hues.find((one) => one.key === 'target_amount')?.color)
+      .toBe(CHART_COLORS[7]);
+  });
+
+  it('leaves a caller that does not read it alone', () => {
+    // Sales, Target and Materials draw one trend on its own and keep the
+    // palette order they have; only the dashboard opts in.
+    expect(trendSeriesFrom(TREND_CHART).find((one) => one.key === 'net_sales')?.color)
+      .toBe(CHART_COLORS[0]);
   });
 });

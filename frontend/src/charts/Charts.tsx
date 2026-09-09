@@ -312,16 +312,47 @@ export function trendSeriesFrom(
  * and a bar cannot carry it. On this chart the target's neutral colour is what
  * says the same thing.
  */
+/** How many whole years back a series is, or `null` for the current one. */
+function yearsBack(key: string): number | null {
+  const match = /_minus_(\d+)$/.exec(key);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The dashboard's hue rule for a multi-year trend, applied to any series list.
+ *
+ * The earlier years take the palette in order **oldest first**, the target
+ * keeps the neutral, and this period's actual takes the platform's green —
+ * which is what a reader's eye is looking for on a card comparing a plan with
+ * an outcome. Read against the declared order the colours would run the other
+ * way, so the rank is taken from each key's own `_minus_N` rather than from its
+ * position in the list; that is what lets a line chart and a bar chart of the
+ * same series agree without being drawn in the same order.
+ *
+ * It is a function a caller opts into rather than the default inside
+ * `trendSeriesFrom`, because the pages that draw one trend on its own have no
+ * plan-against-outcome to point at and keep the palette order they have.
+ */
+export function seriesHues(series: TrendSeries[]): TrendSeries[] {
+  const oldestFirst = series
+    .filter((one) => yearsBack(one.key) !== null)
+    .sort((a, b) => yearsBack(b.key)! - yearsBack(a.key)!)
+    .map((one) => one.key);
+  return series.map((one) => ({
+    ...one,
+    color: one.key.startsWith('target')
+      ? CHART_COLORS[7]
+      : yearsBack(one.key) === null
+        ? CHART_COLORS[4]
+        : CHART_COLORS[oldestFirst.indexOf(one.key) % CHART_COLORS.length],
+  }));
+}
+
 export function barSeriesFrom(
   chart: { y_axis: string; series?: { key: string; label: string }[] } | null | undefined,
   fallbackLabel?: string,
   targetLabel?: string,
 ): TrendSeries[] {
-  /** How many whole years back this series is, or `null` for the current one. */
-  const yearsBack = (key: string): number | null => {
-    const match = /_minus_(\d+)$/.exec(key);
-    return match ? Number(match[1]) : null;
-  };
   const rank = (series: TrendSeries): number => {
     const back = yearsBack(series.key);
     if (back !== null) return -back;          // oldest first

@@ -18,6 +18,7 @@ import {
   barSeriesFrom,
   CHART_COLORS,
   ComboBarLineChart,
+  seriesHues,
   TrendChart,
   trendSeriesFrom,
   type TrendSeries,
@@ -49,13 +50,11 @@ import { formatAmount, formatPercent } from '../utils/format';
  * target of that year in the width a legend has, and the prefixes come from
  * i18n rather than being spelled here.
  *
- * **The hue follows the drawing order**, so the group reads left to right as
- * the palette's first colours for the earlier years, the neutral for the plan,
- * and the platform's green for what actually happened this year. This is the
- * one place a series does *not* keep the colour it has on the Sales Trend line
- * chart above: that chart is four years of one measure, where hue is the only
- * thing telling them apart, and this one is a plan against an outcome, where
- * the reader is looking at the last bar of each group.
+ * **The colour is not card-specific and is no longer decided here.**
+ * `seriesHues` holds that rule and the Sales Trend line chart above reads it
+ * too, so this period's actual is green on both. It used to be spelled out in
+ * this function, which meant the two cards agreed only for as long as nobody
+ * touched one of them.
  *
  * A window too short for months sends no series list at all — one actual and
  * nothing to compare it with — and is returned untouched, or the prefix would
@@ -65,11 +64,10 @@ function monthlyBars(
   chart: Parameters<typeof barSeriesFrom>[0],
   t: (key: string) => string,
 ): TrendSeries[] {
-  const ordered = barSeriesFrom(chart, t('sales.netSales'));
+  const ordered = seriesHues(barSeriesFrom(chart, t('sales.netSales')));
   if (!chart?.series?.length) return ordered;
-  return ordered.map((bar, index) => {
+  return ordered.map((bar) => {
     const isTarget = bar.key.startsWith('target');
-    const isThisYear = !isTarget && index === ordered.length - 1;
     return {
       ...bar,
       label: `${isTarget ? t('chart.targetShort') : t('chart.actualShort')} `
@@ -79,11 +77,6 @@ function monthlyBars(
         // carries a different label shape, matches neither pattern and is
         // left exactly as the tool wrote it.
         + bar.label.replace(/^FY\s*/i, '').replace(/^\d{2}(\d{2}-\d{2})$/, '$1'),
-      color: isTarget
-        ? CHART_COLORS[7]
-        : isThisYear
-          ? CHART_COLORS[4]
-          : CHART_COLORS[index % CHART_COLORS.length],
     };
   });
 }
@@ -203,8 +196,15 @@ export default function Dashboard() {
               // A monthly window carries two earlier years and the target; a
               // daily one is a single line, and `trendSeriesFrom` returns
               // exactly that when the tool sent no series.
-              series={trendSeriesFrom(data?.sales_trend?.chart, t('sales.netSales'),
-                                      t('kpi.target'))}
+              // The same hue rule as the Monthly Performance card below, so
+              // this period's actual is green on both and a reader is not
+              // asked to learn one colour for a year on one card and another
+              // on the next. The other pages that draw this chart keep the
+              // palette order they have: they show one trend on its own, with
+              // no plan-against-outcome for a colour to pick out.
+              series={seriesHues(trendSeriesFrom(data?.sales_trend?.chart,
+                                                 t('sales.netSales'),
+                                                 t('kpi.target')))}
               height={280}
             />
           </Section>
