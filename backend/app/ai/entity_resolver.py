@@ -72,8 +72,15 @@ _BANGLA_STOPWORDS = {
     "koto", "koto tk", "koto taka", "kemon", "ki", "kobe", "kothay", "kon", "kar",
     "kom", "beshi", "besi", "boro", "choto", "valo", "bhalo", "kharap",
     # verbs an operator ends a request with
-    "dekhao", "dekha", "dao", "dio", "koro", "korun", "ache", "achhe", "ase",
-    "hobe", "hoyeche", "chai", "lagbe", "janao", "bolo",
+    #
+    # The spellings vary more than the words do: "dekhao" and "dekhaw" are one
+    # verb typed two ways, and only the first was here — so the same request
+    # spelled the other way reported "dekhaw" as a master record nobody has, on
+    # the one line that exists to say a filter did not apply. A romanisation is
+    # a spelling, not a new word.
+    "dekhao", "dekhaw", "dekhau", "dekha", "dekhi", "dekhte", "dekhan",
+    "dao", "daw", "dio", "koro", "korun", "ache", "achhe", "ase",
+    "hobe", "hoyeche", "chai", "lagbe", "janao", "janaw", "bolo",
     # periods and common nouns
     "aaj", "aajker", "ajker", "gato", "goto", "mash", "mas", "mase", "maser",
     "bochor", "bosor", "shoptaho", "din", "taka", "tk", "bikri", "poriman",

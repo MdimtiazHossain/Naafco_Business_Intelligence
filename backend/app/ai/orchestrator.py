@@ -537,6 +537,24 @@ class Orchestrator:
 
         named = self.entities.resolve_message(
             message, exclude_types=self._excluded_entity_types(prediction, context))
+        # A word already read as a period is not also a guess at a master name.
+        #
+        # "dec" is December, and it is also the opening of "Decoquinate 6%
+        # -Zamiquin 25kg (1's)" — so "24-25 year এর dec মাসের region wise sales"
+        # was answered for that one material and came back empty, having been
+        # read as a date *and* as an item at the same time. The same trap is set
+        # by "mar", "may" and "jun", each of which opens some material's name.
+        #
+        # Only a **partial** match is refused. A partial name is the weakest
+        # evidence this resolver acts on, and a period word is a use of that
+        # word the question has already accounted for. An exact code or an exact
+        # name still wins: a material genuinely called "May" is found by being
+        # named, not by sharing three letters with something.
+        named = [
+            entity for entity in named
+            if not (entity.match == "partial_name"
+                    and self.dates.is_period_word(entity.term))
+        ]
         carried, ended = self._carry_entities(named, context.entities)
         entities = named + carried
 

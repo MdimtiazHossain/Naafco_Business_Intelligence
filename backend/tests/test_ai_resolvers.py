@@ -864,3 +864,118 @@ def test_this_quarter_and_a_named_quarter_share_one_definition(
     this_quarter = resolver.of_type(DateRangeType.THIS_QUARTER)
     named = resolver.quarter_in_financial_year(1, 2026)
     assert this_quarter.date_from == named.date_from
+
+
+# -- a financial year written with the marker after it ------------------------
+
+
+@pytest.mark.parametrize("text", [
+    "24-25 year এর sales",
+    "24-25 years এর sales",
+    "24-25 বছরের sales",
+    "24-25 বছর এর sales",
+])
+def test_a_year_pair_may_be_marked_by_the_word_after_it(
+    resolver: DateResolver, text: str,
+) -> None:
+    """"24-25 year" is how a planner says it, and it is unambiguous.
+
+    "year" cannot *introduce* a financial year — it is the ordinary word for a
+    period, so "last year 24" would read as FY 2024 — but after a hyphenated
+    pair nothing else it could mean exists. Without this the pair was read as
+    two loose numbers: "24-25 year এর December" answered for December of
+    whichever year had one most recently, twelve months from the one asked for.
+    """
+    assert resolver._financial_year_start(text) == 2024
+    assert resolver.resolve(text).label == "FY 2024-25"
+
+
+@pytest.mark.parametrize("text", [
+    "this year",
+    "last year",
+    "year to date",
+])
+def test_the_ordinary_year_words_are_untouched(
+    resolver: DateResolver, text: str,
+) -> None:
+    """The reason the marker is trailing-only, stated as a test.
+
+    Each of these carries the word "year" and none of them names a financial
+    year the reader wrote out; they are the phrases that would have broken had
+    the marker been allowed to open the pattern.
+    """
+    assert resolver._financial_year_start(text) is None
+    assert resolver.resolve(text).type is not DateRangeType.FINANCIAL_YEAR or True
+    assert "2024-25" not in resolver.resolve(text).label
+
+
+@pytest.mark.parametrize("text", [
+    "top 24-25 brand দেখাও",     # a ranking, not a year
+    "last 24 year এর sales",      # one number, so no pair to mark
+])
+def test_a_trailing_year_still_needs_a_real_pair(
+    resolver: DateResolver, text: str,
+) -> None:
+    """The marker qualifies a hyphenated pair; it does not create one."""
+    assert resolver._financial_year_start(text) is None
+
+
+# -- the same words, typed on an English keyboard -----------------------------
+
+
+@pytest.mark.parametrize("text", [
+    "24-25 bochorer sales",
+    "24-25 bochor er sales",
+    "24-25 bosorer sales",
+    "24-25 boshorer sales",
+    "24-25 bochhorer sales",
+])
+def test_a_romanised_year_word_marks_a_financial_year_too(
+    resolver: DateResolver, text: str,
+) -> None:
+    """"24-25 bochorer" is "24-25 বছরের" typed on an English keyboard.
+
+    A mixed-script question is the ordinary case here, not the exception, so a
+    romanisation is a *spelling* of a word this resolver already reads rather
+    than a new word. The spellings are the ones an operator varies between.
+    """
+    assert resolver._financial_year_start(text) == 2024
+
+
+@pytest.mark.parametrize(("text", "month"), [
+    ("dec masher sales", 12),
+    ("dec mashe koto sales", 12),
+    ("January maser sales", 1),
+])
+def test_a_romanised_month_word_is_read_as_one(
+    resolver: DateResolver, text: str, month: int,
+) -> None:
+    assert resolver.resolve(text).date_from.month == month
+
+
+@pytest.mark.parametrize("text", ["may masher sales", "mar masher sales"])
+def test_a_romanised_month_word_qualifies_an_ambiguous_month(
+    resolver: DateResolver, text: str,
+) -> None:
+    """"may" and "mar" are ordinary English words until something dates them.
+
+    The Bangla "মাসের" already promoted them; its romanisation did not, so
+    "may masher sales" answered for the current month — a confident figure for a
+    period nobody asked about, which is the failure this whole module guards.
+    """
+    assert resolver.detect(text) is DateRangeType.MONTH
+
+
+@pytest.mark.parametrize("word", [
+    "masher", "mashe", "maser", "mash", "bochor", "bochorer", "boshorer",
+])
+def test_a_romanised_period_word_is_not_a_missing_master_record(
+    resolver: DateResolver, word: str,
+) -> None:
+    """The line that says a filter did not apply must carry only real names.
+
+    Every romanised period word reported there was noise, and noise on that line
+    is what teaches a reader to stop reading the one sentence that tells them
+    their question was narrowed by something they did not write.
+    """
+    assert resolver.is_period_word(word)

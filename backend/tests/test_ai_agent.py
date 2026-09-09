@@ -887,3 +887,66 @@ def test_a_scoped_filter_nobody_named_still_appears(make_agent) -> None:
     """
     response = make_agent("dhaka_rm").chat("এই মাসের sales কত?")
     assert "REG001" in response.answer, response.answer
+
+
+def test_a_month_word_is_not_also_guessed_at_as_a_material(
+    session, make_orchestrator,
+) -> None:
+    """"dec" is December, and it is also the start of a real material's name.
+
+    The deployment holds "Decoquinate 6% -Zamiquin 25kg (1's)", so "24-25 year
+    এর dec মাসের region wise sales" was read as a date *and* as an item at once:
+    the answer came back filtered to that one material, and empty. "mar", "may"
+    and "jun" each open some material's name too.
+
+    Only a **partial** match is refused, which is why the exact name below still
+    resolves: a partial name is the weakest evidence the resolver acts on, and a
+    period word is a use of that word the question has already accounted for.
+    """
+    from app.ai import masters
+    from app.ai.intent import detect_intent
+    from app.ai.orchestrator import ConversationContext
+    from conftest_phase2 import make_material
+
+    session.add(make_material("MAT-DEC", "Decoquinate 6% -Zamiquin 25kg (1's)"))
+    session.flush()
+    masters.invalidate()          # the index is cached; this row is new to it
+    try:
+        orchestrator = make_orchestrator("ceo")
+        question = "FY 24-25 এর dec মাসের region wise sales"
+        query = orchestrator.build_query(
+            question, detect_intent(question, orchestrator.lexicon),
+            ConversationContext(),
+        )
+        assert query.date_range.date_from == dt.date(2024, 12, 1)
+        assert not query.entities, [e.label for e in query.entities]
+
+        # Named in full, it is an item again — the material is findable, and it
+        # was only ever the three-letter guess that was refused.
+        named = "Decoquinate 6% -Zamiquin 25kg (1's) এর sales"
+        by_name = orchestrator.build_query(
+            named, detect_intent(named, orchestrator.lexicon), ConversationContext(),
+        )
+        assert [e.code for e in by_name.entities] == ["MAT-DEC"]
+    finally:
+        masters.invalidate()
+
+
+@pytest.mark.parametrize("question", [
+    "FY 24-25 এর December মাসের region wise sales dekhaw",
+    "FY 24-25 er December masher region wise sales dekhao",
+])
+def test_a_romanised_verb_is_not_reported_as_a_missing_record(
+    make_agent, question: str,
+) -> None:
+    """"dekhao" and "dekhaw" are one verb typed two ways.
+
+    Only the first spelling was known, so the same request spelled the other way
+    reported "dekhaw" as a master record nobody has — on the one line that
+    exists to say a filter did not apply. Noise there is what teaches a reader
+    to stop reading it.
+    """
+    response = ask(make_agent("ceo"), question)
+    assert response.error_code is None, response.answer
+    assert not any("master record" in a for a in response.assumptions), (
+        response.assumptions)

@@ -192,8 +192,20 @@ MONTH_YEAR_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: "month" as an operator romanises it — "mash", "mashe", "masher", "maser".
+#:
+#: The Bangla "মাস" was already read and its romanisation was not, although a
+#: mixed-script question is the ordinary case here rather than the exception:
+#: "dec masher sales" is how the same request arrives typed on an English
+#: keyboard. Two things followed from the gap. "masher" was reported as a master
+#: record nobody has, which is noise on the one line that exists to say a filter
+#: did not apply; and the ambiguous month words had nothing to qualify them, so
+#: "may masher sales" read "may" as an ordinary English word and answered for
+#: the current month.
+_ROMAN_MONTH = r"\bmash?(?:er|e)?\b"
+
 #: Words that show a period is being written about at all.
-MONTH_CUE_RE = re.compile(r"\bmonth\b|মাস", re.IGNORECASE)
+MONTH_CUE_RE = re.compile(rf"\bmonth\b|মাস|{_ROMAN_MONTH}", re.IGNORECASE)
 
 #: The word "month" written *beside* a month name — "May month", "মে মাসের".
 #:
@@ -202,9 +214,11 @@ MONTH_CUE_RE = re.compile(r"\bmonth\b|মাস", re.IGNORECASE)
 #: have nothing to do with each other. "ত্রৈমাসিক" (quarterly) contains "মাস"
 #: too, which is why the negative lookbehind is here and not in the wide cue
 #: above — that one only asks whether a word is part of how a period is written.
+_MONTH_WORD = rf"\bmonths?\b|(?<!ত্রৈ)মাস\S*|{_ROMAN_MONTH}"
+
 MONTH_PROMOTION_RE = re.compile(
-    r"(?:" + _MONTH_ALTERNATION + r")[\s,-]*(?:\bmonths?\b|(?<!ত্রৈ)মাস\S*)"
-    r"|(?:\bmonths?\b|(?<!ত্রৈ)মাস\S*)[\s,-]*(?:" + _MONTH_ALTERNATION + r")",
+    r"(?:" + _MONTH_ALTERNATION + r")[\s,-]*(?:" + _MONTH_WORD + r")"
+    r"|(?:" + _MONTH_WORD + r")[\s,-]*(?:" + _MONTH_ALTERNATION + r")",
     re.IGNORECASE,
 )
 
@@ -220,17 +234,40 @@ MONTH_PROMOTION_RE = re.compile(
 #: all" cannot disagree about what a marker is.
 FY_MARKERS = r"fy|f\.y\.|financial\s+year|fiscal\s+year|অর্থবছর\S*"
 
+#: Markers that may only *follow* the pair, never introduce it.
+#:
+#: "year" is the ordinary word for a period — "this year", "last year", "year to
+#: date" — so it can never open a financial year the way "FY" does, and adding
+#: it to :data:`FY_MARKERS` would make "last year 24" read as FY 2024. After a
+#: hyphenated pair it is unambiguous: nothing but a financial year is written
+#: "24-25 year", and that is how a planner says it out loud.
+#:
+#: This is why "24-25 year এর December" used to answer for December of whichever
+#: year had one most recently — the pair was read as two loose numbers, the
+#: month fell back to its own most recent occurrence, and the answer covered a
+#: period twelve months from the one that was asked for.
+#: "বছর" is here in both scripts for the reason the month cue above is: a
+#: question typed on an English keyboard says "24-25 bochorer sales", and it is
+#: the same sentence. The spellings are the ones an operator actually varies
+#: between — ch/chh/s/sh — with the genitive "-er" optional.
+FY_TRAILING_MARKERS = rf"{FY_MARKERS}|years?|বছরে?র?|bo(?:chh|ch|sh|s)or(?:er)?"
+
 FINANCIAL_YEAR_RE = re.compile(
     rf"(?:{FY_MARKERS})\s*:?\s*"
     r"(\d{4}|\d{2})(?:\s*[-/]\s*(\d{4}|\d{2}))?"
     r"|(\d{4}|\d{2})\s*[-/]\s*(\d{4}|\d{2})\s*"
-    rf"(?:{FY_MARKERS})",
+    rf"(?:{FY_TRAILING_MARKERS})",
     re.IGNORECASE,
 )
 
 #: The marker on its own — "অর্থবছরের" with no digits beside it is still a
 #: period word, and must not be reported as a master record nobody has.
-FY_MARKER_RE = re.compile(rf"(?:{FY_MARKERS})", re.IGNORECASE)
+#:
+#: Built from the *trailing* set, which is the wider of the two. Whether a word
+#: may open a financial year is a question about the pattern that reads one;
+#: this asks only "is this word part of how a period is written", and "bochorer"
+#: is, wherever it sits.
+FY_MARKER_RE = re.compile(rf"(?:{FY_TRAILING_MARKERS})", re.IGNORECASE)
 
 #: A year pair with no marker word at all — "2024-25 sales".
 #:
