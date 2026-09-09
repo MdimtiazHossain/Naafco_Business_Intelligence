@@ -39,10 +39,13 @@ import { DataTable } from '../tables/DataTable';
 import { formatAmount, formatPercent } from '../utils/format';
 
 /**
- * The monthly card's bars, named and coloured as its reference design asks.
+ * A combo card's bars, named and coloured as the reference design asks.
  *
- * Two things are card-specific and so live here rather than in
- * `barSeriesFrom`, which every other trend also uses.
+ * Both dashboard combo cards read it — the monthly one over months, the region
+ * one over regions — because the series are the same four things either way:
+ * two earlier years, the plan, and the outcome. Two things are card-specific
+ * and so live here rather than in `barSeriesFrom`, which every other trend
+ * also uses.
  *
  * **The names are compact.** The tool labels each series with the window it
  * covers — "FY 2026-27" — which is right for a legend of three or four lines
@@ -60,7 +63,7 @@ import { formatAmount, formatPercent } from '../utils/format';
  * nothing to compare it with — and is returned untouched, or the prefix would
  * rename it "A Net Sales".
  */
-function monthlyBars(
+function yearBars(
   chart: Parameters<typeof barSeriesFrom>[0],
   t: (key: string) => string,
 ): TrendSeries[] {
@@ -241,7 +244,7 @@ export default function Dashboard() {
               // and actual, ordered and coloured by `barSeriesFrom` — so a third
               // comparison year needs no change here and every year keeps the
               // hue it has on the line chart above.
-              bars={monthlyBars(data?.monthly_performance?.chart, t)}
+              bars={yearBars(data?.monthly_performance?.chart, t)}
               // The percentages are named explicitly, because they are
               // deliberately absent from `chart.series`: that list is what the
               // line chart above turns into lines on a taka axis.
@@ -285,19 +288,13 @@ export default function Dashboard() {
               data={regionRows}
               xKey="label"
               height={340}
-              // The Monthly Performance card's conventions, so the two combo
-              // cards on one screen read the same way rather than each having
-              // to be learned. Bars in that card's order — history, then plan,
-              // then outcome — with its colours: the palette's first hue for
-              // what came before, the neutral for the plan (it is not another
-              // measurement), and the platform's green for what happened.
-              bars={[
-                { key: 'previous_sales', label: t('dashboard.lastPeriodActual'),
-                  color: CHART_COLORS[0] },
-                { key: 'target_amount', label: t('kpi.target'), color: CHART_COLORS[7] },
-                { key: 'actual_sales', label: t('target.actual'),
-                  color: CHART_COLORS[4] },
-              ]}
+              // The same four bars the Monthly Performance card draws, named
+              // from the backend's own series list: two earlier years, the
+              // plan, the outcome. `previous_sales` is still on the row and
+              // still drives the growth line — it is simply not drawn, because
+              // over a financial year it is the same window as A 25-26 and a
+              // fifth bar per region would repeat one of the four.
+              bars={yearBars(data?.region_overview?.chart, t)}
               // And its line labels and colours. "Achievement %" and "Growth %"
               // are the same two measures under longer names; one legend
               // spelling across both cards is one thing to learn instead of two.

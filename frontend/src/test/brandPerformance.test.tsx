@@ -128,7 +128,9 @@ const DASHBOARD = {
     chart: TREND_CHART_SPEC,
     notes: ['Twelve months of FY 2026-27, the financial year of the selected period.'],
   },
-  region_overview: { rows: [] },
+  // The region card now draws the same four series as the monthly one, off
+  // its own chart spec.
+  region_overview: { rows: [], chart: TREND_CHART_SPEC, notes: [] },
   top_brands: { rows: BRAND_ROWS, notes: [] },
 };
 

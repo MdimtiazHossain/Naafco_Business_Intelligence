@@ -556,11 +556,25 @@ class AchievementToolInput(BaseToolInput):
     limit: int = DEFAULT_TABLE_LIMIT
     compare_from: dt.date | None = None
     compare_to: dt.date | None = None
+    #: Earlier years to carry beside this window, each the caller's **own**
+    #: window shifted back by whole years — the same comparison
+    #: :class:`TrendToolInput` makes and for the same reason: it honours the
+    #: date filter rather than replacing it with a period this tool chose, and
+    #: it removes the question of which financial year anchors a window that
+    #: straddles two. Distinct from ``compare_from`` / ``compare_to``, which is
+    #: one named window and answers "against the period before this one";
+    #: a caller may ask for either, both or neither.
+    compare_years: int = 0
 
     @field_validator("limit")
     @classmethod
     def _bound_limit(cls, value: int) -> int:
         return max(1, min(value, MAX_LIMIT))
+
+    @field_validator("compare_years")
+    @classmethod
+    def _bound_compare_years(cls, value: int) -> int:
+        return max(0, min(value, MAX_COMPARE_YEARS))
 
     @model_validator(mode="after")
     def _comparison_is_a_pair(self) -> "AchievementToolInput":

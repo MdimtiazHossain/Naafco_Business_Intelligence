@@ -485,6 +485,72 @@ def test_without_the_pair_neither_key_exists(ctx: ToolContext) -> None:
         assert key not in result.values
 
 
+def test_earlier_years_are_the_window_shifted_back_whole_years(
+    ctx: ToolContext,
+) -> None:
+    """The same comparison the trend makes, so one card cannot mean two things.
+
+    The dashboard's region card draws two earlier years beside the plan and the
+    outcome. They are this window shifted back by whole years — never a period
+    the tool chose — which is what honours the date filter and what lets the
+    bar and the trend line above it agree about a year.
+    """
+    from conftest_phase2 import sales_row
+    from conftest_phase3 import _load
+
+    _load(ctx.session.get_bind(), "sales", [
+        sales_row(**{"Invoice No": "INV-PY1", "Date": "2025-08-10",
+                     "Quantity": 100, "Gross Sales": 1_200_000,
+                     "Discount": 200_000, "Cost": 700_000,
+                     "Source Transaction Id": "SRC-PY1"}),
+    ])
+    ctx.session.rollback()
+
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 compare_years=2)
+    dhaka = next(row for row in result.rows if row["code"] == "REG001")
+    # August 2025 is August 2026 shifted back one year.
+    assert dhaka["net_sales_minus_1"] == pytest.approx(1_000_000)
+
+    # Nothing two years back, so that year is dropped rather than drawn along
+    # the floor — the rule ``_multi_year_trend`` states, applied here.
+    assert all("net_sales_minus_2" not in row for row in result.rows)
+    keys = {line["key"] for line in result.chart.series}
+    assert "net_sales_minus_1" in keys and "net_sales_minus_2" not in keys
+    # The plan and the outcome are named beside them, so the browser reads
+    # every bar off one list.
+    assert {"target_amount", "actual_sales"} <= keys
+
+
+def test_a_region_absent_from_an_earlier_year_has_no_bar_there(
+    ctx: ToolContext,
+) -> None:
+    """Absent, not zero — a bar at the axis would say it traded and sold none."""
+    from conftest_phase2 import sales_row
+    from conftest_phase3 import _load
+
+    _load(ctx.session.get_bind(), "sales", [
+        sales_row(**{"Invoice No": "INV-PY1", "Date": "2025-08-10",
+                     "Quantity": 100, "Gross Sales": 1_200_000,
+                     "Discount": 200_000, "Cost": 700_000,
+                     "Source Transaction Id": "SRC-PY1"}),
+    ])
+    ctx.session.rollback()
+
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 compare_years=1)
+    khulna = next(row for row in result.rows if row["code"] == "REG002")
+    assert khulna["net_sales_minus_1"] is None
+
+
+def test_without_compare_years_no_row_carries_a_year(ctx: ToolContext) -> None:
+    """The Target page and the assistant call this tool too, and are unchanged."""
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20)
+    for row in result.rows:
+        assert not [key for key in row if key.startswith("net_sales_minus_")]
+    assert result.chart.series == [], "no years asked for, so no series named"
+
+
 @pytest.mark.parametrize("half", ["compare_from", "compare_to"])
 def test_half_a_comparison_window_is_refused(ctx: ToolContext, half: str) -> None:
     """One date without the other has no window to measure, so it is rejected.

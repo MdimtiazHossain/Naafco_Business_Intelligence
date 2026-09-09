@@ -615,10 +615,12 @@ def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
         arguments.group_by, arguments.limit,
         below_percent=arguments.below_percent, gap_only=gap_only,
         compare_from=arguments.compare_from, compare_to=arguments.compare_to,
+        compare_years=arguments.compare_years,
     )
     result = _base(tool, arguments, filters, "achievement_percent")
     result.sources = [q.TARGET_VIEW, q.SALES_VIEW]
     result.values = totals
+
     if arguments.below_percent is not None:
         result.values["below_percent"] = arguments.below_percent
     result.truncated = matched > len(rows)
@@ -644,8 +646,28 @@ def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
     result.rows = rows
     result.row_count = len(rows)
     result.value = totals["achievement_percent"]
-    result.chart = ChartSpec(type="bar", x_axis="label", y_axis="achievement_percent",
-                             data=rows)
+    # ``series`` only where earlier years were asked for and drawn.
+    # ``target_vs_actual`` drops a year that recorded nothing, so naming every
+    # year requested would put a series in the legend with no bar under it, and
+    # a caller that asked for none gets the bare spec it always got. The labels
+    # are the platform's own period names, so this tool invents no second way of
+    # naming a range.
+    drawn_years = sorted(
+        {int(key.rsplit("_", 1)[1]) for row in rows for key in row
+         if key.startswith("net_sales_minus_")}
+    )
+    this_period = ctx.period_name(arguments.date_from, arguments.date_to)
+    result.chart = ChartSpec(
+        type="bar", x_axis="label", y_axis="achievement_percent", data=rows,
+        series=[
+            *({"key": f"net_sales_minus_{offset}",
+               "label": ctx.period_name(shift_years(arguments.date_from, -offset),
+                                        shift_years(arguments.date_to, -offset))}
+              for offset in drawn_years),
+            {"key": "target_amount", "label": this_period},
+            {"key": "actual_sales", "label": this_period},
+        ] if drawn_years else [],
+    )
     result.facts.append(
         f"Target {totals['target']:,.0f} BDT, actual {totals['actual']:,.0f} BDT, "
         f"gap {totals['gap']:,.0f} BDT."

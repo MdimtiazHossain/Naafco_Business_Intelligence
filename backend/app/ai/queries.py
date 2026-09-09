@@ -25,7 +25,7 @@ from typing import Any, Iterable, Sequence
 from sqlalchemy import MetaData, Table, and_, asc, case, desc, func, select
 from sqlalchemy.orm import Session
 
-from ..etl.calendar import months_between
+from ..etl.calendar import months_between, shift_years
 from ..etl.transforms import achievement_percent, growth_percent
 from ..etl.validation import safe_divide
 from .schemas import GroupBy, ScopeFilters
@@ -836,6 +836,7 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
                      gap_only: bool = False,
                      compare_from: dt.date | None = None,
                      compare_to: dt.date | None = None,
+                     compare_years: int = 0,
                      ) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
     """Target and actual side by side, grouped by one dimension.
 
@@ -886,6 +887,24 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         previous_sales = {str(row["code"]): (row.get("net_sales") or 0.0)
                           for row in previous_rows}
 
+    # And the earlier years, each this window shifted back whole years, read the
+    # same independent way. A year is kept only if it recorded something: an
+    # empty one is dropped rather than drawn along the floor, which is the rule
+    # ``_multi_year_trend`` states at length and for the same reason — a flat
+    # zero says the business traded and sold nothing, where the truth is that
+    # there is no history there.
+    earlier_years: dict[int, dict[str, float]] = {}
+    for offset in range(1, compare_years + 1):
+        year_rows, _ = aggregate_by(
+            session, SALES_MEASURES, filters,
+            shift_years(date_from, -offset), shift_years(date_to, -offset),
+            group_by, limit=MAX_ROWS, sort_field="net_sales",
+        )
+        found = {str(row["code"]): (row.get("net_sales") or 0.0)
+                 for row in year_rows if row.get("net_sales")}
+        if found:
+            earlier_years[offset] = found
+
     # Volume on both sides, one figure per group, read the same way on each:
     # both are the number the source file stated and neither carries a unit, so
     # both are plain sums over the same window.
@@ -930,6 +949,12 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         entry["quantity_gap"] = entry["target_quantity"] - entry["actual_quantity"]
         entry["target_volume"] = target_volume.get(str(code))
         entry["actual_volume"] = actual_volume.get(str(code))
+        for offset, figures in earlier_years.items():
+            # Absent stays absent here too: a region the earlier year has no row
+            # for did not sell nothing then, and a bar at the axis would say it
+            # did. The key is the one ``_multi_year_trend`` uses, so the browser
+            # names a dataKey the same way on both cards.
+            entry[f"net_sales_minus_{offset}"] = figures.get(str(code))
         if comparing:
             # A group the comparison window has no row for did not sell zero
             # there — it is absent from it, which is a different statement and

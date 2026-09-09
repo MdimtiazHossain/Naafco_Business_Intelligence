@@ -330,9 +330,13 @@ def dashboard(
         # absent — the tool then returns neither key and the card draws neither.
         comparable = (date_range.compare_from is not None
                       and date_range.compare_to is not None)
+        # Two earlier years beside the plan and the outcome, the same four bars
+        # the Monthly Performance card draws — asked for on this call only, so
+        # every other reader of ``get_target_achievement`` (the Target page, the
+        # assistant) is unchanged and carries neither key.
         region_overview = run(
             ctx, "get_target_achievement", date_range, filters,
-            group_by=GroupBy.REGION.value, limit=10,
+            group_by=GroupBy.REGION.value, limit=10, compare_years=2,
             **({"compare_from": date_range.compare_from.isoformat(),
                 "compare_to": date_range.compare_to.isoformat()}
                if comparable else {}),
