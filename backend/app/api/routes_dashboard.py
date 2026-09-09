@@ -341,6 +341,22 @@ def dashboard(
                 "compare_to": date_range.compare_to.isoformat()}
                if comparable else {}),
         )
+        # Territory and brand, ranked by what they sold rather than by how
+        # close they came to target — a card headed "Sales" that ranked by
+        # achievement would list whoever had the smallest target, and its top
+        # twenty would be a different twenty. One earlier year each, which is
+        # what the reference design shows; the years, the plan and the outcome
+        # are named on the result exactly as the region card's are.
+        ranked = {"limit": 20, "compare_years": 1}
+        territory_sales = run(ctx, "get_target_achievement", date_range, filters,
+                              group_by=GroupBy.TERRITORY.value,
+                              rank_by="actual", **ranked)
+        # Ranked by volume because it is *drawn* in volume: ordered by taka and
+        # drawn in volume, its bars came out in no order at all — the brand with
+        # the smallest volume of the top four sat at the head of the chart.
+        brand_sales = run(ctx, "get_target_achievement", date_range, filters,
+                          group_by=GroupBy.MATERIAL_BRAND.value,
+                          rank_by="volume", **ranked)
         # The dashboard ranks brands, not individual materials: fifteen pack
         # sizes of one brand is not a picture of the business. Material-level
         # ranking lives on the Material Analysis page, where it is asked for
@@ -425,6 +441,10 @@ def dashboard(
         # that outlived what it named would leave two different shapes under one
         # word.
         "region_overview": region_overview,
+        # Two ranked cards under the region one, each its own grouping of the
+        # same three measures.
+        "territory_sales": territory_sales,
+        "brand_sales": brand_sales,
         "top_brands": brands,
     }
 

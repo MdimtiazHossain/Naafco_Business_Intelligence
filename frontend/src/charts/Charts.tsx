@@ -301,12 +301,12 @@ export function trendSeriesFrom(
  * drawing the same series in different colours would be worse than either
  * alone — the hue is what tells a reader which year a bar is.
  *
- * The **order** is the card's own, and it is not the backend's: prior years
- * oldest-first, then Target, then this period's Actual, so a group of bars
- * reads left to right as history → plan → outcome. The rank comes from the
- * `_minus_N` suffix the tool puts on each earlier window, never from a
- * hard-coded `net_sales_minus_1`, so a third comparison year needs no change
- * here.
+ * The **order** is `orderedByYear`, which the Sales Trend line chart reads too:
+ * prior years oldest-first, then Target, then this period's Actual, so a group
+ * of bars — or a legend — runs left to right as history → plan → outcome. The
+ * rank comes from the `_minus_N` suffix the tool puts on each earlier window,
+ * never from a hard-coded `net_sales_minus_1`, so a third comparison year needs
+ * no change here.
  *
  * `dashed` is dropped: it distinguishes a plan from a measurement on a *line*,
  * and a bar cannot carry it. On this chart the target's neutral colour is what
@@ -348,20 +348,23 @@ export function seriesHues(series: TrendSeries[]): TrendSeries[] {
   }));
 }
 
+export function orderedByYear(series: TrendSeries[]): TrendSeries[] {
+  const rank = (one: TrendSeries): number => {
+    const back = yearsBack(one.key);
+    if (back !== null) return -back;          // oldest first
+    if (one.key.startsWith('target')) return 1;
+    return 2;                                  // this period's actual, last
+  };
+  return [...series].sort((a, b) => rank(a) - rank(b));
+}
+
 export function barSeriesFrom(
   chart: { y_axis: string; series?: { key: string; label: string }[] } | null | undefined,
   fallbackLabel?: string,
   targetLabel?: string,
 ): TrendSeries[] {
-  const rank = (series: TrendSeries): number => {
-    const back = yearsBack(series.key);
-    if (back !== null) return -back;          // oldest first
-    if (series.key.startsWith('target')) return 1;
-    return 2;                                  // this period's actual, last
-  };
-  return trendSeriesFrom(chart, fallbackLabel, targetLabel)
-    .map(({ dashed: _dashed, ...bar }) => bar)
-    .sort((a, b) => rank(a) - rank(b));
+  return orderedByYear(trendSeriesFrom(chart, fallbackLabel, targetLabel))
+    .map(({ dashed: _dashed, ...bar }) => bar);
 }
 
 /** One line of a trend. The same shape `ComparisonBarChart` takes for its bars. */
@@ -978,6 +981,97 @@ export function ComboBarLineChart({
           </Line>
         ))}
       </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+/**
+ * A ranked comparison: one row per category, its series side by side.
+ *
+ * Horizontal because the categories are twenty names. Rotated under a vertical
+ * chart they are unreadable at any height that fits on a dashboard, where read
+ * across they need only their own line — and the eye runs down a ranking, which
+ * is the shape of the question this card answers.
+ *
+ * Every bar carries its own figure, for the same reason the monthly card prints
+ * its readings: a reader comparing a territory with the one below it is after a
+ * number, and hovering twenty rows to collect three each is not reading a
+ * chart. `formatAmount` shortens them, so a crore is "৳1.20 Cr" rather than a
+ * column of digits nobody can line up.
+ */
+export function RankedBarChart({
+  data,
+  xKey,
+  bars,
+  rowHeight = 34,
+  valueKind = 'currency',
+  emptyMessage,
+}: {
+  data: Record<string, any>[];
+  /** The column holding each row's name. */
+  xKey: string;
+  bars: TrendSeries[];
+  /** Height per category, so twenty rows are as legible as five. */
+  rowHeight?: number;
+  /**
+   * What the figures are. `quantity` is what a volume card wants: volume in
+   * this platform carries no unit at all, so a taka sign in front of it would
+   * name a currency the figure is not in.
+   */
+  valueKind?: ChartValueKind;
+  emptyMessage?: string;
+}) {
+  const theme = useChartTheme();
+  const format = useValueFormatter(valueKind);
+  const narrow = useNarrowViewport();
+  if (!data?.length) return <EmptyState message={emptyMessage} />;
+
+  const colour = (bar: TrendSeries, index: number) =>
+    bar.color ?? CHART_COLORS[index % CHART_COLORS.length];
+  // The plot grows with the data rather than squeezing it: twenty categories in
+  // a fixed 340px give each row eight pixels, which is a texture, not a chart.
+  const height = Math.max(220, data.length * rowHeight + 56);
+
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} layout="vertical"
+                margin={{ top: 4, right: narrow ? 30 : 46, bottom: 4, left: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} horizontal={false} />
+        <XAxis type="number" tick={{ fontSize: 11, fill: theme.axis }}
+               tickFormatter={(value) => format(Number(value))} />
+        <YAxis
+          type="category"
+          dataKey={xKey}
+          tick={{ fontSize: 11, fill: theme.axis }}
+          // Wide enough for a territory name, and every category drawn: an
+          // interval that skipped labels would leave bars belonging to nobody.
+          width={narrow ? 88 : 132}
+          interval={0}
+        />
+        <Tooltip formatter={(value) => format(Number(value))} {...tooltipStyle(theme)} />
+        <Legend
+          wrapperStyle={{ fontSize: 12 }}
+          content={legendContent(theme, bars.map((bar, index) => ({
+            key: bar.key, label: bar.label, colour: colour(bar, index), line: false,
+          })))}
+        />
+        {bars.map((bar, index) => (
+          <Bar key={bar.key} dataKey={bar.key} name={bar.label}
+               fill={colour(bar, index)} radius={[0, 3, 3, 0]}>
+            <LabelList
+              dataKey={bar.key}
+              position="right"
+              offset={4}
+              style={{ fontSize: 10, fill: colour(bar, index) }}
+              // Absent prints nothing. A category the earlier year did not
+              // record has no bar, and a figure floating where the bar is not
+              // would read as one of length zero.
+              formatter={(value: unknown) =>
+                value === null || value === undefined ? '' : format(Number(value))}
+            />
+          </Bar>
+        ))}
+      </BarChart>
     </ResponsiveContainer>
   );
 }

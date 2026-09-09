@@ -352,6 +352,35 @@ def test_region_overview_grows_against_the_window_the_kpi_uses(
     assert rows["REG001"]["growth_percent"] == pytest.approx(-25.0)
 
 
+def test_the_ranked_cards_are_ranked_by_what_was_sold(
+    platform: TestClient,
+) -> None:
+    """A card headed "Sales" ranked by achievement is a different twenty.
+
+    ``target_vs_actual`` ranks by achievement, which is right for the tool's
+    own question — who is meeting their target — and wrong for these two: it
+    would list whoever came closest to a small target and call them the top
+    sellers.
+    """
+    token = login(platform, "ceo")
+    body = platform.get("/api/dashboard?date_from=2026-07-01&date_to=2026-10-31",
+                        headers=auth(token)).json()
+
+    for section in ("territory_sales", "brand_sales"):
+        rows = body[section]["rows"]
+        assert rows, section
+        sold = [row["actual_sales"] for row in rows]
+        assert sold == sorted(sold, reverse=True), f"{section} is not ranked by sales"
+        # Each carries the plan and the outcome; an earlier year only where one
+        # was recorded, which this fixture has none of.
+        assert "target_amount" in rows[0] and "actual_sales" in rows[0]
+
+    # And the two group the same measures differently, so they are two answers
+    # rather than one repeated.
+    assert (body["territory_sales"]["values"]["group_by"] == "territory")
+    assert (body["brand_sales"]["values"]["group_by"] == "material_brand")
+
+
 def test_dashboard_is_scoped_by_role(platform: TestClient) -> None:
     everything = platform.get("/api/dashboard" + WINDOW, headers=auth(login(platform, "ceo")))
     dhaka = platform.get("/api/dashboard" + WINDOW, headers=auth(login(platform, "dhaka_rm")))

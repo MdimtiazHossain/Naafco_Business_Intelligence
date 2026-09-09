@@ -131,6 +131,10 @@ const DASHBOARD = {
   // The region card now draws the same four series as the monthly one, off
   // its own chart spec.
   region_overview: { rows: [], chart: TREND_CHART_SPEC, notes: [] },
+  // The two ranked cards under it, each the same measures grouped its own
+  // way and ranked by what was sold.
+  territory_sales: { rows: [], chart: TREND_CHART_SPEC, notes: [] },
+  brand_sales: { rows: [], chart: TREND_CHART_SPEC, notes: [] },
   top_brands: { rows: BRAND_ROWS, notes: [] },
 };
 

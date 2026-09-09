@@ -565,6 +565,17 @@ class AchievementToolInput(BaseToolInput):
     #: one named window and answers "against the period before this one";
     #: a caller may ask for either, both or neither.
     compare_years: int = 0
+    #: Which figure "top" means. ``achievement`` is the default because that is
+    #: what this tool is for — who is meeting their target — but a card headed
+    #: *Sales* ranked that way lists whoever is closest to a small target, not
+    #: whoever sold the most, and its top twenty is a different twenty. It is
+    #: ``volume`` is the same argument again for a card that *draws* volume: a
+    #: ranked chart ordered by one measure and drawn in another comes out in no
+    #: order at all, which is worse than either. It is
+    #: honoured only where the caller has not already declared an ordering:
+    #: ``below_percent`` and ``gap_only`` are questions about who fell short,
+    #: and they keep the worst-first order that answers them.
+    rank_by: Literal["achievement", "actual", "volume"] = "achievement"
 
     @field_validator("limit")
     @classmethod

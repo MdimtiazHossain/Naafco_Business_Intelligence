@@ -522,6 +522,179 @@ def test_earlier_years_are_the_window_shifted_back_whole_years(
     assert {"target_amount", "actual_sales"} <= keys
 
 
+def test_an_earlier_year_carries_its_volume_beside_its_sales(
+    ctx: ToolContext,
+) -> None:
+    """The Brand Sales card measures volume, so a year needs one.
+
+    Without it that card would set this year's volume against last year's
+    taka — two different quantities under one legend, which is the mistake the
+    figures look most reasonable while making.
+    """
+    from conftest_phase2 import sales_row
+    from conftest_phase3 import _load
+
+    _load(ctx.session.get_bind(), "sales", [
+        sales_row(**{"Invoice No": "INV-V1", "Date": "2025-08-10",
+                     "Quantity": 40, "Total Volume": 250,
+                     "Gross Sales": 600_000, "Discount": 100_000, "Cost": 350_000,
+                     "Source Transaction Id": "SRC-V1"}),
+    ])
+    ctx.session.rollback()
+
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 compare_years=1)
+    dhaka = next(row for row in result.rows if row["code"] == "REG001")
+    assert dhaka["net_sales_minus_1"] == pytest.approx(500_000)
+    assert dhaka["volume_minus_1"] == pytest.approx(250)
+
+
+def test_a_year_that_stated_no_volume_reports_none_not_zero(
+    ctx: ToolContext,
+) -> None:
+    """A line stating no volume contributes none, which is not a volume of zero.
+
+    The same rule ``actual_volume`` follows on the current window: summing
+    absent as zero understates by however much was never stated, and a bar at
+    the axis says the brand moved nothing.
+    """
+    from conftest_phase2 import sales_row
+    from conftest_phase3 import _load
+
+    _load(ctx.session.get_bind(), "sales", [
+        sales_row(**{"Invoice No": "INV-V2", "Date": "2025-08-11",
+                     "Quantity": 10, "Gross Sales": 400_000, "Discount": 0,
+                     "Cost": 250_000, "Source Transaction Id": "SRC-V2"}),
+    ])
+    ctx.session.rollback()
+
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 compare_years=1)
+    dhaka = next(row for row in result.rows if row["code"] == "REG001")
+    assert dhaka["net_sales_minus_1"] == pytest.approx(400_000)
+    assert dhaka["volume_minus_1"] is None
+
+
+def test_rank_by_actual_orders_on_sales_and_changes_the_top(
+    ctx: ToolContext,
+) -> None:
+    """The two orderings are not the same list cut differently.
+
+    Dhaka sold 1,500,000 of a 2,000,000 target and Khulna 300,000 of
+    1,000,000, so by achievement Dhaka leads at 75% and by sales it leads too
+    — but the point is that the tool answers each question on its own terms
+    rather than re-reading one as the other.
+    """
+    by_achievement = run(ctx, "get_target_achievement", group_by="region",
+                         limit=20)
+    by_sales = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                   rank_by="actual")
+
+    sold = [row["actual_sales"] for row in by_sales.rows]
+    assert sold == sorted(sold, reverse=True)
+    ratios = [row["achievement_percent"] for row in by_achievement.rows
+              if row["achievement_percent"] is not None]
+    assert ratios == sorted(ratios, reverse=True)
+
+
+def test_rank_by_volume_orders_on_what_a_volume_card_draws(
+    ctx: ToolContext,
+) -> None:
+    """A chart ordered by one measure and drawn in another has no order at all.
+
+    The Brand Sales card draws volume. Ranked by taka it put the brand with the
+    smallest volume of its top four at the head of the chart — bars descending
+    nowhere, which is worse than either ordering on its own.
+    """
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 rank_by="volume")
+    measured = [row["actual_volume"] for row in result.rows
+                if row["actual_volume"] is not None]
+    assert measured == sorted(measured, reverse=True)
+
+    # A group that stated no volume sorts last rather than as zero: unmeasured
+    # is not the smallest.
+    seen_absent = False
+    for row in result.rows:
+        if row["actual_volume"] is None:
+            seen_absent = True
+        elif seen_absent:
+            raise AssertionError("a measured volume sorted below an absent one")
+
+
+def test_a_question_about_shortfall_keeps_its_own_order(
+    ctx: ToolContext,
+) -> None:
+    """``below_percent`` and ``gap_only`` already say how to order.
+
+    Honouring ``rank_by`` there would quietly re-rank an answer the caller had
+    already described — "who is furthest below target" is a worst-first list,
+    and putting the biggest seller at its head answers nobody's question.
+    """
+    below = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                below_percent=100.0, rank_by="actual")
+    ratios = [row["achievement_percent"] for row in below.rows]
+    assert ratios == sorted(ratios), "worst first, whatever rank_by said"
+
+
+def test_the_earlier_years_are_named_by_financial_year(ctx: ToolContext) -> None:
+    """A legend about years should not put a month in front of the reader.
+
+    The window here is one month, so naming each series by the range itself
+    gave "August 2024" beside "August 2025" — three entries whose difference a
+    reader has to work out from the year at the end. They differ by whole
+    financial years, so that is what the entry says.
+    """
+    from conftest_phase2 import sales_row
+    from conftest_phase3 import _load
+
+    # Both earlier windows need a row, or they are dropped and name nothing.
+    _load(ctx.session.get_bind(), "sales", [
+        sales_row(**{"Invoice No": "INV-Y1", "Date": "2025-08-10",
+                     "Gross Sales": 600_000, "Discount": 100_000, "Cost": 350_000,
+                     "Source Transaction Id": "SRC-Y1"}),
+        sales_row(**{"Invoice No": "INV-Y2", "Date": "2024-08-10",
+                     "Gross Sales": 400_000, "Discount": 50_000, "Cost": 250_000,
+                     "Source Transaction Id": "SRC-Y2"}),
+    ])
+    ctx.session.rollback()
+
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 compare_years=2)
+    labels = {line["key"]: line["label"] for line in result.chart.series}
+    assert labels, "the years have rows, so they are drawn and named"
+    assert labels["target_amount"] == "FY 2026-27"
+    assert labels["actual_sales"] == "FY 2026-27"
+    for key, label in labels.items():
+        assert label.startswith("FY "), f"{key} is named {label!r}"
+
+
+def test_a_window_straddling_two_financial_years_keeps_its_own_name(
+    ctx: ToolContext,
+) -> None:
+    """It belongs to neither, so it is not filed under one.
+
+    The same answer ``DateResolver.financial_year_of`` gives — ``None`` rather
+    than a choice — because naming a January-to-December window "FY 2026-27"
+    would be this layer inventing which half of it counts.
+    """
+    from conftest_phase2 import sales_row
+    from conftest_phase3 import _load
+
+    _load(ctx.session.get_bind(), "sales", [
+        sales_row(**{"Invoice No": "INV-S1", "Date": "2025-03-10",
+                     "Gross Sales": 600_000, "Discount": 100_000, "Cost": 350_000,
+                     "Source Transaction Id": "SRC-S1"}),
+    ])
+    ctx.session.rollback()
+
+    result = run(ctx, "get_target_achievement", group_by="region", limit=20,
+                 compare_years=1, date_from="2026-01-01", date_to="2026-12-31")
+    labels = [line["label"] for line in result.chart.series]
+    assert labels, "the window has data, so it names its series"
+    assert not any(label.startswith("FY ") for label in labels), labels
+
+
 def test_a_region_absent_from_an_earlier_year_has_no_bar_there(
     ctx: ToolContext,
 ) -> None:

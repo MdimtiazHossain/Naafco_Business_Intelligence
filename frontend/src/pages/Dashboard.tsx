@@ -18,6 +18,8 @@ import {
   barSeriesFrom,
   CHART_COLORS,
   ComboBarLineChart,
+  orderedByYear,
+  RankedBarChart,
   seriesHues,
   TrendChart,
   trendSeriesFrom,
@@ -63,25 +65,73 @@ import { formatAmount, formatPercent } from '../utils/format';
  * nothing to compare it with — and is returned untouched, or the prefix would
  * rename it "A Net Sales".
  */
+function compactNames(
+  series: TrendSeries[],
+  t: (key: string) => string,
+): TrendSeries[] {
+  return series.map((one) => ({
+    ...one,
+    label: `${one.key.startsWith('target') ? t('chart.targetShort')
+                                           : t('chart.actualShort')} `
+      // "FY 2026-27" becomes "26-27": the century is the same on every series
+      // here, so printing it four times buys nothing and costs the legend the
+      // room it needs. A window that is not a financial year carries a
+      // different label shape, matches neither pattern and is left exactly as
+      // the tool wrote it.
+      + one.label.replace(/^FY\s*/i, '').replace(/^\d{2}(\d{2}-\d{2})$/, '$1'),
+  }));
+}
+
 function yearBars(
   chart: Parameters<typeof barSeriesFrom>[0],
   t: (key: string) => string,
 ): TrendSeries[] {
   const ordered = seriesHues(barSeriesFrom(chart, t('sales.netSales')));
-  if (!chart?.series?.length) return ordered;
-  return ordered.map((bar) => {
-    const isTarget = bar.key.startsWith('target');
-    return {
-      ...bar,
-      label: `${isTarget ? t('chart.targetShort') : t('chart.actualShort')} `
-        // "FY 2026-27" becomes "26-27": the century is the same on every
-        // series here, so printing it four times buys nothing and costs the
-        // legend the room it needs. A window that is not a financial year
-        // carries a different label shape, matches neither pattern and is
-        // left exactly as the tool wrote it.
-        + bar.label.replace(/^FY\s*/i, '').replace(/^\d{2}(\d{2}-\d{2})$/, '$1'),
-    };
-  });
+  return chart?.series?.length ? compactNames(ordered, t) : ordered;
+}
+
+/**
+ * The same series for the Sales Trend line chart: same order, same names, same
+ * hues, and the dash kept.
+ *
+ * It goes through `trendSeriesFrom` rather than `barSeriesFrom` for exactly
+ * that last reason — a bar cannot carry a dash so `barSeriesFrom` drops it,
+ * while on a line it is what says plan against measurement. The ordering is the
+ * shared `orderedByYear`, so the three cards' legends read history → plan →
+ * outcome alike and a reader learns one arrangement rather than two.
+ */
+/**
+ * The same series, measured in volume.
+ *
+ * Order, names, colours and which years survive are all decided once by
+ * `yearBars`; this only swaps each series' key for the volume column beside
+ * it, so a card can measure volume without a second opinion about what to
+ * draw. The tool carries both measures on every row — `target_volume` and
+ * `actual_volume` for this window, `volume_minus_N` for each earlier year —
+ * so nothing here computes a figure.
+ */
+function volumeBars(
+  chart: Parameters<typeof barSeriesFrom>[0],
+  t: (key: string) => string,
+): TrendSeries[] {
+  const inVolume: Record<string, string> = {
+    actual_sales: 'actual_volume',
+    target_amount: 'target_volume',
+  };
+  return yearBars(chart, t).map((one) => ({
+    ...one,
+    key: inVolume[one.key]
+      ?? one.key.replace(/^net_sales_minus_/, 'volume_minus_'),
+  }));
+}
+
+function yearLines(
+  chart: Parameters<typeof barSeriesFrom>[0],
+  t: (key: string) => string,
+): TrendSeries[] {
+  const ordered = seriesHues(orderedByYear(
+    trendSeriesFrom(chart, t('sales.netSales'))));
+  return chart?.series?.length ? compactNames(ordered, t) : ordered;
 }
 
 const KPI_ICONS: Record<string, React.ReactNode> = {
@@ -143,6 +193,8 @@ export default function Dashboard() {
   // the same view over the same window, read twice.
   const regionRows = data?.region_overview?.rows ?? [];
   const brandRows = data?.top_brands?.rows ?? [];
+  const territorySalesRows = data?.territory_sales?.rows ?? [];
+  const brandSalesRows = data?.brand_sales?.rows ?? [];
 
   const kpiPairs: [string, string][] = (data?.kpis ?? []).map((kpi) => [
     kpi.label,
@@ -199,15 +251,11 @@ export default function Dashboard() {
               // A monthly window carries two earlier years and the target; a
               // daily one is a single line, and `trendSeriesFrom` returns
               // exactly that when the tool sent no series.
-              // The same hue rule as the Monthly Performance card below, so
-              // this period's actual is green on both and a reader is not
-              // asked to learn one colour for a year on one card and another
-              // on the next. The other pages that draw this chart keep the
-              // palette order they have: they show one trend on its own, with
-              // no plan-against-outcome for a colour to pick out.
-              series={seriesHues(trendSeriesFrom(data?.sales_trend?.chart,
-                                                 t('sales.netSales'),
-                                                 t('kpi.target')))}
+              // The same order, names and hues as the two cards below, so one
+              // legend arrangement serves all three. The other pages that draw
+              // this chart are untouched: they show one trend on its own, with
+              // no plan-against-outcome to arrange around.
+              series={yearLines(data?.sales_trend?.chart, t)}
               // The same two ratios the cards below draw, against a right-hand
               // axis. They are honoured only where the rows carry them, which
               // is a monthly window: a period charted by day has no monthly
@@ -307,6 +355,40 @@ export default function Dashboard() {
             />
             <ResultNotes notes={data?.region_overview?.notes} />
           </Section>
+
+          {/*
+            Two ranked cards side by side, under the region card. Each is the
+            same three measures grouped a different way, ranked by what was
+            sold — the colours are the region and monthly cards' own, so a
+            reader learns one scheme for the whole page.
+
+            Side by side because they answer the same question about two
+            dimensions and are read against each other; they stack on a phone,
+            where twenty rows of names need the full width.
+          */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Section title={t('dashboard.territorySales')}>
+              <RankedBarChart
+                data={territorySalesRows}
+                xKey="label"
+                bars={yearBars(data?.territory_sales?.chart, t)}
+              />
+              <ResultNotes notes={data?.territory_sales?.notes} />
+            </Section>
+
+            <Section title={t('dashboard.brandSales')}>
+              <RankedBarChart
+                data={brandSalesRows}
+                xKey="label"
+                bars={volumeBars(data?.brand_sales?.chart, t)}
+                // Volume carries no unit anywhere in this platform, so the
+                // figures are plain grouped numbers — a taka sign would name a
+                // currency they are not in.
+                valueKind="quantity"
+              />
+              <ResultNotes notes={data?.brand_sales?.notes} />
+            </Section>
+          </div>
 
           {/*
             Full width, and outside the two-column grid above: ten columns of

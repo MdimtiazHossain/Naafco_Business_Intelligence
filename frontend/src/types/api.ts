@@ -799,6 +799,16 @@ export interface DashboardResponse {
   monthly_performance: ToolResult;
   region_overview: ToolResult;
   /**
+   * The same three measures as `region_overview`, grouped by territory and by
+   * brand and **ranked by what was sold** rather than by achievement.
+   *
+   * A card headed "Sales" ranked by achievement lists whoever came closest to
+   * a small target, and its top twenty is a different twenty — which is why
+   * `AchievementToolInput.rank_by` exists.
+   */
+  territory_sales: ToolResult;
+  brand_sales: ToolResult;
+  /**
    * Brand-wise ranking with targets beside actuals — the dashboard's general
    * performance view. Ranked by net sales, as every brand table here is.
    */

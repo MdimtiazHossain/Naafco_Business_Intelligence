@@ -837,6 +837,7 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
                      compare_from: dt.date | None = None,
                      compare_to: dt.date | None = None,
                      compare_years: int = 0,
+                     rank_by: str = "achievement",
                      ) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
     """Target and actual side by side, grouped by one dimension.
 
@@ -894,16 +895,27 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
     # zero says the business traded and sold nothing, where the truth is that
     # there is no history there.
     earlier_years: dict[int, dict[str, float]] = {}
+    earlier_volume: dict[int, dict[str, float | None]] = {}
     for offset in range(1, compare_years + 1):
+        start, end = shift_years(date_from, -offset), shift_years(date_to, -offset)
         year_rows, _ = aggregate_by(
-            session, SALES_MEASURES, filters,
-            shift_years(date_from, -offset), shift_years(date_to, -offset),
+            session, SALES_MEASURES, filters, start, end,
             group_by, limit=MAX_ROWS, sort_field="net_sales",
         )
         found = {str(row["code"]): (row.get("net_sales") or 0.0)
                  for row in year_rows if row.get("net_sales")}
         if found:
             earlier_years[offset] = found
+            # The same year's volume, read the same independent way the current
+            # window's is, so a card measuring volume can set a year against a
+            # year rather than against a figure in taka. Only for a year that
+            # is drawn at all: a volume for a year whose sales were dropped
+            # would be a series with no partner.
+            earlier_volume[offset] = {
+                str(row["code"]): row.get("volume")
+                for row in volume_by_group(session, SALES_VIEW, filters,
+                                           start, end, group_by)
+            }
 
     # Volume on both sides, one figure per group, read the same way on each:
     # both are the number the source file stated and neither carries a unit, so
@@ -949,6 +961,11 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         entry["quantity_gap"] = entry["target_quantity"] - entry["actual_quantity"]
         entry["target_volume"] = target_volume.get(str(code))
         entry["actual_volume"] = actual_volume.get(str(code))
+        for offset, volumes in earlier_volume.items():
+            # Absent stays absent: a line that stated no volume contributes
+            # none, which is not a volume of zero. Same rule as
+            # ``actual_volume`` on the current window.
+            entry[f"volume_minus_{offset}"] = volumes.get(str(code))
         for offset, figures in earlier_years.items():
             # Absent stays absent here too: a region the earlier year has no row
             # for did not sell nothing then, and a bar at the axis would say it
@@ -1034,11 +1051,24 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
     # sort first, so "top 1 territory achievement" returned the one territory
     # with no target at all: neither the best nor the worst performer, and
     # presented as the best.
+    #
+    # ``rank_by`` is read only in the last branch, and deliberately: the other
+    # two are questions about who fell short and already carry the order that
+    # answers them, so honouring it there would quietly re-rank an answer the
+    # caller had already described.
     if gap_only:
         rows.sort(key=lambda r: r["gap"], reverse=True)
     elif below_percent is not None:
         rows.sort(key=lambda r: (r["achievement_percent"] is None,
                                  r["achievement_percent"] or 0))
+    elif rank_by == "actual":
+        rows.sort(key=lambda r: r["actual_sales"], reverse=True)
+    elif rank_by == "volume":
+        # A group that stated no volume sorts last rather than as zero: it is
+        # not the smallest, it is unmeasured, and putting it at the foot of the
+        # list beside the genuine smallest would say otherwise.
+        rows.sort(key=lambda r: (r["actual_volume"] is not None,
+                                 r["actual_volume"] or 0.0), reverse=True)
     else:
         rows.sort(key=lambda r: (r["achievement_percent"] is not None,
                                  r["achievement_percent"] or 0), reverse=True)

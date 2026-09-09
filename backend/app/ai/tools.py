@@ -75,6 +75,27 @@ class ToolContext:
         """
         return DateResolver(today=self.today).name_range(start, end)
 
+    def financial_year_name(self, start: dt.date, end: dt.date) -> str:
+        """The financial year a window sits in, or its period name if it does
+        not sit in one.
+
+        A legend comparing a window with the same window two years back is a
+        legend about *years*, and naming each one "August 2024" puts a month in
+        front of a reader who is looking at three of them. The financial year is
+        what those windows differ by, so that is what the entry says.
+
+        This is deliberately not ``period_name``, which answers a different
+        question — what to call this exact range — and is right wherever a
+        reader needs the range itself. A window straddling two financial years
+        belongs to neither, so it falls back rather than being filed under one:
+        the same reason ``DateResolver.financial_year_of`` answers ``None``
+        there instead of choosing.
+        """
+        fy = DateResolver(today=self.today).fy
+        if fy.start_year_of(start) != fy.start_year_of(end):
+            return self.period_name(start, end)
+        return fy.label(start)
+
 
 ToolHandler = Callable[[ToolContext, Any], ToolResult]
 
@@ -615,7 +636,7 @@ def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
         arguments.group_by, arguments.limit,
         below_percent=arguments.below_percent, gap_only=gap_only,
         compare_from=arguments.compare_from, compare_to=arguments.compare_to,
-        compare_years=arguments.compare_years,
+        compare_years=arguments.compare_years, rank_by=arguments.rank_by,
     )
     result = _base(tool, arguments, filters, "achievement_percent")
     result.sources = [q.TARGET_VIEW, q.SALES_VIEW]
@@ -656,13 +677,17 @@ def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
         {int(key.rsplit("_", 1)[1]) for row in rows for key in row
          if key.startswith("net_sales_minus_")}
     )
-    this_period = ctx.period_name(arguments.date_from, arguments.date_to)
+    # Named by financial year rather than by the range itself: these series
+    # differ by whole years, and "August 2024" beside "August 2025" makes a
+    # reader read the month rather than the year that separates them.
+    this_period = ctx.financial_year_name(arguments.date_from, arguments.date_to)
     result.chart = ChartSpec(
         type="bar", x_axis="label", y_axis="achievement_percent", data=rows,
         series=[
             *({"key": f"net_sales_minus_{offset}",
-               "label": ctx.period_name(shift_years(arguments.date_from, -offset),
-                                        shift_years(arguments.date_to, -offset))}
+               "label": ctx.financial_year_name(
+                   shift_years(arguments.date_from, -offset),
+                   shift_years(arguments.date_to, -offset))}
               for offset in drawn_years),
             {"key": "target_amount", "label": this_period},
             {"key": "actual_sales", "label": this_period},

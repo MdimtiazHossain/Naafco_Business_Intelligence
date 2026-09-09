@@ -48,7 +48,7 @@ vi.mock('recharts', () => {
 });
 
 const { ComboBarLineChart, barSeriesFrom, trendSeriesFrom, seriesHues,
-        CHART_COLORS } = await import('../charts/Charts');
+        orderedByYear, CHART_COLORS } = await import('../charts/Charts');
 
 const ROWS = [
   { label: 'Dhaka', target_amount: 2_000_000, actual_sales: 1_500_000,
@@ -327,5 +327,38 @@ describe('the hue rule both dashboard charts read', () => {
     // palette order they have; only the dashboard opts in.
     expect(trendSeriesFrom(TREND_CHART).find((one) => one.key === 'net_sales')?.color)
       .toBe(CHART_COLORS[0]);
+  });
+});
+
+describe('the order the three cards share', () => {
+  it('runs history, then plan, then outcome', () => {
+    expect(orderedByYear(trendSeriesFrom(TREND_CHART)).map((one) => one.key))
+      .toEqual(['net_sales_minus_2', 'net_sales_minus_1', 'target_amount',
+                'net_sales']);
+  });
+
+  it('is the order the bar helper already produced', () => {
+    // `barSeriesFrom` is now that ordering plus dropping the dash, so the bar
+    // card and the line card cannot drift into two arrangements.
+    expect(barSeriesFrom(TREND_CHART).map((one) => one.key))
+      .toEqual(orderedByYear(trendSeriesFrom(TREND_CHART)).map((one) => one.key));
+  });
+
+  it('keeps the dash a line needs and a bar cannot carry', () => {
+    // The reason the Sales Trend card orders through `orderedByYear` rather
+    // than reusing `barSeriesFrom`: on a line the dash says plan against
+    // measurement, and `barSeriesFrom` drops it.
+    const line = orderedByYear(trendSeriesFrom(TREND_CHART))
+      .find((one) => one.key === 'target_amount');
+    expect(line?.dashed).toBe(true);
+    expect(barSeriesFrom(TREND_CHART)
+      .find((one) => one.key === 'target_amount')?.dashed).toBeUndefined();
+  });
+
+  it('leaves a series list it was not given alone', () => {
+    // A window too short for months sends one series and no comparison; sorting
+    // it must not invent an arrangement.
+    expect(orderedByYear(trendSeriesFrom({ y_axis: 'net_sales' }, 'Net Sales')))
+      .toEqual([{ key: 'net_sales', label: 'Net Sales' }]);
   });
 });
