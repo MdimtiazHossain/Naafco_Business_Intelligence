@@ -273,17 +273,27 @@ export default function Dashboard() {
               data={regionRows}
               xKey="label"
               height={340}
+              // The Monthly Performance card's conventions, so the two combo
+              // cards on one screen read the same way rather than each having
+              // to be learned. Bars in that card's order — history, then plan,
+              // then outcome — with its colours: the palette's first hue for
+              // what came before, the neutral for the plan (it is not another
+              // measurement), and the platform's green for what happened.
               bars={[
-                // The target is the plan, not another measurement, so it takes
-                // the palette's neutral for the same reason the trend's target
-                // line does.
+                { key: 'previous_sales', label: t('dashboard.lastPeriodActual'),
+                  color: CHART_COLORS[0] },
                 { key: 'target_amount', label: t('kpi.target'), color: CHART_COLORS[7] },
-                { key: 'actual_sales', label: t('target.actual') },
-                { key: 'previous_sales', label: t('dashboard.lastPeriodActual') },
+                { key: 'actual_sales', label: t('target.actual'),
+                  color: CHART_COLORS[4] },
               ]}
+              // And its line labels and colours. "Achievement %" and "Growth %"
+              // are the same two measures under longer names; one legend
+              // spelling across both cards is one thing to learn instead of two.
               lines={[
-                { key: 'achievement_percent', label: t('target.achievement') },
-                { key: 'growth_percent', label: t('dashboard.growthLine') },
+                { key: 'achievement_percent', label: t('dashboard.achievementShort'),
+                  color: CHART_COLORS[4] },
+                { key: 'growth_percent', label: t('dashboard.growthShort'),
+                  color: CHART_COLORS[3] },
               ]}
             />
             <ResultNotes notes={data?.region_overview?.notes} />
