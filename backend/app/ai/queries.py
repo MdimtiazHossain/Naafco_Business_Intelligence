@@ -379,6 +379,36 @@ MAP_SALES_MEASURES = MeasureSet(
     nullable_sums=SALES_MEASURES.nullable_sums,
 )
 
+#: The same sales figures without the distinct invoice count, for a reader that
+#: does not draw one. Built like the map's set — ``sums`` and ``nullable_sums``
+#: by reference — so there is still exactly one switch deciding what a sales
+#: report *says*; this one decides only what it *costs*.
+#:
+#: ``COUNT(DISTINCT invoice_no)`` is the most expensive thing on the sales path
+#: and nothing about it is obvious. A distinct count forces a ``GroupAggregate``
+#: — every row sorted by the group columns and then the invoice — where the
+#: plain sums would hash-aggregate and never sort at all. Measured on the
+#: deployment's PostgreSQL, three financial-year windows grouped by region cost
+#: **46.72s** with it and **6.09s** without: 87% of the work for a column the
+#: executive dashboard has never drawn.
+#:
+#: **No index can repair it**, which is why this is a measure set rather than a
+#: migration. The sort key begins with ``region_code``, which comes from
+#: ``dim_region`` and not from ``fact_sales``, so no index on the fact table can
+#: supply the ordering. Collapsing the windows into one scan was measured too
+#: and came out slightly *worse* (49.61s) — the scan was never the cost.
+#:
+#: ``transaction_count`` stays: ``COUNT(*)`` rides along free. And this removes
+#: the column from nothing — ``SALES_MEASURES`` is untouched, so the Customers
+#: page's Invoices column and the assistant's answers are unchanged.
+DASHBOARD_SALES_MEASURES = MeasureSet(
+    view_name=SALES_VIEW,
+    sums=SALES_MEASURES.sums,
+    default_sort=SALES_MEASURES.default_sort,
+    counts=(("transaction_count", "*"),),
+    nullable_sums=SALES_MEASURES.nullable_sums,
+)
+
 #: The four stock categories, summed independently, plus the total the view
 #: computes. They stay four measures on every report: unrestricted stock is what
 #: can be sold, and the other three are each held back for a different reason, so
@@ -838,6 +868,7 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
                      compare_to: dt.date | None = None,
                      compare_years: int = 0,
                      rank_by: str = "achievement",
+                     measures: MeasureSet = SALES_MEASURES,
                      ) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
     """Target and actual side by side, grouped by one dimension.
 
@@ -860,6 +891,14 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
     columns a reader has to learn to ignore, and a growth against a window the
     caller did not name would be a figure this tool invented.
 
+    ``measures`` is which sales set the three sales passes read — this window,
+    the comparison window and each earlier year. It exists so a caller that
+    draws no invoice count can hand in :data:`DASHBOARD_SALES_MEASURES` and skip
+    the distinct count that dominates the cost of all three; see that set for
+    the measurement. Nothing about the answer moves, because this function
+    builds its rows from named fields — net sales, quantity, volume and the
+    target's two — and never copies a count out of the sales row.
+
     Returns ``(rows, totals, matched)``. ``totals`` covers the whole scope
     whatever the narrowing, because the headline answers "how did we do" and the
     table answers "who"; ``matched`` is how many groups met the condition, so a
@@ -872,7 +911,7 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
         limit=MAX_ROWS, sort_field="target_amount",
     )
     sales_rows, _ = aggregate_by(
-        session, SALES_MEASURES, filters, date_from, date_to, group_by,
+        session, measures, filters, date_from, date_to, group_by,
         limit=MAX_ROWS, sort_field="net_sales",
     )
 
@@ -882,7 +921,7 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
     previous_sales: dict[str, float] = {}
     if comparing:
         previous_rows, _ = aggregate_by(
-            session, SALES_MEASURES, filters, compare_from, compare_to, group_by,
+            session, measures, filters, compare_from, compare_to, group_by,
             limit=MAX_ROWS, sort_field="net_sales",
         )
         previous_sales = {str(row["code"]): (row.get("net_sales") or 0.0)
@@ -899,22 +938,21 @@ def target_vs_actual(session: Session, filters: ScopeFilters, date_from: dt.date
     for offset in range(1, compare_years + 1):
         start, end = shift_years(date_from, -offset), shift_years(date_to, -offset)
         year_rows, _ = aggregate_by(
-            session, SALES_MEASURES, filters, start, end,
+            session, measures, filters, start, end,
             group_by, limit=MAX_ROWS, sort_field="net_sales",
         )
         found = {str(row["code"]): (row.get("net_sales") or 0.0)
                  for row in year_rows if row.get("net_sales")}
         if found:
             earlier_years[offset] = found
-            # The same year's volume, read the same independent way the current
-            # window's is, so a card measuring volume can set a year against a
-            # year rather than against a figure in taka. Only for a year that
-            # is drawn at all: a volume for a year whose sales were dropped
-            # would be a series with no partner.
+            # The same rows carry the year's volume: it is in
+            # ``SALES_MEASURES.sums`` and declared nullable there, so absent
+            # arrives as ``None`` rather than as a zero. This used to be a
+            # second ``volume_by_group`` pass per year — one more scan of the
+            # fact view for a figure already in hand, on every card that asks
+            # for a comparison year.
             earlier_volume[offset] = {
-                str(row["code"]): row.get("volume")
-                for row in volume_by_group(session, SALES_VIEW, filters,
-                                           start, end, group_by)
+                str(row["code"]): row.get("volume") for row in year_rows
             }
 
     # Volume on both sides, one figure per group, read the same way on each:

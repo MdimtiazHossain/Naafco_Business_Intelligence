@@ -13,6 +13,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
+import { useDashboardSections } from './dashboardSections';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   barSeriesFrom,
@@ -175,26 +176,31 @@ export default function Dashboard() {
     return `/materials?${params.toString()}`;
   };
 
+  // The frame: the KPI strip, the period, and which cards this build serves.
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['dashboard', query],
     queryFn: () => dashboardService.get(query),
   });
+  // The cards themselves, one request each and all in flight together. The page
+  // shows its KPIs as soon as the frame lands rather than waiting for every
+  // aggregate, which is what it used to do for nine seconds.
+  const sections = useDashboardSections(data?.sections, query);
 
   // Each panel is guarded independently rather than only on `data`. A backend
-  // serving an older shape omits a key entirely, and `data?.top_brands.rows`
+  // serving an older shape omits a key entirely, and `sections.byName.top_brands.rows`
   // throws on the missing key rather than falling back — which took the whole
   // page down behind the error boundary instead of leaving one chart empty.
-  const trendRows = data?.sales_trend?.rows ?? [];
+  const trendRows = sections.byName.sales_trend?.rows ?? [];
   // Its own section, not `sales_trend`: this card is a year of months whatever
   // period is chosen, and the line chart above follows the period exactly.
-  const monthlyRows = data?.monthly_performance?.rows ?? [];
+  const monthlyRows = sections.byName.monthly_performance?.rows ?? [];
   // One panel where there were two. The old Region Performance card drew the
   // net sales that this card's `actual_sales` already is — the same column of
   // the same view over the same window, read twice.
-  const regionRows = data?.region_overview?.rows ?? [];
-  const brandRows = data?.top_brands?.rows ?? [];
-  const territorySalesRows = data?.territory_sales?.rows ?? [];
-  const brandSalesRows = data?.brand_sales?.rows ?? [];
+  const regionRows = sections.byName.region_overview?.rows ?? [];
+  const brandRows = sections.byName.top_brands?.rows ?? [];
+  const territorySalesRows = sections.byName.territory_sales?.rows ?? [];
+  const brandSalesRows = sections.byName.brand_sales?.rows ?? [];
 
   const kpiPairs: [string, string][] = (data?.kpis ?? []).map((kpi) => [
     kpi.label,
@@ -255,7 +261,7 @@ export default function Dashboard() {
               // legend arrangement serves all three. The other pages that draw
               // this chart are untouched: they show one trend on its own, with
               // no plan-against-outcome to arrange around.
-              series={yearLines(data?.sales_trend?.chart, t)}
+              series={yearLines(sections.byName.sales_trend?.chart, t)}
               // The same two ratios the cards below draw, against a right-hand
               // axis. They are honoured only where the rows carry them, which
               // is a monthly window: a period charted by day has no monthly
@@ -292,7 +298,7 @@ export default function Dashboard() {
               // and actual, ordered and coloured by `barSeriesFrom` — so a third
               // comparison year needs no change here and every year keeps the
               // hue it has on the line chart above.
-              bars={yearBars(data?.monthly_performance?.chart, t)}
+              bars={yearBars(sections.byName.monthly_performance?.chart, t)}
               // The percentages are named explicitly, because they are
               // deliberately absent from `chart.series`: that list is what the
               // line chart above turns into lines on a taka axis.
@@ -318,7 +324,7 @@ export default function Dashboard() {
             {/* This card's own notes: which financial year it covers, any
                 year it could not draw, and whether the figures are narrower
                 than the country its title names. */}
-            <ResultNotes notes={data?.monthly_performance?.notes} />
+            <ResultNotes notes={sections.byName.monthly_performance?.notes} />
           </Section>
 
           {/*
@@ -342,7 +348,7 @@ export default function Dashboard() {
               // still drives the growth line — it is simply not drawn, because
               // over a financial year it is the same window as A 25-26 and a
               // fifth bar per region would repeat one of the four.
-              bars={yearBars(data?.region_overview?.chart, t)}
+              bars={yearBars(sections.byName.region_overview?.chart, t)}
               // And its line labels and colours. "Achievement %" and "Growth %"
               // are the same two measures under longer names; one legend
               // spelling across both cards is one thing to learn instead of two.
@@ -353,7 +359,7 @@ export default function Dashboard() {
                   color: CHART_COLORS[3] },
               ]}
             />
-            <ResultNotes notes={data?.region_overview?.notes} />
+            <ResultNotes notes={sections.byName.region_overview?.notes} />
           </Section>
 
           {/*
@@ -371,22 +377,22 @@ export default function Dashboard() {
               <RankedBarChart
                 data={territorySalesRows}
                 xKey="label"
-                bars={yearBars(data?.territory_sales?.chart, t)}
+                bars={yearBars(sections.byName.territory_sales?.chart, t)}
               />
-              <ResultNotes notes={data?.territory_sales?.notes} />
+              <ResultNotes notes={sections.byName.territory_sales?.notes} />
             </Section>
 
             <Section title={t('dashboard.brandSales')}>
               <RankedBarChart
                 data={brandSalesRows}
                 xKey="label"
-                bars={volumeBars(data?.brand_sales?.chart, t)}
+                bars={volumeBars(sections.byName.brand_sales?.chart, t)}
                 // Volume carries no unit anywhere in this platform, so the
                 // figures are plain grouped numbers — a taka sign would name a
                 // currency they are not in.
                 valueKind="quantity"
               />
-              <ResultNotes notes={data?.brand_sales?.notes} />
+              <ResultNotes notes={sections.byName.brand_sales?.notes} />
             </Section>
           </div>
 
@@ -421,7 +427,7 @@ export default function Dashboard() {
               pageSize={15}
               onRowClick={(row) => navigate(brandLink(String(row.code)))}
             />
-            <ResultNotes notes={data?.top_brands?.notes} />
+            <ResultNotes notes={sections.byName.top_brands?.notes} />
           </Section>
         </div>
       </QueryState>

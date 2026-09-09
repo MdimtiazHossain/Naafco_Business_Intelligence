@@ -140,8 +140,14 @@ def test_the_dashboard_and_the_agent_state_one_net_sales(platform: TestClient) -
     # ``get_business_summary`` calls the figure ``sales`` where the sales tools
     # call it ``net_sales``. Two names for one measure is its own small hazard,
     # and the point of this test is that the two names carry one figure.
-    card = dashboard.json()["summary"]["values"]["sales"]
-    assert _net_sales(chat.json()["data"]) == pytest.approx(float(card))
+    #
+    # Read off the KPI strip rather than the raw tool result: the frame stopped
+    # returning ``summary`` when the cards became a request each, and the
+    # headline is the figure a reader is actually shown — which is the stronger
+    # thing to hold the assistant to anyway.
+    kpis = {kpi["key"]: kpi["value"] for kpi in dashboard.json()["kpis"]}
+    assert _net_sales(chat.json()["data"]) == pytest.approx(
+        float(kpis["total_sales"]))
 
 
 def test_a_scoped_reader_is_told_one_number_by_both_surfaces(

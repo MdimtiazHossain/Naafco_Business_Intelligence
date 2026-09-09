@@ -75,6 +75,19 @@ def login(client: TestClient, username: str, password: str = PASSWORD) -> str:
     return response.json()["access_token"]
 
 
+def card(client: TestClient, token: str, name: str, window: str = WINDOW) -> dict:
+    """One dashboard card.
+
+    The dashboard is a frame plus a request per card, fetched in parallel by the
+    browser — see ``DASHBOARD_SECTIONS``. Tests read a card the same way the
+    page does rather than reaching into one big response that no longer exists.
+    """
+    response = client.get(f"/api/dashboard/section/{name}{window}",
+                          headers=auth(token))
+    assert response.status_code == 200, response.text
+    return response.json()["section"]
+
+
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -207,7 +220,8 @@ def test_preferences_persist(platform: TestClient) -> None:
 
 def test_dashboard_returns_kpis_and_charts(platform: TestClient) -> None:
     token = login(platform, "ceo")
-    body = platform.get("/api/dashboard?date_from=2026-08-01&date_to=2026-08-31", headers=auth(token)).json()
+    window = "?date_from=2026-08-01&date_to=2026-08-31"
+    body = platform.get("/api/dashboard" + window, headers=auth(token)).json()
 
     keys = {kpi["key"] for kpi in body["kpis"]}
     assert {"total_sales", "target", "achievement", "unrestricted_stock",
@@ -225,16 +239,22 @@ def test_dashboard_returns_kpis_and_charts(platform: TestClient) -> None:
     assert sales["value"] == pytest.approx(1_800_000)
     assert sales["previous_value"] is not None
     assert sales["growth_percent"] is not None
-    assert body["sales_trend"]["rows"]
+    # The frame names its cards rather than carrying them: each is its own
+    # request now, because eight aggregates in one response made the page wait
+    # nine seconds before anything appeared.
+    assert body["sections"] == ["sales_trend", "monthly_performance",
+                                "region_overview", "territory_sales",
+                                "brand_sales", "top_brands"]
+    assert card(platform, token, "sales_trend", window)["rows"]
     # One card where there were two. ``region_performance`` and
     # ``target_achievement`` were merged into ``region_overview``, because the
     # first drew a region's net sales beside a card already carrying it as
-    # ``actual_sales``. The old keys are asserted gone rather than left
+    # ``actual_sales``. The old names are asserted gone rather than left
     # unmentioned: a name that outlives what it named is what this codebase
     # keeps tripping over.
-    assert body["region_overview"]["rows"]
-    assert "region_performance" not in body
-    assert "target_achievement" not in body
+    assert card(platform, token, "region_overview", window)["rows"]
+    assert "region_performance" not in body["sections"]
+    assert "target_achievement" not in body["sections"]
 
 
 def test_the_monthly_card_draws_months_whatever_period_is_chosen(
@@ -249,22 +269,21 @@ def test_the_monthly_card_draws_months_whatever_period_is_chosen(
     """
     token = login(platform, "ceo")
     # A single day, which the shared section charts by day.
-    body = platform.get("/api/dashboard?date_from=2026-08-15&date_to=2026-08-15",
-                        headers=auth(token)).json()
+    window = "?date_from=2026-08-15&date_to=2026-08-15"
 
-    daily = body["sales_trend"]["rows"]
+    daily = card(platform, token, "sales_trend", window)["rows"]
     assert daily and "date" in daily[0], "the line chart still follows the period"
 
-    card = body["monthly_performance"]
-    labels = [row["label"] for row in card["rows"]]
+    monthly = card(platform, token, "monthly_performance", window)
+    labels = [row["label"] for row in monthly["rows"]]
     assert labels == [f"{m} 2026" for m in
                       ("Jul", "Aug", "Sep", "Oct", "Nov", "Dec")] +                      [f"{m} 2027" for m in
                       ("Jan", "Feb", "Mar", "Apr", "May", "Jun")]
-    assert any("FY 2026-27" in note for note in card["notes"])
+    assert any("FY 2026-27" in note for note in monthly["notes"])
     # And it carries what the daily section cannot: a plan, and a year to
     # measure against.
-    assert "target_amount" in card["rows"][0]
-    assert "achievement_percent" in card["rows"][0]
+    assert "target_amount" in monthly["rows"][0]
+    assert "achievement_percent" in monthly["rows"][0]
 
 
 def test_the_monthly_card_keeps_the_percentages_off_the_series_list(
@@ -272,10 +291,8 @@ def test_the_monthly_card_keeps_the_percentages_off_the_series_list(
 ) -> None:
     """``chart.series`` is what the *line* chart turns into lines on a taka axis."""
     token = login(platform, "ceo")
-    body = platform.get("/api/dashboard?date_from=2026-07-01&date_to=2026-10-31",
-                        headers=auth(token)).json()
-
-    trend = body["monthly_performance"]
+    trend = card(platform, token, "monthly_performance",
+                 "?date_from=2026-07-01&date_to=2026-10-31")
     months = {row["label"]: row for row in trend["rows"]}
     assert ["Jul 2026", "Aug 2026", "Sep 2026", "Oct 2026"] == list(months)[:4]
 
@@ -306,17 +323,15 @@ def test_the_country_card_says_when_it_is_not_the_country(
     unexplained number this platform does not put on a screen.
     """
     window = "?date_from=2026-07-01&date_to=2026-10-31"
-    national = platform.get("/api/dashboard" + window,
-                            headers=auth(login(platform, "ceo"))).json()
-    scoped = platform.get("/api/dashboard" + window,
-                          headers=auth(login(platform, "dhaka_rm"))).json()
+    national = card(platform, login(platform, "ceo"),
+                    "monthly_performance", window)
+    scoped = card(platform, login(platform, "dhaka_rm"),
+                  "monthly_performance", window)
 
-    assert not any("not the whole country" in note
-                   for note in national["monthly_performance"]["notes"])
-    assert any("not the whole country" in note
-               for note in scoped["monthly_performance"]["notes"])
+    assert not any("not the whole country" in note for note in national["notes"])
+    assert any("not the whole country" in note for note in scoped["notes"])
     # And the card is still there, with figures in it.
-    assert scoped["monthly_performance"]["rows"]
+    assert scoped["rows"]
 
 
 def test_region_overview_grows_against_the_window_the_kpi_uses(
@@ -330,10 +345,11 @@ def test_region_overview_grows_against_the_window_the_kpi_uses(
     two reads of one number is how two cards on one screen come to disagree.
     """
     token = login(platform, "ceo")
-    body = platform.get("/api/dashboard?date_from=2026-08-01&date_to=2026-08-31",
-                        headers=auth(token)).json()
+    window = "?date_from=2026-08-01&date_to=2026-08-31"
+    body = platform.get("/api/dashboard" + window, headers=auth(token)).json()
+    region = card(platform, token, "region_overview", window)
 
-    totals = body["region_overview"]["values"]
+    totals = region["values"]
     assert totals["compare_from"] == "2026-07-01"
     assert totals["compare_to"] == "2026-07-31"
     assert totals["previous"] == pytest.approx(2_400_000)
@@ -342,7 +358,7 @@ def test_region_overview_grows_against_the_window_the_kpi_uses(
     assert totals["previous"] == pytest.approx(kpi["previous_value"])
     assert totals["growth_percent"] == pytest.approx(kpi["growth_percent"])
 
-    rows = {row["code"]: row for row in body["region_overview"]["rows"]}
+    rows = {row["code"]: row for row in region["rows"]}
     # Every bar the card draws comes from this one row: target, actual and last
     # period's actual, with the two percentage lines beside them.
     for key in ("target_amount", "actual_sales", "previous_sales",
@@ -363,11 +379,12 @@ def test_the_ranked_cards_are_ranked_by_what_was_sold(
     sellers.
     """
     token = login(platform, "ceo")
-    body = platform.get("/api/dashboard?date_from=2026-07-01&date_to=2026-10-31",
-                        headers=auth(token)).json()
+    window = "?date_from=2026-07-01&date_to=2026-10-31"
+    ranked = {name: card(platform, token, name, window)
+              for name in ("territory_sales", "brand_sales")}
 
     for section in ("territory_sales", "brand_sales"):
-        rows = body[section]["rows"]
+        rows = ranked[section]["rows"]
         assert rows, section
         sold = [row["actual_sales"] for row in rows]
         assert sold == sorted(sold, reverse=True), f"{section} is not ranked by sales"
@@ -377,8 +394,102 @@ def test_the_ranked_cards_are_ranked_by_what_was_sold(
 
     # And the two group the same measures differently, so they are two answers
     # rather than one repeated.
-    assert (body["territory_sales"]["values"]["group_by"] == "territory")
-    assert (body["brand_sales"]["values"]["group_by"] == "material_brand")
+    assert ranked["territory_sales"]["values"]["group_by"] == "territory"
+    assert ranked["brand_sales"]["values"]["group_by"] == "material_brand"
+
+
+def test_an_unknown_card_is_refused_and_says_which_exist(
+    platform: TestClient,
+) -> None:
+    """The registry is the list, so a name it does not hold is not served.
+
+    Named in the refusal rather than answered with an empty section: a caller
+    asking for a card this build does not draw has either a typo or a stale
+    idea of the page, and both are answered by saying what there is.
+    """
+    token = login(platform, "ceo")
+    response = platform.get("/api/dashboard/section/region_performance" + WINDOW,
+                            headers=auth(token))
+    assert response.status_code == 404
+    assert "region_overview" in response.json()["detail"]
+
+
+def test_every_named_card_can_actually_be_fetched(platform: TestClient) -> None:
+    """A name in the frame's list and no route behind it is the stale-name
+    failure this codebase keeps meeting, one HTTP round trip further out."""
+    token = login(platform, "ceo")
+    body = platform.get("/api/dashboard" + WINDOW, headers=auth(token)).json()
+    assert body["sections"], "the frame names no cards at all"
+    for name in body["sections"]:
+        assert card(platform, token, name) is not None, name
+
+
+def test_no_card_pays_for_a_distinct_invoice_count(
+    platform: TestClient, agent_engine
+) -> None:
+    """Asserted in the SQL, because the shape of the answer cannot show it.
+
+    Two of the six cards never surfaced ``invoice_count`` in the first place —
+    the achievement family builds its rows from named fields — so a test that
+    looked for an absent key would pass for them whether or not they still paid
+    for the count. What costs the time is the ``COUNT(DISTINCT invoice_no)``
+    that forces the database to sort every row before it can group; measured on
+    the deployment, that is 46.72s against 6.09s over three year-windows.
+
+    Driven off the frame's own list rather than a list written here, so a card
+    added later is covered on the day it is added — and fails loudly if it
+    forgets ``include_invoice_count=False`` rather than quietly costing twice
+    what it should.
+    """
+    from sqlalchemy import event
+
+    token = login(platform, "ceo")
+    names = platform.get("/api/dashboard" + WINDOW,
+                         headers=auth(token)).json()["sections"]
+    assert names, "the frame names no cards at all"
+
+    seen: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, many):
+        seen.append(statement)
+
+    event.listen(agent_engine, "after_cursor_execute", record)
+    try:
+        for name in names:
+            card(platform, token, name)
+    finally:
+        event.remove(agent_engine, "after_cursor_execute", record)
+
+    assert seen, "no SQL was observed, so this test proved nothing"
+    guilty = [statement for statement in seen
+              if "count(distinct" in statement.lower()
+              and "invoice_no" in statement.lower()]
+    assert not guilty, (
+        f"{len(guilty)} of {len(seen)} statements still count distinct "
+        f"invoices; first was: {' '.join(guilty[0].split())[:200]}"
+    )
+
+
+def test_the_customers_page_still_states_its_invoice_count(
+    platform: TestClient,
+) -> None:
+    """The one reader the dashboard's saving must not have taken it from.
+
+    ``include_invoice_count`` defaults on precisely so this column survives a
+    change made for a different screen, and this is the assertion that keeps
+    that promise honest — the column had no test at all before, which is how it
+    would have gone missing without anybody noticing.
+    """
+    token = login(platform, "ceo")
+    body = platform.get("/api/pages/customers" + WINDOW,
+                        headers=auth(token)).json()
+
+    rows = body["customers"]["rows"]
+    assert rows, "no customers to check"
+    assert all("invoice_count" in row for row in rows)
+    # Present *and* real: a column of zeroes would satisfy the key check while
+    # meaning the count had stopped being computed.
+    assert any(row["invoice_count"] for row in rows)
 
 
 def test_dashboard_is_scoped_by_role(platform: TestClient) -> None:

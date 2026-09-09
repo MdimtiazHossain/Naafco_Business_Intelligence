@@ -35,6 +35,7 @@ import type {
   CreditInvoicePage,
   CustomersPage,
   DashboardResponse,
+  DashboardSectionResponse,
   DataCatalogue,
   Dependants,
   EtlBatch,
@@ -148,7 +149,17 @@ export const authService = {
 };
 
 export const dashboardService = {
+  /**
+   * The KPI strip, the period, and the names of the cards that hang on it.
+   *
+   * The cards are fetched separately and in parallel — see `section` — because
+   * eight aggregates in one response made the page wait nine seconds before
+   * anything appeared.
+   */
   get: (query: ReportQuery) => request<DashboardResponse>('/api/dashboard', { params: query }),
+  /** One card, over the same period and filters as the frame. */
+  section: (name: string, query: ReportQuery) =>
+    request<DashboardSectionResponse>(`/api/dashboard/section/${name}`, { params: query }),
   periodOptions: () => request<PeriodOptionsResponse>('/api/period-options'),
 };
 

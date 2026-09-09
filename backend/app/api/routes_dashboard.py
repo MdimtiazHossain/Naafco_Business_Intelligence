@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, func, select, update
@@ -239,6 +239,169 @@ def period_options() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# The dashboard's cards
+#
+# Each is its own request, fetched in parallel by the browser. They were one
+# response until the page took nine seconds to paint: eight independent tool
+# calls, none of them dominant, run one after another because they shared a
+# session. That is the same problem the business map met — "five layers in one
+# call waited 7.5 s on the PostgreSQL deployment before the first could paint" —
+# and this is the same answer, so the two surfaces solve it once.
+#
+# Splitting rather than parallelising inside the endpoint is deliberate.
+# ``DB_POOL_SIZE`` is 5 with 5 of overflow, so one request running eight
+# aggregates at once would hold eight connections and two readers would exhaust
+# the pool. A request per card holds one, and a card paints when its own answer
+# arrives instead of every card waiting for the slowest.
+#
+# Every builder below passes ``include_invoice_count=False``, and it is the
+# largest single saving on this page rather than a tidy-up. A distinct count
+# forces the database to sort every row by the group columns and then the
+# invoice where the plain sums would hash-aggregate; measured on the deployment,
+# three financial-year windows grouped by region cost 46.72s with it and 6.09s
+# without. No index removes it — the sort key starts with a column of
+# ``dim_region``, not of ``fact_sales`` — so declining it is the whole lever.
+# It is stated per card rather than defaulted in ``run`` because ``run`` also
+# serves the KPI strip and ``routes_pages``, and because the honest question at
+# each call site is "does this card draw an invoice count?". None of them does.
+# ---------------------------------------------------------------------------
+
+
+def _sales_trend(ctx: ToolContext, date_range, filters: ScopeFilters,
+                 user: UserContext) -> dict[str, Any]:
+    """The period's own shape: by month where it is long enough, by day where not.
+
+    Monthly windows carry two earlier years and the target; a daily one carries
+    neither, because both are monthly by construction — a target is a month of a
+    financial year, and aligning days across years compares different weekdays.
+    """
+    monthly = (date_range.date_to - date_range.date_from).days > 92
+    return run(ctx, "get_sales_trend", date_range, filters,
+               granularity=("month" if monthly else "day"), limit=200,
+               include_invoice_count=False,
+               **({"compare_years": 2, "include_target": True} if monthly else {}))
+
+
+def _monthly_performance(ctx: ToolContext, date_range, filters: ScopeFilters,
+                         user: UserContext) -> dict[str, Any]:
+    """A year of months, whatever period is chosen.
+
+    It used to draw ``sales_trend`` — one query, two cards — which held while
+    the period was long enough to be charted by month and broke the moment it
+    was not: on the default "This month" the trend is charted by day, so the
+    card drew a bar per *date*, with no target and no earlier year to set it
+    against, under a title promising months.
+
+    Widening the shared query was the alternative and would have changed the
+    Sales Trend card, which is not this card's business — a short period charted
+    by day is exactly what that line chart is for. So the two cover different
+    windows deliberately, and this one says which financial year it is showing.
+
+    On This Year and Last Year the two windows coincide and the same query runs
+    for both cards. That was deduplicated while they shared a request and cannot
+    be now; it costs a second aggregate rather than a second wait, because the
+    two requests are in flight together.
+    """
+    fy = DateResolver()
+    year_of_card = fy.financial_year(fy.fy.start_year_of(date_range.date_to))
+    section = run(ctx, "get_sales_trend", year_of_card, filters,
+                  granularity="month", limit=200, compare_years=2,
+                  include_target=True, include_invoice_count=False)
+    if isinstance(section.get("notes"), list):
+        section["notes"].insert(0, (
+            f"Twelve months of {year_of_card.label}, the financial year of the "
+            "selected period. This card is a year of months whatever period is "
+            "chosen; your other filters still narrow it."
+        ))
+        narrowed = _narrower_than_the_country(user, filters)
+        if narrowed:
+            section["notes"].append(narrowed)
+    return section
+
+
+def _region_overview(ctx: ToolContext, date_range, filters: ScopeFilters,
+                     user: UserContext) -> dict[str, Any]:
+    """One call where there were two, because there was only ever one question.
+
+    ``get_region_performance`` was drawing a region's net sales beside a card
+    that already carried it: ``target_vs_actual``'s ``actual_sales`` **is** that
+    figure, read a second time from the same view over the same window.
+
+    The comparison window is the one the Total Sales KPI grows against, so a
+    region's growth here and the headline growth cannot tell different stories
+    about the same period. The pair is passed only when the range carries one,
+    never defaulted to this window's own dates: comparing a period against
+    itself would put a previous-period bar equal to the actual on every region
+    and a growth line flat at 0%, which is a statement rather than a gap.
+    """
+    comparable = (date_range.compare_from is not None
+                  and date_range.compare_to is not None)
+    return run(
+        ctx, "get_target_achievement", date_range, filters,
+        group_by=GroupBy.REGION.value, limit=10, compare_years=2,
+        include_invoice_count=False,
+        **({"compare_from": date_range.compare_from.isoformat(),
+            "compare_to": date_range.compare_to.isoformat()}
+           if comparable else {}),
+    )
+
+
+def _territory_sales(ctx: ToolContext, date_range, filters: ScopeFilters,
+                     user: UserContext) -> dict[str, Any]:
+    """Ranked by what was sold rather than by how close it came to target.
+
+    A card headed "Sales" that ranked by achievement would list whoever had the
+    smallest target, and its top twenty would be a different twenty.
+    """
+    return run(ctx, "get_target_achievement", date_range, filters,
+               group_by=GroupBy.TERRITORY.value, limit=20, compare_years=1,
+               rank_by="actual", include_invoice_count=False)
+
+
+def _brand_sales(ctx: ToolContext, date_range, filters: ScopeFilters,
+                 user: UserContext) -> dict[str, Any]:
+    """Ranked by volume, because it is *drawn* in volume.
+
+    Ordered by taka and drawn in volume its bars came out in no order at all —
+    the brand with the smallest volume of the top four sat at the head of the
+    chart.
+    """
+    return run(ctx, "get_target_achievement", date_range, filters,
+               group_by=GroupBy.MATERIAL_BRAND.value, limit=20, compare_years=1,
+               rank_by="volume", include_invoice_count=False)
+
+
+def _top_brands(ctx: ToolContext, date_range, filters: ScopeFilters,
+                user: UserContext) -> dict[str, Any]:
+    """Brands, not individual materials: fifteen pack sizes of one brand is not
+    a picture of the business.
+
+    The target-bearing variant, because the executive table sets each brand's
+    plan against what it sold. ``get_material_brand_performance`` is untouched
+    and still what the AI agent answers brand questions with.
+    """
+    return run(ctx, "get_material_brand_target_performance", date_range, filters,
+               group_by=GroupBy.MATERIAL_BRAND.value, limit=TOP_BRANDS,
+               include_invoice_count=False)
+
+
+#: Every card below the KPI strip, by the name the browser asks for.
+#:
+#: The registry is the list — the frame endpoint publishes ``sections`` from it
+#: and the section endpoint refuses anything not in it, so a card cannot be
+#: added in one place and forgotten in the other. That is the rule at the top of
+#: CLAUDE.md applied to a route: a name here must never outlive what it names.
+DASHBOARD_SECTIONS: dict[str, Callable[..., dict[str, Any]]] = {
+    "sales_trend": _sales_trend,
+    "monthly_performance": _monthly_performance,
+    "region_overview": _region_overview,
+    "territory_sales": _territory_sales,
+    "brand_sales": _brand_sales,
+    "top_brands": _top_brands,
+}
+
+
 @router.get("/dashboard")
 def dashboard(
     request: Request,
@@ -247,129 +410,22 @@ def dashboard(
     session: Session = Depends(get_session),
     user: UserContext = Depends(require_section(SectionKey.DASHBOARD)),
 ) -> dict[str, Any]:
-    """Executive KPI cards plus the headline charts.
+    """The KPI strip, the period, and the names of the cards that hang on it.
 
     Each KPI carries the current value, the comparable previous period and the
-    growth between them, so the UI never has to compute a delta.
+    growth between them, so the UI never has to compute a delta. The cards
+    themselves are separate requests — see ``DASHBOARD_SECTIONS`` for why — and
+    this is the only one that audits, because opening the dashboard is one act
+    however many requests draw it.
     """
     try:
         ctx = tool_context(session, user)
-        fy_resolver = DateResolver()
         summary = run(ctx, "get_business_summary", date_range, filters)
         growth = run(ctx, "get_sales_growth", date_range, filters,
                      compare_from=(date_range.compare_from or
                                    date_range.date_from).isoformat(),
                      compare_to=(date_range.compare_to or
                                  date_range.date_to).isoformat())
-        # Monthly windows carry two earlier years and the target; a daily one
-        # carries neither, because both are monthly by construction — a target
-        # is a month of a financial year, and aligning days across years
-        # compares different weekdays.
-        #
-        # **One section, two cards.** The Sales Trend line chart and the Monthly
-        # Country Performance combo card both draw these rows: the first answers
-        # "what shape is the year", the second "how did each month do against
-        # its plan and against last year". Reading them off one result is what
-        # stops the two disagreeing about a month, and it is why the key stays
-        # ``sales_trend`` — same tool, same measure, same rows; only the drawing
-        # was added. Renaming it would be churn rather than a stale name.
-        monthly = (date_range.date_to - date_range.date_from).days > 92
-        trend = run(ctx, "get_sales_trend", date_range, filters,
-                    granularity=("month" if monthly else "day"),
-                    limit=200,
-                    **({"compare_years": 2, "include_target": True} if monthly else {}))
-        # Monthly Performance is a year of months, and its window is
-        # its own. It used to draw ``sales_trend`` — one query, two cards —
-        # which held while the period was long enough to be charted by month
-        # and broke the moment it was not: on the default "This month" the
-        # trend is charted by day, so the card drew a bar per *date*, with no
-        # target and no earlier year to set it against, under a title
-        # promising months.
-        #
-        # Widening the shared query was the alternative and would have changed
-        # the Sales Trend card, which is not this card's business — a short
-        # period charted by day is exactly what that line chart is for. So this
-        # is a second call, and the cost is named rather than hidden: two reads
-        # of one view can disagree, and these two deliberately do, because they
-        # cover different windows.
-        #
-        # The financial year of the period's end, so choosing Last Year moves
-        # the card and choosing This Month does not shrink it to a single bar.
-        # The note says which year it is; every other filter still narrows it.
-        year_of_card = fy_resolver.financial_year(
-            fy_resolver.fy.start_year_of(date_range.date_to))
-        monthly_performance = run(
-            ctx, "get_sales_trend", year_of_card, filters,
-            granularity="month", limit=200, compare_years=2, include_target=True)
-        if isinstance(monthly_performance.get("notes"), list):
-            monthly_performance["notes"].insert(0, (
-                f"Twelve months of {year_of_card.label}, the financial year of "
-                "the selected period. This card is a year of months whatever "
-                "period is chosen; your other filters still narrow it."
-            ))
-            narrowed = _narrower_than_the_country(user, filters)
-            if narrowed:
-                monthly_performance["notes"].append(narrowed)
-        # One call where there were two, because there was only ever one
-        # question. ``get_region_performance`` was drawing a region's net sales
-        # beside a card that already carried it: ``target_vs_actual``'s
-        # ``actual_sales`` **is** that figure, read a second time from the same
-        # view over the same window. Two reads of one number is how two cards
-        # come to disagree — and it cost a second pass over the fact view for a
-        # column the other call already had.
-        #
-        # The comparison window is the one the Total Sales KPI grows against a
-        # few lines above, deliberately: a region's growth on this card and the
-        # headline growth beside it now answer to the same two dates, so they
-        # cannot tell different stories about the same period.
-        #
-        # The pair is passed only when the range carries one, never defaulted to
-        # this window's own dates: comparing a period against itself would put a
-        # previous-period bar equal to the actual on every region and a growth
-        # line flat at 0%, which is a statement rather than a gap. Absent stays
-        # absent — the tool then returns neither key and the card draws neither.
-        comparable = (date_range.compare_from is not None
-                      and date_range.compare_to is not None)
-        # Two earlier years beside the plan and the outcome, the same four bars
-        # the Monthly Performance card draws — asked for on this call only, so
-        # every other reader of ``get_target_achievement`` (the Target page, the
-        # assistant) is unchanged and carries neither key.
-        region_overview = run(
-            ctx, "get_target_achievement", date_range, filters,
-            group_by=GroupBy.REGION.value, limit=10, compare_years=2,
-            **({"compare_from": date_range.compare_from.isoformat(),
-                "compare_to": date_range.compare_to.isoformat()}
-               if comparable else {}),
-        )
-        # Territory and brand, ranked by what they sold rather than by how
-        # close they came to target — a card headed "Sales" that ranked by
-        # achievement would list whoever had the smallest target, and its top
-        # twenty would be a different twenty. One earlier year each, which is
-        # what the reference design shows; the years, the plan and the outcome
-        # are named on the result exactly as the region card's are.
-        ranked = {"limit": 20, "compare_years": 1}
-        territory_sales = run(ctx, "get_target_achievement", date_range, filters,
-                              group_by=GroupBy.TERRITORY.value,
-                              rank_by="actual", **ranked)
-        # Ranked by volume because it is *drawn* in volume: ordered by taka and
-        # drawn in volume, its bars came out in no order at all — the brand with
-        # the smallest volume of the top four sat at the head of the chart.
-        brand_sales = run(ctx, "get_target_achievement", date_range, filters,
-                          group_by=GroupBy.MATERIAL_BRAND.value,
-                          rank_by="volume", **ranked)
-        # The dashboard ranks brands, not individual materials: fifteen pack
-        # sizes of one brand is not a picture of the business. Material-level
-        # ranking lives on the Material Analysis page, where it is asked for
-        # explicitly.
-        #
-        # The target-bearing variant, because the executive table sets each
-        # brand's plan against what it sold. Ranking is unchanged — it is the
-        # same ``_grouped_sales`` ordering by net sales that the plain brand
-        # tool uses. ``get_material_brand_performance`` is untouched and still
-        # what the AI agent answers brand questions with.
-        brands = run(ctx, "get_material_brand_target_performance", date_range,
-                     filters, group_by=GroupBy.MATERIAL_BRAND.value,
-                     limit=TOP_BRANDS)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -394,13 +450,14 @@ def dashboard(
         # modules that produced them in revision 0020; nothing replaces them,
         # because the receivables position is not something this platform can
         # state any more.
-        # Stock on the executive view is what is available and what is at risk.
         #
+        # Stock on the executive view is what is available and what is at risk.
         # "Low Stock SKUs" and "Out of Stock SKUs" are gone with the module that
         # produced them: both counted SKUs below a days-of-cover threshold, and
         # material stock has no material code on which stock and sales could
         # meet. Expired stock is the replacement worth an executive's attention —
         # it is money already lost rather than a forecast.
+        #
         # ``stock``, not ``quantity``: these are the same measure the Material
         # Stock page reports, so they must not read as a bare count here. The
         # unit is in the label rather than on the value — the card shows
@@ -431,21 +488,45 @@ def dashboard(
         "period": date_range.model_dump(mode="json"),
         "filters": {k: v for k, v in filters.model_dump(mode="json").items() if v},
         "kpis": kpis,
-        "summary": summary,
-        "sales_trend": trend,
-        # A year of months with its plan and its two earlier years, over
-        # its own window — see the call for why it is not ``sales_trend``.
-        "monthly_performance": monthly_performance,
-        # Not ``region_performance``: that name belongs to the sales-only tool,
-        # which still runs on /api/pages/sales and is untouched there. A key
-        # that outlived what it named would leave two different shapes under one
-        # word.
-        "region_overview": region_overview,
-        # Two ranked cards under the region one, each its own grouping of the
-        # same three measures.
-        "territory_sales": territory_sales,
-        "brand_sales": brand_sales,
-        "top_brands": brands,
+        # Named rather than assumed, so the browser asks for what this build
+        # actually serves instead of a list it carries separately.
+        "sections": list(DASHBOARD_SECTIONS),
+    }
+
+
+@router.get("/dashboard/section/{name}")
+def dashboard_section(
+    name: str,
+    date_range=Depends(date_range_params),
+    filters: ScopeFilters = Depends(scope_filters),
+    session: Session = Depends(get_session),
+    user: UserContext = Depends(require_section(SectionKey.DASHBOARD)),
+) -> dict[str, Any]:
+    """One card of the dashboard, over the same period and filters as the rest.
+
+    Not audited: the frame endpoint records the view, and auditing each card
+    would file one opening of the dashboard as seven.
+    """
+    builder = DASHBOARD_SECTIONS.get(name)
+    if builder is None:
+        # Named in the refusal, because a caller that asked for a card this
+        # build does not serve should be told which ones it does.
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Unknown dashboard section '{name}'. "
+            f"This dashboard serves: {', '.join(DASHBOARD_SECTIONS)}.")
+    try:
+        section = builder(tool_context(session, user), date_range, filters, user)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise internal_error(exc, "dashboard") from exc
+
+    return {
+        "period": date_range.model_dump(mode="json"),
+        "filters": {k: v for k, v in filters.model_dump(mode="json").items() if v},
+        "name": name,
+        "section": section,
     }
 
 

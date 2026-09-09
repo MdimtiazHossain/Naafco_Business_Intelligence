@@ -111,11 +111,8 @@ const TREND_CHART_SPEC = {
   ],
 };
 
-const DASHBOARD = {
-  period: PERIOD,
-  filters: {},
-  kpis: KPIS,
-  summary: { rows: [], values: {}, notes: [] },
+/** The cards, keyed the way the section endpoint serves them. */
+const SECTIONS: Record<string, unknown> = {
   // The Sales Trend line chart follows the reader's period. `monthly_performance`
   // below is the combo card's own always-monthly section; the two are separate
   // queries over different windows and the fixture keeps them apart.
@@ -154,7 +151,19 @@ function materialsPage(level: string, rows: Record<string, unknown>[]) {
 describe('Dashboard brand ranking', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(services.dashboardService, 'get').mockResolvedValue(DASHBOARD as never);
+    // The frame names its cards; each is fetched separately, so the page's
+    // own fan-out is exercised rather than stubbed away.
+    vi.spyOn(services.dashboardService, 'get').mockResolvedValue({
+      period: PERIOD,
+      filters: {},
+      kpis: KPIS,
+      sections: Object.keys(SECTIONS),
+    } as never);
+    vi.spyOn(services.dashboardService, 'section').mockImplementation(
+      (name: string) =>
+        Promise.resolve({ period: PERIOD, filters: {}, name,
+                          section: SECTIONS[name] } as never),
+    );
     vi.spyOn(services.dashboardService, 'periodOptions').mockResolvedValue({
       options: [],
     } as never);

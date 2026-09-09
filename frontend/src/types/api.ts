@@ -774,50 +774,23 @@ export interface DashboardResponse {
   period: DateRange;
   filters: Record<string, unknown>;
   kpis: Kpi[];
-  summary: ToolResult;
-  sales_trend: ToolResult;
   /**
-   * Region target, actual, last-period actual, achievement % and growth % —
-   * one call where there were two.
+   * The cards this build serves, named by the server rather than listed here.
    *
-   * Replaces `region_performance` + `target_achievement`. The first was drawing
-   * the net sales the second already carried as `actual_sales`, so the two
-   * cards read the same column of the same view twice and could drift apart.
-   *
-   * **Not** named `region_performance`: that key belongs to the sales-only tool
-   * and is still what `/api/pages/sales` returns, which is a different shape.
+   * Each is its own request. They were all in this response until the page took
+   * nine seconds to paint — eight independent aggregates run one after another
+   * — which is the problem the business map already solved by fetching one
+   * layer per request in parallel.
    */
-  /**
-   * Twelve months of the financial year the selected period ends in, each with
-   * its target and the two years before it.
-   *
-   * **Not** `sales_trend`, although it is the same tool over the same measure.
-   * That section follows the reader's period, and a period short enough to be
-   * charted by day gives one row per date — which this card, titled "Monthly",
-   * cannot draw. The two deliberately cover different windows.
-   */
-  monthly_performance: ToolResult;
-  region_overview: ToolResult;
-  /**
-   * The same three measures as `region_overview`, grouped by territory and by
-   * brand and **ranked by what was sold** rather than by achievement.
-   *
-   * A card headed "Sales" ranked by achievement lists whoever came closest to
-   * a small target, and its top twenty is a different twenty — which is why
-   * `AchievementToolInput.rank_by` exists.
-   */
-  territory_sales: ToolResult;
-  brand_sales: ToolResult;
-  /**
-   * Brand-wise ranking with targets beside actuals — the dashboard's general
-   * performance view. Ranked by net sales, as every brand table here is.
-   */
-  top_brands: ToolResult;
-  // No sales_volume and no stock_volume. The Sales Volume card was removed from
-  // the executive view, and with it the query behind it — the figure is still
-  // reported by the Sales page, by the Sales Vol column of `top_brands` and by
-  // the agent. Material stock has no volume at all: it is four counted
-  // quantities with no pack size behind them.
+  sections: string[];
+}
+
+/** One card of the dashboard. */
+export interface DashboardSectionResponse {
+  period: DateRange;
+  filters: Record<string, unknown>;
+  name: string;
+  section: ToolResult;
 }
 
 export interface PageResponse {

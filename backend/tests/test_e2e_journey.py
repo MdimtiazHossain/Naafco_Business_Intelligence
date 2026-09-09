@@ -74,7 +74,14 @@ def test_full_management_journey(journey: TestClient, agent_engine) -> None:
     dashboard = client.get(f"/api/dashboard?{WINDOW}", headers=headers).json()
     total_sales = next(k for k in dashboard["kpis"] if k["key"] == "total_sales")
     assert total_sales["value"] == pytest.approx(1_800_000)
-    assert dashboard["sales_trend"]["rows"]
+    # The frame carries the KPI strip and names its cards; each card is its own
+    # request, fetched in parallel by the browser. A journey test walks it the
+    # way the reader does rather than reaching for a combined response that no
+    # longer exists.
+    assert "sales_trend" in dashboard["sections"]
+    trend = client.get(f"/api/dashboard/section/sales_trend?{WINDOW}",
+                       headers=headers).json()["section"]
+    assert trend["rows"]
 
     # 3. The date range is resolved by the backend, financial year included.
     periods = client.get("/api/period-options", headers=headers).json()

@@ -359,7 +359,37 @@ class BaseToolInput(BaseModel):
         return self
 
 
-class GroupedToolInput(BaseToolInput):
+class SalesMeasureToolInput(BaseToolInput):
+    """A tool that aggregates the sales measures, and may decline the dear one.
+
+    ``COUNT(DISTINCT invoice_no)`` rides on every sales aggregate through
+    ``queries.SALES_MEASURES.counts``, and it is not a column like the others:
+    a distinct count forces a ``GroupAggregate`` — every row sorted by the group
+    columns and then the invoice — where the plain sums hash-aggregate and never
+    sort. Measured on the deployment, three financial-year windows grouped by
+    region cost 46.72s with it and 6.09s without. No index can repair that (the
+    sort key starts with a column of ``dim_region``, not of ``fact_sales``), so
+    the only lever is not asking for it.
+
+    This sits between ``BaseToolInput`` and the three grouped-sales inputs
+    rather than on ``BaseToolInput`` itself: a stock or credit tool has no
+    invoice count to skip, and a flag that quietly does nothing is a setting
+    somebody will trust.
+    """
+
+    #: Whether the distinct invoice count comes back with the figures.
+    #:
+    #: **This defaults on, unlike every other ``include_`` flag here**, and the
+    #: asymmetry is deliberate rather than an oversight. Those flags add a
+    #: column that was never there; this one has been returned since the first
+    #: sales report, so defaulting it off would silently drop the Customers
+    #: page's Invoices column and a field the assistant already formats. A
+    #: caller that draws no invoice count turns it off and pays for nothing;
+    #: everyone else is unchanged by doing nothing.
+    include_invoice_count: bool = True
+
+
+class GroupedToolInput(SalesMeasureToolInput):
     """A tool that returns rows grouped by a dimension."""
 
     group_by: GroupBy = GroupBy.REGION
@@ -397,7 +427,7 @@ class VolumeToolInput(BaseToolInput):
         return max(1, min(value, MAX_LIMIT))
 
 
-class TrendToolInput(BaseToolInput):
+class TrendToolInput(SalesMeasureToolInput):
     """A time series, optionally against earlier years and the period's target.
 
     The comparison is **the caller's own window shifted back by whole years** —
@@ -539,7 +569,7 @@ class StockToolInput(BaseToolInput):
         return max(1, min(value, MAX_LIMIT))
 
 
-class AchievementToolInput(BaseToolInput):
+class AchievementToolInput(SalesMeasureToolInput):
     """Target against actual, by group.
 
     ``compare_from`` / ``compare_to`` are optional **as a pair**, the same shape
@@ -823,6 +853,7 @@ __all__ = [
     "StructuredQuery",
     "ScopeFilters",
     "BaseToolInput",
+    "SalesMeasureToolInput",
     "GroupedToolInput",
     "TrendToolInput",
     "GrowthToolInput",

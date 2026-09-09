@@ -28,7 +28,7 @@ from app.etl.mapping import MasterDataIndex
 from app.etl.pipeline import run_import
 from app.etl.readers import RecordsSourceReader
 from conftest_phase2 import make_material, sales_row, target_row
-from test_platform_api import auth, login, platform  # noqa: F401 - fixture reuse
+from test_platform_api import auth, card, login, platform  # noqa: F401 - fixture reuse
 
 WINDOW = (dt.date(2026, 8, 1), dt.date(2026, 8, 31))
 
@@ -709,6 +709,69 @@ def test_the_sales_measure_set_reports_quantity_and_net_sales():
     assert "net_sales" in q.SALES_MEASURES.sums
 
 
+def test_the_dashboard_measure_set_states_the_same_figures_as_the_full_one():
+    """The cheap set may cost less; it may not *say* less.
+
+    The dashboard and the assistant read the same warehouse through the same
+    tools, and the one thing that must never differ is a figure. So the sums are
+    asserted **identical by reference**, not merely equal: a second tuple with
+    the same contents today is a second switch that can drift tomorrow, which is
+    the failure the one-switch rule in ``SALES_MEASURES`` exists to prevent.
+    """
+    full, cheap = q.SALES_MEASURES, q.DASHBOARD_SALES_MEASURES
+
+    assert cheap.sums is full.sums
+    assert cheap.nullable_sums is full.nullable_sums
+    assert cheap.view_name == full.view_name
+    assert cheap.default_sort == full.default_sort
+
+    # The only difference is the count, and it is the expensive one that goes.
+    assert ("invoice_count", "invoice_no") in full.counts
+    assert ("invoice_count", "invoice_no") not in cheap.counts
+    # ``transaction_count`` is a plain COUNT(*) and rides along free, so a card
+    # that declines the distinct count still knows how many rows it covered.
+    assert ("transaction_count", "*") in cheap.counts
+
+
+def test_the_dashboard_measure_set_emits_no_distinct_count(seeded_engine):
+    """The saving is in the SQL, so that is where it is asserted.
+
+    A set that merely *listed* one fewer count would pass a shape test and still
+    emit the sort that costs the time.
+    """
+    with Session(seeded_engine) as session:
+        table = q.view(session, q.SALES_VIEW)
+
+    full = [str(e) for e in q.SALES_MEASURES.expressions(table)]
+    cheap = [str(e) for e in q.DASHBOARD_SALES_MEASURES.expressions(table)]
+
+    assert any("distinct" in e.lower() for e in full)
+    assert not any("distinct" in e.lower() for e in cheap)
+    # Every other expression survives, in the same order: the sums are what a
+    # sales report says, and this set says all of them.
+    assert cheap == full[:len(cheap)]
+
+
+def test_a_tool_keeps_its_invoice_count_unless_the_caller_declines_it():
+    """The saving is opt-in, and that direction is the whole safety of it.
+
+    Defaulting it off would have been the tidier change and would have silently
+    dropped a column from the assistant's answers and the Customers page. So
+    every input that carries the flag must carry it *on*, and a tool with no
+    invoice count to skip must not carry it at all — a flag that quietly does
+    nothing is a setting somebody will trust.
+    """
+    from app.ai import schemas as sc
+
+    window = {"date_from": dt.date(2026, 8, 1), "date_to": dt.date(2026, 8, 31)}
+    for model in (sc.GroupedToolInput, sc.TrendToolInput, sc.AchievementToolInput):
+        assert model(**window).include_invoice_count is True, model.__name__
+
+    for model in (sc.StockToolInput, sc.CreditToolInput, sc.GrowthToolInput,
+                  sc.BusinessSummaryToolInput, sc.VolumeToolInput):
+        assert "include_invoice_count" not in model.model_fields, model.__name__
+
+
 def test_the_transaction_table_does_not_expose_gross_columns():
     from app.reporting.columns import TRANSACTION_COLUMNS
 
@@ -1000,18 +1063,21 @@ def test_the_dashboard_ranks_fifteen_brands_not_products(client):
     token = login(client, "ceo")
     body = client.get(f"/api/dashboard?{HTTP_WINDOW}", headers=auth(token)).json()
 
-    assert "top_brands" in body
-    assert "top_products" not in body
-    rows = body["top_brands"]["rows"]
+    # The frame names its cards and each is fetched separately, so the absent
+    # name is asserted against that list rather than against the frame body —
+    # against the body it would pass on any response at all, which is the whole
+    # failure mode this assertion exists to catch.
+    assert "top_brands" in body["sections"]
+    assert "top_products" not in body["sections"]
+    rows = card(client, token, "top_brands", f"?{HTTP_WINDOW}")["rows"]
     assert len(rows) <= 15
     assert [row["label"] for row in rows][:1] == ["Example Brand"]
 
 
 def test_the_dashboard_brand_rows_carry_exactly_the_four_reported_measures(client):
     token = login(client, "ceo")
-    body = client.get(f"/api/dashboard?{HTTP_WINDOW}", headers=auth(token)).json()
 
-    row = body["top_brands"]["rows"][0]
+    row = card(client, token, "top_brands", f"?{HTTP_WINDOW}")["rows"][0]
     for field in ("rank", "label", "quantity", "volume", "net_sales"):
         assert field in row
     # The unit never travels as a column of its own.
@@ -1020,13 +1086,12 @@ def test_the_dashboard_brand_rows_carry_exactly_the_four_reported_measures(clien
 
 def test_the_dashboard_brand_ranking_respects_a_region_filter(client):
     token = login(client, "ceo")
-    everywhere = client.get(f"/api/dashboard?{HTTP_WINDOW}",
-                            headers=auth(token)).json()
-    khulna = client.get(f"/api/dashboard?{HTTP_WINDOW}&region_code=REG002",
-                        headers=auth(token)).json()
+    everywhere = card(client, token, "top_brands", f"?{HTTP_WINDOW}")
+    khulna = card(client, token, "top_brands",
+                  f"?{HTTP_WINDOW}&region_code=REG002")
 
-    def by_brand(body):
-        return {row["label"]: row["net_sales"] for row in body["top_brands"]["rows"]}
+    def by_brand(section):
+        return {row["label"]: row["net_sales"] for row in section["rows"]}
 
     # Khulna carries only part of the business, so both the membership and the
     # figures move with the filter.

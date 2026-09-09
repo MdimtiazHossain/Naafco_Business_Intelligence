@@ -42,6 +42,7 @@ from .schemas import (
     MapLayerToolInput,
     Intent,
     RootCauseToolInput,
+    SalesMeasureToolInput,
     ScopeFilters,
     StockToolInput,
     ToolResult,
@@ -288,6 +289,20 @@ def get_sales_detail(ctx: ToolContext, arguments: GroupedToolInput) -> ToolResul
     return _grouped_sales("get_sales_detail", ctx, arguments)
 
 
+def _sales_measures(arguments: SalesMeasureToolInput) -> q.MeasureSet:
+    """Which sales set this caller's aggregates read.
+
+    One function rather than the conditional written out at each call site, so
+    the flag cannot come to mean one thing on the trend and another on the
+    ranked tables — and so a reader who follows ``include_invoice_count`` from
+    the schema arrives somewhere that explains it. The sets are identical in
+    every figure they *state*; see :data:`queries.DASHBOARD_SALES_MEASURES` for
+    what the count costs and why no index removes it.
+    """
+    return (q.SALES_MEASURES if arguments.include_invoice_count
+            else q.DASHBOARD_SALES_MEASURES)
+
+
 def _add_share(ctx: ToolContext, result: ToolResult, rows: list[dict[str, Any]],
                filters: ScopeFilters, arguments: GroupedToolInput,
                truncated: bool) -> None:
@@ -304,7 +319,7 @@ def _add_share(ctx: ToolContext, result: ToolResult, rows: list[dict[str, Any]],
     because a reader who totals the column and finds 40% must be able to tell a
     short list from missing data.
     """
-    totals = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
+    totals = q.aggregate_totals(ctx.session, _sales_measures(arguments), filters,
                                 arguments.date_from, arguments.date_to)
     total = totals.get("net_sales")
     for row in rows:
@@ -328,7 +343,7 @@ def _grouped_sales(tool: str, ctx: ToolContext, arguments: GroupedToolInput,
 
     try:
         rows, truncated = q.aggregate_by(
-            ctx.session, q.SALES_MEASURES, filters, arguments.date_from,
+            ctx.session, _sales_measures(arguments), filters, arguments.date_from,
             arguments.date_to, group, limit=arguments.limit,
             direction=arguments.sort_direction,
         )
@@ -373,8 +388,9 @@ def get_sales_trend(ctx: ToolContext, arguments: TrendToolInput) -> ToolResult:
     if arguments.compare_years or arguments.include_target:
         return _multi_year_trend(ctx, arguments, filters)
 
-    rows = q.time_series(ctx.session, q.SALES_MEASURES, filters, arguments.date_from,
-                         arguments.date_to, arguments.granularity, arguments.limit)
+    rows = q.time_series(ctx.session, _sales_measures(arguments), filters,
+                         arguments.date_from, arguments.date_to,
+                         arguments.granularity, arguments.limit)
     result = _base("get_sales_trend", arguments, filters, "net_sales")
     if not rows:
         return _empty(result)
@@ -437,7 +453,7 @@ def _multi_year_trend(ctx: ToolContext, arguments: TrendToolInput,
         # a dataKey without parsing a label; the label is the platform's own
         # period name, so this tool invents no second way of naming a range.
         found = q.aligned_series(
-            ctx.session, q.SALES_MEASURES, filters, start, end,
+            ctx.session, _sales_measures(arguments), filters, start, end,
             measure="net_sales",
             key="net_sales" if offset == 0 else f"net_sales_minus_{offset}",
             label=ctx.period_name(start, end),
@@ -637,6 +653,7 @@ def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
         below_percent=arguments.below_percent, gap_only=gap_only,
         compare_from=arguments.compare_from, compare_to=arguments.compare_to,
         compare_years=arguments.compare_years, rank_by=arguments.rank_by,
+        measures=_sales_measures(arguments),
     )
     result = _base(tool, arguments, filters, "achievement_percent")
     result.sources = [q.TARGET_VIEW, q.SALES_VIEW]
