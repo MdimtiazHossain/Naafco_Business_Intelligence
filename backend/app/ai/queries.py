@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from ..etl.calendar import months_between, shift_years
 from ..etl.transforms import achievement_percent, growth_percent
 from ..etl.validation import safe_divide
+from ..security.scope import ScopePolicy
 from .schemas import GroupBy, ScopeFilters
 
 MAX_ROWS = 500
@@ -51,6 +52,45 @@ MATERIAL_STOCK_VIEW = "vw_material_stock_detail"
 CREDIT_INVOICE_VIEW = "vw_credit_invoice_detail"
 TARGET_VIEW = "vw_target_detail"
 TARGET_VS_ACTUAL_VIEW = "vw_target_vs_actual"
+
+#: What each view does about the part of a caller's data scope it cannot express.
+#:
+#: :func:`filter_conditions` skips a filter naming a column the view lacks —
+#: right for an optional narrowing, and a silent scope drop for a scope. Each
+#: view therefore states which honest answer it gives instead; see
+#: :class:`app.security.scope.ScopePolicy` for what the two mean.
+#:
+#: **Material stock is the one that discloses, and it is not the lenient
+#: option.** A stock position states a company, a plant and a storage location
+#: and nothing else — the source carries no organisational hierarchy at all —
+#: so an organisationally scoped reader is shown the whole of what exists and a
+#: note says so. Refusing instead would take the stock page away from every
+#: regional manager in the business in order to withhold a finer figure that is
+#: not recorded anywhere. Sales and target are the opposite case: they *are*
+#: held by territory and customer, so serving them to a reader whose scope
+#: cannot be checked against that hierarchy discloses figures that are somebody
+#: else's. Credit Control already refused, for the same reason and in these
+#: words, before there was a second dimension to refuse.
+#:
+#: ``TARGET_VS_ACTUAL_VIEW`` carries the same organisational columns as the two
+#: it is built from, and refuses with them.
+SCOPE_POLICY: dict[str, ScopePolicy] = {
+    SALES_VIEW: ScopePolicy.REFUSE,
+    TARGET_VIEW: ScopePolicy.REFUSE,
+    TARGET_VS_ACTUAL_VIEW: ScopePolicy.REFUSE,
+    CREDIT_INVOICE_VIEW: ScopePolicy.REFUSE,
+    MATERIAL_STOCK_VIEW: ScopePolicy.DISCLOSE,
+}
+
+
+def scope_policy(view_name: str) -> ScopePolicy:
+    """The declared policy for a view.
+
+    Unknown views **refuse**. A report added without a policy is a report
+    nobody has thought about yet, and the safe default for an unconsidered
+    report is not to answer a scoped caller it cannot scope.
+    """
+    return SCOPE_POLICY.get(view_name, ScopePolicy.REFUSE)
 
 #: The unit every material stock figure is reported in.
 #:

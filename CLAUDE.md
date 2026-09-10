@@ -181,10 +181,144 @@ Facts reference dimension surrogate keys **and** keep the raw codes for the two 
 
 ```
 authenticated & active  →  role (section's role ceiling)  →  user section ALLOW/DENY
-  →  data scope (region/area/territory… , hierarchical)  →  result
+  →  data scope (two chains: sales hierarchy, and company→plant→storage location)
+  →  result
 ```
 
 A lower layer can narrow access, never lift a restriction from above. Sections are declared once in `app/security/sections.py` and consumed by the `require_section(...)` dependency, `GET /api/admin/sections` and the frontend nav — adding a section is one entry. Scope is checked *before* the query runs and re-checked against the individual record on every write. Tokens carry identity only; role and scope are re-read from the database each request.
+
+### A data scope has two dimensions (`app/security/scope.py`)
+
+**A scope level belongs to a chain, and every scope question is asked inside
+one.** `SCOPE_DIMENSIONS` declares them: `org` is the nine `LEVEL_BINDINGS`
+levels *derived* from the warehouse's own bindings, and `plant` is
+`company → plant → storage location`, the chain `routes_masterdata.FILTER_PARENTS`
+and `filter_space` already describe for the filter bar. `company_code` is in
+**both** — the one level every structure carries, exactly as in `filter_space`,
+and so the only channel by which one chain says anything about another.
+
+**Stock is why there is a second chain at all.** `vw_material_stock_detail`
+carries a company, a plant and a storage location and none of the sales
+hierarchy, because the source states none, so a scope that can narrow a stock
+report is a scope over plants. There is **no migration**: `data_scope` is a JSON
+column and existing users are untouched.
+
+**Adding `plant_code` to the organisational list would not have worked, and
+would not have failed loudly** — the three traps, all now pinned by
+`test_scope_dimensions.py`. `LEVEL_DEPTH.get("plant_code", 0)` reads as the
+*shallowest* level of all, so `_scope_level_is_redundant` would have judged a
+plant scope already implied by any deeper level named and dropped it from the
+query. `MasterDataIndex.ancestors_of` walks `BINDING_BY_LEVEL`, which has no
+plant, so containment would answer False for **every** plant code — refusing a
+plant-scoped user everything, while a test that only asserts refusals passes on
+it, which is the `region` versus `region_code` defect this codebase has already
+paid for once. And sales carries no plant column, so `filter_conditions` would
+skip a plant scope and serve the whole country's sales. `ScopeDimension.depth`
+therefore **raises** on a foreign level rather than defaulting to zero.
+
+**Containment abstains across chains; a gate must not.**
+`_is_within_scope` asks every dimension that both holds the level and is
+constrained by the caller's scope, and all must agree — but a dimension the
+scope says nothing about *abstains*, because a region-scoped reader's scope
+makes no claim about plants and reading silence as denial would take the stock
+page away from every regional manager. That is right for "does their scope
+forbid this code" and exactly wrong for a gate, where abstention reads as
+consent: a plant-scoped account would pass `is_within_scope("region_code", …)`
+and be handed the region. So a gate over one chain asks
+`PermissionFilter.has_scope_in(dimension)` first —
+`deps.enforce_report_scope`, `datamgmt.service._within_scope_record` and
+`map.locations.subtree_codes` all do, and all three were live holes without it.
+Consumers that mean the sales hierarchy specifically read `ORG.filter_fields()`
+and say so; `permission_filter.FILTER_FIELD_BY_LEVEL` now spans every chain.
+
+**A scope this platform cannot express is refused or disclosed by a declared
+policy, never dropped in silence** (`queries.SCOPE_POLICY`, `ScopePolicy`).
+`filter_conditions` skips a filter naming a column the view lacks — right for an
+optional narrowing, a silent scope drop for a scope — so each view states which
+honest answer it gives. **Material stock discloses and that is not the lenient
+option**: it is not held below company, so an organisationally scoped reader is
+shown the whole of what exists with a note, and refusing instead would withhold
+a finer figure that is not recorded anywhere. Sales, target and credit *are*
+held by territory and customer, so the same silence there is somebody else's
+figures; they refuse. **A view with no declared policy refuses**, because a
+report nobody has thought about does not get to answer a scoped caller.
+
+**Inside a chain the check is level-by-level.** A scope granting one region
+*and* one sub-territory is two ANDed conditions, so honouring only the reachable
+half is *wider* than the grant — and where the two sit on different branches,
+wider by exactly the rows the region was there to exclude. `unhonourable_levels`
+therefore answers with levels, derived from the view's own columns.
+
+**A chain the dataset does not have is skipped entirely, and "the column is
+missing" does not tell you which case you are in** (`scope.dimension_applies`).
+Two views can both lack `region_code` for opposite reasons: a **sale states no
+plant**, so a plant scope excludes no sales row and dropping it widens nothing,
+while a **credit invoice has a region** through its customer's sub-territory
+that the view merely does not join, so dropping a region scope there serves that
+plant's invoices from customers outside it. A view says which by carrying a
+level *unique* to a chain — `company_code` is in both chains and so identifies
+neither. This was a live defect, not a hypothetical: the first version asked
+only "which of your levels is missing from this view" and therefore **refused
+every sales question from an account holding a region and a plant**, which is
+the exact account the second chain exists to serve. A coarser repair — skipping
+any chain the view carries none of the caller's levels for — fixes sales and
+silently breaks Credit Control. `test_scope_dimensions` pins both halves.
+
+**`ctx.scoped(filters, *views)` takes the views the tool is about to read, and
+they are not optional.** The check runs before the query, so a refusal can never
+be mistaken for an empty result. `_note_unsupported` looks like the natural home
+and is the wrong one: every caller of it builds its `ToolResult` *after* the
+query, so a refusal raised there would already have read the rows it was
+refusing to show. `get_business_alerts` is the one tool that guards **per
+section** rather than as a whole (`_honoured_or_noted`), because it answers four
+questions and a caller one view cannot express usually has another that can — a
+plant-scoped reader gets their stock alerts and not their sales ones. The note
+says the section was *not evaluated*, never that nothing was overdue.
+
+**The refusal is `ScopeNotEnforceable` (`SCOPE_NOT_ENFORCEABLE`), which replaced
+Credit Control's own `CreditScopeRefused`.** One mechanism, because two would
+drift; the code is its own because the caller has not asked for something
+outside their scope, they have asked for a report that cannot be *narrowed* to
+it, and nothing they type will fix that. `reporting.credit.SCOPE_LEVELS_HONOURED`
+stays a literal — that check runs without a session on every request — but
+`test_credit_control` pins it equal to the scope-bearing columns the view
+carries, which is what stops a hand-written list outliving what it names.
+
+**Making the report path view-aware closed a leak that predates the plant
+scope.** `/api/reports/*` reads narrower views than the pages do —
+`vw_target_vs_actual` carries `region_code` and nothing below it, `vw_daily_sales`
+stops at territory — so `enforce_report_scope` applied a scope that
+`_apply_filters` then discarded, and an area- or territory-scoped caller was
+served the whole country's targets. It now takes the view, refuses under its
+policy, and pins only a level that view can actually filter on (otherwise a
+caller scoped to a region *and* a plant would have `region_code` pinned on the
+stock view and discarded, leaving their plant scope unapplied by the function
+that exists to apply it). `ReportFilters` gained `plant_code` for the same
+reason: without a field to put it in, the one report a plant scope is *for*
+could not be narrowed by it.
+
+**`GRANTABLE_LEVELS` is not every level a scope may contain.**
+`storage_location_key` is in the plant chain so a plant scope *covers* it, and
+is refused at the admin endpoint because scoping somebody to one shelf is not a
+thing anybody has asked for. `_validate_scope` checks each code against **its
+own** master through `ScopeIndexes`: validating a plant against
+`MasterDataIndex` would reject every real plant with "does not exist in the
+master data", the right refusal for entirely the wrong reason. A plant code the
+master gives two companies derives no company at all and lands in
+`LocationIndex.ambiguous` — the same unambiguous-parent rule `resolve_ancestors`
+follows; neither database has such a case today, but `dim_plant` is unique on
+`company|plant`, not on the code.
+
+**The admin form draws one row per chain, from the server's own list**
+(`GET /api/admin/roles` → `scope_dimensions`, `frontend/src/components/admin/
+DataScopeFields.tsx`). It carries no list of which level is a plant, so a third
+chain would draw itself, and it falls back to the single unnamed chain it always
+had when an older API answers without them. A chain with one grantable level
+gets a plain labelled field rather than a picker with one option; codes are held
+**per level**, so switching the picker away and back does not lose what was
+typed, and only the chosen level is submitted. `company_code` is offered by the
+**first** chain that declares it (`grantable_by_dimension`) — drawn twice, it
+would be two controls writing one key, with no way to tell which took effect.
 
 ### The business map was removed (revision `0033_remove_map`) and rebuilt (`0034_business_map`)
 
@@ -936,7 +1070,7 @@ Both disagreements are still flagged. The figure no longer moves because of them
 
 **The outstanding trend is printed as a sentence, not drawn as a chart.** `_outstanding_trend` returns `NOT_AVAILABLE` with the reason, and the page renders that text. The source states one aggregate payment per invoice and one last payment date, so what was owed at a past month end is genuinely unrecorded; reconstructing it would mean assuming a payment pattern, and a chart of assumed history is indistinguishable on screen from a measured one. It becomes real when a payment-transaction extract exists — which is a different source, not a missing file.
 
-**Scope on this view is enforced or the request is refused — never partially applied, on either surface.** `queries.filter_conditions` *skips* a filter naming a column the view lacks, and `vw_credit_invoice_detail` reaches the customer's sub-territory and no further, so a region-scoped caller's scope would be dropped in silence and answered with the whole company's receivables. `/api/reports/credit-control` returns 403 naming the levels it could not honour, and `tools._credit_scope_or_refuse` raises for the same reason — **if the tool path merely disclosed it, the assistant would be a documented route to figures the API declines to serve the same person**, which is exactly what a single tool layer exists to prevent. The stock tools meet the identical gap and only *disclose* it through `_note_unsupported`; that is right there and wrong here, because stock is deliberately not held below company while credit exposure decides whether a customer keeps getting supplied. The one deliberate exception is `get_business_alerts`, which **skips** the overdue check with a note rather than refusing: it answers four questions at once, and refusing all of them would deny a regional manager their stock and achievement alerts to protect a figure they were never going to be shown. The section defaults to the unrestricted roles, who have no scope to lose. This all becomes unnecessary the day the view carries the sales hierarchy above the customer — a `dim_customer → dim_sub_territory → …` join, and a new revision.
+**Scope on this view is enforced or the request is refused — never partially applied, on either surface.** `queries.filter_conditions` *skips* a filter naming a column the view lacks, and `vw_credit_invoice_detail` reaches the customer's sub-territory and no further, so a region-scoped caller's scope would be dropped in silence and answered with the whole company's receivables. `/api/reports/credit-control` returns 403 naming the levels it could not honour, and the tool path raises for the same reason — **if the tool path merely disclosed it, the assistant would be a documented route to figures the API declines to serve the same person**, which is exactly what a single tool layer exists to prevent. The stock tools meet the identical gap and only *disclose* it; that is right there and wrong here, because stock is deliberately not held below company while credit exposure decides whether a customer keeps getting supplied. Both halves of that are now **declared rather than written twice**: `queries.SCOPE_POLICY` states REFUSE for this view and DISCLOSE for stock, `ctx.scoped` applies it before the query runs, and the bespoke `CreditScopeRefused` this section used to describe has been replaced by the shared `ScopeNotEnforceable` — see *A data scope has two dimensions*. The one deliberate exception is `get_business_alerts`, which **skips** the overdue check with a note rather than refusing: it answers four questions at once, and refusing all of them would deny a regional manager their stock and achievement alerts to protect a figure they were never going to be shown. The section defaults to the unrestricted roles, who have no scope to lose. This all becomes unnecessary the day the view carries the sales hierarchy above the customer — a `dim_customer → dim_sub_territory → …` join, and a new revision.
 
 **There is a volume test, and it is opt-in.** `pytest -m volume` loads 50,000 credit invoices (`CREDIT_VOLUME_ROWS` sets the size) because three things break only at row count and pass every small test: **bind-parameter chunking** — `fact_credit_invoice` has ~30 columns against SQLite's 32,766 ceiling, so an unchunked insert fails somewhere above eleven hundred rows, which is to say on the first real file and never in a fixture; **the `due_date` index actually being used**, since a comparison that stops being index-friendly does not break, it just grows with the table; and **the aging buckets still summing to the outstanding total**, which is arithmetic nobody can get wrong across five invoices and a real boundary check across fifty thousand. `pytest.ini` carries `-m "not volume"` in `addopts`, so the ordinary gate is unchanged. Measured on this machine: 50,000 rows load in 8.6s and 200,000 in 37.3s (~5,400 rows/s, linear), each aggregate answers in 0.1s / 0.4s, and the last page of a 200,000-row paged read costs 1.0s against 0.64s for the first. `conftest_phase2.seed_master_data` was split out of the `seeded_engine` fixture so these can hold a module-scoped database seeded the same way as everybody else's rather than a second, drifting definition of it.
 
@@ -987,7 +1121,7 @@ Run against throwaway SQLite files, never PostgreSQL, and build their own workbo
 
 - **Customer is keyed on its code and labelled by its name** (`0024_customer_name_on_views`). `dim_customer` was `PENDING_SOURCE_DATA`, so the raw `customer_code` was both key and label and a customer-wise report showed `2000060120` where every other dimension showed a name. The master has arrived — 2,091 customers, and all 909 codes the sales data uses resolve — so `customer_name` now sits beside `customer_code` on the sales and target detail views exactly as `region_name` sits beside `region_code`. This changed **what is displayed, not what anything is keyed on**: the code stays the business key, stays what filters and scope apply to, and stays what a report groups by; nothing joins on the name and nothing may. The join is a **LEFT JOIN on the code** — left, so a sale whose customer the master lacks keeps its figures and shows its code rather than vanishing from a total; on the code rather than `customer_id`, because the surrogate key is NULL on any fact loaded before its master arrived. Retired customers are **not** excluded: `is_deleted` retires a record from selection, not from history.
 - **A storage location is identified by `plant|location`, never by its code** (`0021_stock_filter_keys`). The code is unique only within a plant — `FG01` names 40 different places — so `vw_material_stock_detail` carries `storage_location_key` and `storage_location_label` (the name qualified by its plant), and `GROUP_COLUMNS[STORAGE_LOCATION]` and the storage-location filter both use the key. Grouping on the bare code merged separate locations that shared a name and split ones that did not.
-- **The Material Stock page offers only the filters that view can honour**: Company → Plant → Storage Location for where a position is held, Material Group → Material Brand → Material for what it is, plus the derived shelf-life status. It draws no period — stock has no posting date — and none of the sales hierarchy below company, no customer, sales force or batch, because `fact_material_stock` has no such column. The three material levels are no longer what makes this set distinctive: since `0022` they are global and a sales page draws them too. `queries.filter_conditions` skips a filter a view lacks, so offering one would advertise a control that silently does nothing; `frontend/contexts/FilterContext.STOCK_FILTERS` is the set, `queryFor(levels)` keeps another page's filter out of the request, and the bar's chips and "clear all" describe only the levels the page manages. Group → Brand is a narrowing, not a hierarchy: a brand can sit under more than one group, so a brand implies no group. Every stock tool calls `_note_unsupported`, so a filter reaching the agent or a hand-typed query string is still disclosed rather than ignored in silence.
+- **The Material Stock page offers only the filters that view can honour**: Company → Plant → Storage Location for where a position is held, Material Group → Material Brand → Material for what it is, plus the derived shelf-life status. It draws no period — stock has no posting date — and none of the sales hierarchy below company, no customer, sales force or batch, because `fact_material_stock` has no such column. The three material levels are no longer what makes this set distinctive: since `0022` they are global and a sales page draws them too. `queries.filter_conditions` skips a filter a view lacks, so offering one would advertise a control that silently does nothing; `frontend/contexts/FilterContext.STOCK_FILTERS` is the set, `queryFor(levels)` keeps another page's filter out of the request, and the bar's chips and "clear all" describe only the levels the page manages. Group → Brand is a narrowing, not a hierarchy: a brand can sit under more than one group, so a brand implies no group. Every stock tool calls `_note_unsupported`, so a filter reaching the agent or a hand-typed query string is still disclosed rather than ignored in silence — and since a data scope can be granted at plant level, this view is also the one a plant scope is *for*: it honours company, plant and storage location, and discloses an organisational scope it cannot express under the policy `queries.SCOPE_POLICY` declares.
 - **A target is a month of a financial year, not a date** (`0014_target_structure`). `fact_target` is ten columns — target month, financial year, territory code, sub-territory code, customer code, material code, sales force code, and the three measures — with every master attribute reached through the code that references it, so renaming a customer updates every report at once. `target_period`/`target_type` were replaced by `target_month` + `financial_year` so the upload can validate the pair against the configured calendar rather than accept any label an operator types. The Target file's column is still headed `SKU Code` — that is what the planners call it — and the dataset spec accepts either heading; what it resolves against is the Material Master.
 - **A target carries amount, quantity and volume**; only `target_amount` is required, and NULL means "no target set for this measure", never zero. The volume column keeps the `target_` prefix because a planned volume has no invoice line behind it to state a total on. There is no `target_volume_unit`, on the fact or on the view: see the no-unit convention above.
 - **The filter hierarchy is bidirectional, and declared once.** `routes_masterdata.FILTER_PARENTS` is the single map of level → parent: the nine organisational levels are *derived* from `etl.mapping.LEVEL_BINDINGS` (never restated — a second copy could drift from the one the warehouse is built on, and note it is nine, with `bu_code` between company and sales line), plus four declared edges that each name a real column — `customer_code`→`dim_customer.sub_territory_code`, `sales_force_code`→`dim_sales_force.territory_code` (inert; that dimension holds no rows), `material_code`→`material_brand`→`material_group_code` on `dim_material`, and `storage_location_key`→`plant_code`→`company_code`. Since `0022` the material chain is **global, not stock-only**: it narrows a sales or target report exactly as it narrows a stock one, and `sku_code`/`brand`/`category` are gone from `FILTER_PARENTS`, `INDEPENDENT_FILTERS` and the options endpoint. The plant chain and the shelf-life bucket are what remain stock-only. **Child → parent** is `resolve_ancestors`, served by `GET /api/master-data/ancestors/{level}` in **one** request for the whole chain and applied by the browser in **one** `setSearchParams`. Resolution is only ever started by a user changing a control — nothing watches filter state and re-derives from it — which is what makes a loop impossible by construction. A parent is selected **only when the master states it unambiguously**: a material brand that appears under two material groups resolves to no group rather than to one of them, because choosing either would silently narrow the report to half the brand.

@@ -49,6 +49,12 @@ class ReportFilters:
     #: Transaction-line filters. Not organisational scope — they narrow what the
     #: caller may already see and can never widen it.
     sub_territory_code: str | None = None
+    #: Where stock is held, and which plant raised an invoice. Not part of the
+    #: sales hierarchy — ``vw_sales_detail`` has no such column and skips it —
+    #: but a real scope level since a data scope could be granted at plant, and
+    #: without a field here a plant-scoped caller could not be narrowed on the
+    #: one report their scope is *for*.
+    plant_code: str | None = None
     batch_code: str | None = None
     financial_year: str | None = None
     limit: int = DEFAULT_LIMIT
@@ -59,8 +65,8 @@ class ReportFilters:
         names = (
             "source_system", "company_code", "bu_code", "sales_line_code", "zone_code",
             "region_code", "area_code", "unit_code", "territory_code",
-            "sub_territory_code", "sku_code", "category", "brand", "customer_code",
-            "batch_code", "financial_year",
+            "sub_territory_code", "plant_code", "sku_code", "category", "brand",
+            "customer_code", "batch_code", "financial_year",
         )
         return {
             name: getattr(self, name) for name in names if getattr(self, name) is not None

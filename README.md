@@ -779,6 +779,7 @@ user  →  role  →  data scope  →  filters injected into every query
 | `ZONE_MANAGER` / `REGIONAL_MANAGER` | `zone_code` / `region_code` |
 | `AREA_MANAGER` / `UNIT_MANAGER` | `area_code` / `unit_code` |
 | `TERRITORY_MANAGER` / `SALES_OFFICER` | `territory_code` / `sub_territory_code` |
+| a plant or depot role | `plant_code` — see below |
 
 * Scope is checked **before** the query, so unauthorised rows are never read.
 * Scope is hierarchical: a Dhaka regional manager may ask about an area inside
@@ -789,6 +790,46 @@ user  →  role  →  data scope  →  filters injected into every query
 * A non-management role with no scope sees nothing, and is told so.
 * Conversations are per-user: another user's `conversation_id` starts a fresh
   thread rather than leaking context.
+
+#### Two scope chains, not one
+
+A data scope names levels in one of **two** structures, declared once in
+`app/security/scope.py`:
+
+| Chain | Levels | Narrows |
+|---|---|---|
+| `org` | company → business unit → sales line → zone → region → area → unit → territory → sub-territory | sales, target, performance, the map |
+| `plant` | company → plant → storage location | material stock, credit invoices |
+
+Material stock records a company, a plant and a storage location and **none** of
+the sales hierarchy — the source states none — so a scope that can narrow a
+stock report is a scope over plants. `company_code` belongs to both chains and
+is the only level through which one says anything about the other. An account
+may hold one chain, the other, or both; a plant scope and a region scope on the
+same account narrow stock and sales respectively.
+
+Storage location is in the chain so that a plant scope **covers** what is inside
+it, and is deliberately not grantable: nobody is scoped to one shelf.
+
+**Depth, redundancy and containment are computed inside a chain and never
+across it.** A plant is not shallower than a region, so neither makes the other
+redundant, and a chain a scope says nothing about neither permits nor refuses —
+a region-scoped reader's scope makes no claim about plants.
+
+**A report that cannot express part of a caller's scope refuses or discloses by
+a declared policy** (`queries.SCOPE_POLICY`), checked before the query runs.
+Material stock **discloses**: it is not held below company, so an
+organisationally scoped reader sees the whole of what exists with a note, and
+refusing would withhold a finer figure that is not recorded anywhere. Sales,
+target and credit **refuse** with `SCOPE_NOT_ENFORCEABLE`, naming the levels
+that could not be applied — they *are* held by territory and customer, so
+answering would disclose somebody else's figures. A view with no declared policy
+refuses.
+
+Granting one is `/api/admin/users` as before; `GET /api/admin/roles` publishes
+`scope_dimensions` so the admin form draws one control per chain without
+carrying its own list of which level is a plant. There is **no migration** —
+`data_scope` is a JSON column and existing accounts are untouched.
 
 ### Tools (36)
 
@@ -1108,7 +1149,8 @@ role              the section's role ceiling, then the role's default
         ↓
 user section      the per-user ALLOW / DENY override
         ↓
-data scope        the organisational slice (unchanged from Phase 3)
+data scope        the slice of the business, in either or both scope chains
+                  (sales hierarchy, and company → plant → storage location)
         ↓
 API result
 ```

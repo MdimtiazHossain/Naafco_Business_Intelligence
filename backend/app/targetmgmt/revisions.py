@@ -310,10 +310,13 @@ def _assert_in_scope(user: UserContext, level: str, node_code: str,
     if user.is_unrestricted:
         return
 
-    from ..ai.permission_filter import FILTER_FIELD_BY_LEVEL
+    # The sales hierarchy alone — see ``review._scope_roots``: a revision is
+    # raised against a node of the allocation tree, and that tree holds no
+    # plant.
+    from ..security.scope import ORG
 
     scoped: set[tuple[str, str]] = set()
-    for scope_level in FILTER_FIELD_BY_LEVEL:
+    for scope_level in ORG.filter_fields():
         codes = user.data_scope.get(scope_level) or []
         key = scope_level[:-5] if scope_level.endswith("_code") else scope_level
         scoped.update((key, code) for code in codes)

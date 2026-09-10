@@ -39,6 +39,7 @@ from ..reporting.credit import (
 )
 from ..reporting.service import DEFAULT_LIMIT, MAX_LIMIT, ReportFilters
 from ..security.sections import SectionKey
+from ..ai.queries import CREDIT_INVOICE_VIEW
 from .deps import enforce_report_scope, get_session, internal_error, report_filters
 
 router = APIRouter(prefix="/api/reports/credit-control", tags=["credit-control"])
@@ -86,7 +87,7 @@ def _scoped(session: Session, user: UserContext,
     the view lacks, so a scope this report cannot honour would vanish in silence
     and serve a regional manager the whole company's receivables.
     """
-    scoped = enforce_report_scope(session, user, filters)
+    scoped = enforce_report_scope(session, user, filters, CREDIT_INVOICE_VIEW)
     try:
         assert_scope_is_honourable(user, scoped)
     except ScopeNotHonourable as exc:

@@ -37,6 +37,7 @@ from ..org.hierarchy import (
     resolve_business_entities,
     resolve_org_scope,
 )
+from ..security.scope import ORG
 from .catalogue import ManagedEntity
 
 #: ``region_code`` -> ``region``, the level name the hierarchy resolver uses.
@@ -77,7 +78,7 @@ def _user_scope_filters(user: UserContext) -> dict[str, str | None]:
     return {
         _level_name(level): codes[0]
         for level, codes in user.data_scope.items()
-        if len(codes) == 1
+        if len(codes) == 1 and ORG.holds(level)
     }
 
 
@@ -127,7 +128,8 @@ def _org_scope(session: Session, user: UserContext) -> OrgScope:
     """
     single = _user_scope_filters(user)
     multi = {
-        level: codes for level, codes in user.data_scope.items() if len(codes) > 1
+        level: codes for level, codes in user.data_scope.items()
+        if len(codes) > 1 and ORG.holds(level)
     }
     if not multi:
         return resolve_org_scope(session, single)

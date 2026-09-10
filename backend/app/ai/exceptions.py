@@ -34,6 +34,23 @@ class PermissionDeniedError(AgentError):
     user_message = "You don't have permission to access this information."
 
 
+class ScopeNotEnforceable(PermissionDeniedError):
+    """This report cannot express part of the caller's data scope.
+
+    Distinct from a plain permission denial, and the difference is worth a code
+    of its own: the caller has not asked for something outside their scope, they
+    have asked for a report that cannot be *narrowed* to it. Nothing they type
+    will fix that and retrying will not help — an administrator changing their
+    access is the only answer, so the message has to say so rather than reading
+    as "you may not see this".
+
+    ``PermissionDeniedError`` all the same, because the outcome is identical:
+    the figures exist and this caller does not get them.
+    """
+
+    code = "SCOPE_NOT_ENFORCEABLE"
+
+
 class AmbiguousEntityError(AgentError):
     """A name matched more than one master record; the agent must not guess."""
 
@@ -115,6 +132,7 @@ class UnsupportedQuestionError(AgentError):
 __all__ = [
     "AgentError",
     "PermissionDeniedError",
+    "ScopeNotEnforceable",
     "AmbiguousEntityError",
     "EntityNotFoundError",
     "DateResolutionError",

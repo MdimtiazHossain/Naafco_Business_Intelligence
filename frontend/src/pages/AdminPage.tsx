@@ -12,6 +12,12 @@ import { Link } from 'react-router-dom';
 import { PageHeader, Section } from '../components/PageHeader';
 import { CardSkeleton, QueryState } from '../components/States';
 import { useT } from '../contexts/I18nContext';
+import DataScopeFields, {
+  EMPTY_SCOPE,
+  dataScopeFrom,
+  scopeDimensions,
+  type ScopeState,
+} from '../components/admin/DataScopeFields';
 import { adminService } from '../services';
 import { DataTable } from '../tables/DataTable';
 import { formatDateTime } from '../utils/format';
@@ -22,6 +28,7 @@ function UserForm({ onDone }: { onDone: () => void }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: roleData } = useQuery({ queryKey: ['admin-roles'], queryFn: adminService.roles });
+  const dimensions = scopeDimensions(roleData);
   const [form, setForm] = useState({
     username: '',
     password: '',
@@ -29,9 +36,8 @@ function UserForm({ onDone }: { onDone: () => void }) {
     display_name: '',
     email: '',
     phone_number: '',
-    scope_level: '',
-    scope_codes: '',
   });
+  const [scope, setScope] = useState<ScopeState>(EMPTY_SCOPE);
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -46,15 +52,6 @@ function UserForm({ onDone }: { onDone: () => void }) {
   function submit(event: FormEvent) {
     event.preventDefault();
     setError(null);
-    const scope =
-      form.scope_level && form.scope_codes
-        ? {
-            [form.scope_level]: form.scope_codes
-              .split(',')
-              .map((code) => code.trim())
-              .filter(Boolean),
-          }
-        : {};
     create.mutate({
       username: form.username,
       password: form.password,
@@ -62,7 +59,7 @@ function UserForm({ onDone }: { onDone: () => void }) {
       display_name: form.display_name || undefined,
       email: form.email || undefined,
       phone_number: form.phone_number || undefined,
-      data_scope: scope,
+      data_scope: dataScopeFrom(dimensions, scope),
     });
   }
 
@@ -121,36 +118,12 @@ function UserForm({ onDone }: { onDone: () => void }) {
           ))}
         </select>
       </div>
-      <div>
-        <label className="label" htmlFor="new-scope-level">
-          {t('admin.dataScope')}
-        </label>
-        <select
-          id="new-scope-level"
-          className="input"
-          value={form.scope_level}
-          onChange={(event) => setForm({ ...form, scope_level: event.target.value })}
-        >
-          <option value="">{t('common.none')}</option>
-          {(roleData?.scope_levels ?? []).map((level) => (
-            <option key={level} value={level}>
-              {level}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label className="label" htmlFor="new-scope-codes">
-          Codes
-        </label>
-        <input
-          id="new-scope-codes"
-          className="input"
-          placeholder="REG001, REG002"
-          value={form.scope_codes}
-          onChange={(event) => setForm({ ...form, scope_codes: event.target.value })}
-        />
-      </div>
+      <DataScopeFields
+        dimensions={dimensions}
+        idPrefix="new"
+        value={scope}
+        onChange={setScope}
+      />
 
       {error && (
         <p className="sm:col-span-2 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">

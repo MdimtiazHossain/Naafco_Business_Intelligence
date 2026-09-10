@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from ..ai.permission_filter import FILTER_FIELD_BY_LEVEL, UserContext
+from ..ai.permission_filter import UserContext
 from ..auth import audit
 from ..auth.permissions import (
     action_matrix,
@@ -46,7 +46,12 @@ from ..database.models_admin import (
     UserSectionPermission,
 )
 from ..database.models_ai import AppUser, AuditAction, Role, UserStatus
-from ..etl.mapping import MasterDataIndex
+from ..security.scope import (
+    GRANTABLE_LEVELS,
+    ScopeIndexes,
+    grantable_by_dimension,
+    level_label,
+)
 from ..security.sections import (
     ACCESS_VALUES,
     ALLOW,
@@ -207,14 +212,25 @@ def _validate_scope(session: Session, scope: dict[str, list[str]]) -> dict[str, 
 
     Without this an admin could grant access to a region that does not exist,
     which would silently behave as "no access" and be very hard to diagnose.
+
+    Both dimensions, each checked against **its own** master.
+    ``MasterDataIndex`` knows the sales hierarchy and nothing about plants, so
+    validating a plant code against it would reject every real plant with "does
+    not exist in the master data" — a refusal naming the right problem for
+    entirely the wrong reason, which is worse than no check at all.
+    :class:`ScopeIndexes` puts each question to the chain that can answer it.
+
+    ``GRANTABLE_LEVELS`` rather than every level a scope may *contain*: a plant
+    scope already covers the storage locations inside it, and scoping somebody
+    to one shelf of one plant is not a thing anybody has asked for.
     """
     cleaned: dict[str, list[str]] = {}
     for level, codes in (scope or {}).items():
-        if level not in FILTER_FIELD_BY_LEVEL:
+        if level not in GRANTABLE_LEVELS:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"Unknown scope level '{level}'. Valid levels: "
-                + ", ".join(sorted(FILTER_FIELD_BY_LEVEL)),
+                + ", ".join(sorted(GRANTABLE_LEVELS)),
             )
         values = [str(code).strip() for code in codes if str(code).strip()]
         if values:
@@ -222,12 +238,12 @@ def _validate_scope(session: Session, scope: dict[str, list[str]]) -> dict[str, 
     if not cleaned:
         return {}
 
-    index = MasterDataIndex(session)
+    indexes = ScopeIndexes(session)
     unknown = [
         f"{level}={code}"
         for level, codes in cleaned.items()
         for code in codes
-        if code not in index.ids.get(level, {})
+        if not indexes.exists(level, code)
     ]
     if unknown:
         raise HTTPException(
@@ -279,7 +295,23 @@ def roles(session: Session = Depends(get_session),
             }
             for role in Role.ALL
         ],
-        "scope_levels": sorted(FILTER_FIELD_BY_LEVEL),
+        "scope_levels": sorted(GRANTABLE_LEVELS),
+        # The same levels again, grouped by the chain each belongs to, so the
+        # admin form can draw one control per chain without carrying its own
+        # list of which level is a plant. ``scope_levels`` stays beside it: it
+        # is what the form has always read, and a flat list is still the right
+        # answer to "what may be granted".
+        "scope_dimensions": [
+            {
+                "key": dimension.key,
+                "label": dimension.label,
+                "levels": [
+                    {"code_field": level, "label": level_label(level)}
+                    for level in levels
+                ],
+            }
+            for dimension, levels in grantable_by_dimension()
+        ],
         "statuses": list(UserStatus.ALL),
     }
 

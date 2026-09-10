@@ -470,7 +470,7 @@ def customers_page(
 
 def _last_transaction_by_customer(ctx, date_range, filters) -> dict[str, Any]:
     """Latest invoice date per customer inside the window and scope."""
-    scoped = ctx.scoped(filters)
+    scoped = ctx.scoped(filters, q.SALES_VIEW)
     table = q.view(ctx.session, q.SALES_VIEW)
     statement = select(
         table.c["customer_code"], func.max(table.c["full_date"])
@@ -549,7 +549,7 @@ def transactions(
 
     try:
         ctx = tool_context(session, user)
-        scoped = ctx.scoped(filters)
+        scoped = ctx.scoped(filters, _VIEW_BY_TYPE[data_type])
         table = q.view(session, _VIEW_BY_TYPE[data_type])
 
         conditions = q.filter_conditions(table, scoped, date_range.date_from,

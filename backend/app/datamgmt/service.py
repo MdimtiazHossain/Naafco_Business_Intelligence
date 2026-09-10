@@ -475,6 +475,7 @@ def _transaction_in_scope(session: Session, user: UserContext,
                           record: Any) -> bool:
     from ..ai.permission_filter import PermissionFilter
     from ..org.hierarchy import ORG_CHAIN
+    from ..security.scope import ORG
     from ..upload.registry import MASTER_MODEL_BY_TABLE  # noqa: F401
 
     if user.is_unrestricted:
@@ -483,6 +484,14 @@ def _transaction_in_scope(session: Session, user: UserContext,
         return False
 
     permissions = PermissionFilter(session, user)
+    # Every level below is organisational, so an account scoped only in another
+    # dimension has no claim on these records at all. Asked explicitly because
+    # ``is_within_scope`` *abstains* where a scope says nothing — the right
+    # answer to "does their scope forbid this code", and the wrong one for a
+    # write gate, where abstention would read as consent and hand a
+    # plant-scoped account every master record in the country.
+    if not permissions.has_scope_in(ORG):
+        return False
     # Deepest first: the narrowest level the row resolved to is the one that
     # decides, and it implies every level above it.
     for level in reversed(ORG_CHAIN):

@@ -593,7 +593,12 @@ def apply_data_scope(user: UserContext, session: Session,
     """
     permissions = PermissionFilter(session, user)
     requested = ScopeFilters()
-    from ..ai.permission_filter import FILTER_FIELD_BY_LEVEL
+    # The sales hierarchy alone: ``HierarchyFilters`` is keyed on
+    # ``ORG_CHAIN`` levels, so a plant scope folded in here would become a
+    # filter key nothing downstream reads — applied nowhere, reported as
+    # applied. The plant chain narrows the views that carry it, which is a
+    # different question asked in a different place.
+    from ..security.scope import ORG
 
     merged = {
         level: codes
@@ -605,14 +610,14 @@ def apply_data_scope(user: UserContext, session: Session,
     }
 
     for level, codes in merged.items():
-        field_name = FILTER_FIELD_BY_LEVEL.get(code_field(level))
+        field_name = ORG.filter_fields().get(code_field(level))
         if field_name:
             setattr(requested, field_name, list(codes))
 
     # Raises PermissionDeniedError for anything outside the user's scope.
     enforced = permissions.enforce(requested)
 
-    for column, field_name in FILTER_FIELD_BY_LEVEL.items():
+    for column, field_name in ORG.filter_fields().items():
         values = getattr(enforced, field_name, None)
         level = column.removesuffix("_code")
         if values and not merged.get(level):

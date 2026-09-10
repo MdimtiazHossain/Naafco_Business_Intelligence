@@ -76,6 +76,7 @@ from ..ai.permission_filter import (
 )
 from ..ai.schemas import ScopeFilters
 from ..database.models_map import GeoSource, MapEntityLocation
+from ..security.scope import ORG, scope_in
 from ..org.hierarchy import (
     ORG_CHAIN,
     ancestor_codes,
@@ -319,12 +320,23 @@ class Subtree:
 
 
 def _describe_scope(user: UserContext) -> str | None:
-    """The three-case sentence, matching Target Management's wording."""
+    """The four-case sentence, matching Target Management's wording.
+
+    The fourth arrived with the plant scope dimension: an account can now hold a
+    real scope that names nothing this map draws. Folding that into "no data
+    scope" would have been a lie an administrator would then go looking for and
+    not find, and leaving it on the third case would have read "Scoped to plant
+    1110 by your role" above a map with no plants on it.
+    """
     if user.is_unrestricted:
         return None
     if not user.data_scope:
         return ("Your account has no data scope, so no coordinates are visible "
                 "to you. An administrator grants one.")
+    if not scope_in(user.data_scope, ORG):
+        return (f"Your data scope ({user.describe_scope()}) does not cover the "
+                "sales hierarchy, which is what this map is drawn from, so no "
+                "coordinates are visible to you. An administrator grants one.")
     return f"Scoped to {user.describe_scope()} by your role"
 
 
@@ -376,7 +388,11 @@ def subtree_codes(session: Session, user: UserContext,
     # No scope at all: the explained empty view, not an error and not a map.
     # Nothing is visible and nothing exists to be counted, so both containments
     # are empty — "0 of 0", never "0 of 94".
-    if not user.is_unrestricted and not user.data_scope:
+    # ``scope_in(..., ORG)`` rather than ``data_scope``: every level this map
+    # draws is organisational, so a scope naming only plants leaves it with
+    # nothing to place — the same empty view, reached for a reason worth telling
+    # them apart in the note below.
+    if not user.is_unrestricted and not scope_in(user.data_scope, ORG):
         nothing = {level: set() for level in ORG_CHAIN}
         return Subtree(codes=nothing, selected_level=None, empty=True,
                        scope_note=scope_note, scope_codes=dict(nothing),

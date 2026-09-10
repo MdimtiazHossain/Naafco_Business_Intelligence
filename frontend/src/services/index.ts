@@ -63,6 +63,7 @@ import type {
   RecordListResponse,
   Role,
   RoleSummary,
+  ScopeDimension,
   SalesPage,
   SearchResult,
   Section,
@@ -947,7 +948,12 @@ export const adminService = {
   ) => request<{ total: number; users: User[] }>('/api/admin/users', { params }),
   user: (userId: number) => request<User>(`/api/admin/users/${userId}`),
   roles: () =>
-    request<{ roles: RoleSummary[]; scope_levels: string[]; statuses: UserStatus[] }>(
+    request<{
+      roles: RoleSummary[];
+      scope_levels: string[];
+      scope_dimensions?: ScopeDimension[];
+      statuses: UserStatus[];
+    }>(
       '/api/admin/roles',
     ),
   sections: () =>

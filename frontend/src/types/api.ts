@@ -113,6 +113,21 @@ export interface ManagedField {
   choices: string[];
 }
 
+/**
+ * One chain a data scope can be granted in, as `/api/admin/roles` describes it.
+ *
+ * Sent by the server rather than derived here, so the admin form carries no
+ * list of which level belongs to which chain — the thing that would go stale
+ * the day a third chain exists. A level in two chains is offered by the first,
+ * so `company_code` appears under the sales hierarchy and not under plants.
+ */
+export interface ScopeDimension {
+  key: string;
+  /** The server's own English name for the chain; a fallback for the i18n key. */
+  label: string;
+  levels: { code_field: string; label: string }[];
+}
+
 export interface ManagedEntity {
   /**
    * The heading this record is listed under on the two data screens.

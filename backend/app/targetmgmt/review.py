@@ -62,6 +62,7 @@ from ..database.models_target import (
 )
 from ..database.models_warehouse import DimCustomer
 from ..etl.calendar import FinancialYearConfig
+from ..security.scope import ORG, scope_in
 from . import country, history as history_module, seasonality
 
 #: Which dimension carries each level's display name, and under which column.
@@ -114,10 +115,12 @@ def _scope_roots(user: UserContext,
     if user.is_unrestricted:
         return {key for key, node in nodes.items() if node["parent_code"] is None}
 
-    from ..ai.permission_filter import FILTER_FIELD_BY_LEVEL
+    # The allocation tree is built from the sales hierarchy, so only that
+    # dimension can name a root in it. A plant scope would match no node here;
+    # asking for it would be asking a question this tree cannot answer.
 
     roots: set[tuple[str, str]] = set()
-    for scope_level, field in FILTER_FIELD_BY_LEVEL.items():
+    for scope_level, field in ORG.filter_fields().items():
         codes = user.data_scope.get(scope_level) or []
         # ``region_code`` -> ``region``; the tree's levels drop the suffix.
         level = scope_level[:-5] if scope_level.endswith("_code") else scope_level
@@ -556,6 +559,15 @@ def _describe_scope(user: UserContext) -> str:
     if not user.data_scope:
         return ("Your account has no data scope, so no part of this target is "
                 "visible to you. An administrator grants one.")
+    # Four cases now, not three. An allocation tree is built from the sales
+    # hierarchy, so a scope naming only plants is a real scope that reaches none
+    # of it — neither "no data scope", which is untrue and sends an
+    # administrator looking for something already there, nor "Scoped to plant
+    # 1110 by your role" over a tree with no plant in it.
+    if not scope_in(user.data_scope, ORG):
+        return (f"Your data scope ({user.describe_scope()}) does not cover the "
+                "sales hierarchy, which is how a target is allocated, so no "
+                "part of this target is visible to you.")
     return f"Scoped to {user.describe_scope()} by your role"
 
 

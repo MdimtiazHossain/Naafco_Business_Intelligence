@@ -112,7 +112,8 @@ def require_admin(user=Depends(get_current_user),
     return user
 
 
-def enforce_report_scope(session: Session, user, filters: ReportFilters) -> ReportFilters:
+def enforce_report_scope(session: Session, user, filters: ReportFilters,
+                         view: str) -> ReportFilters:
     """Constrain a Phase 2 report's filters to the caller's data scope.
 
     ``ReportFilters`` predates the scope model and holds one code per level,
@@ -128,7 +129,22 @@ def enforce_report_scope(session: Session, user, filters: ReportFilters) -> Repo
     single-valued filter, so they are pointed at ``/api/pages/*``, which carries
     the full multi-code scope. Refusing is the only safe answer: guessing one of
     their codes would silently hide the rest.
+
+    **``view`` is required, and it closes a hole that predates the plant
+    scope.** ``_apply_filters`` drops a filter naming a column the view lacks,
+    and these endpoints do not all read the wide detail views the pages do:
+    ``vw_target_vs_actual`` carries ``region_code`` and nothing else below it,
+    and ``vw_daily_sales`` stops at territory. So the scope this function
+    carefully applied was then discarded further down, and an area- or
+    territory-scoped caller was served the whole country's targets. Asking the
+    view what it can express — and refusing under its declared policy — is the
+    same check the tool path makes, so the two surfaces can no longer disagree
+    about who may see what.
     """
+    import dataclasses
+
+    from ..ai import queries as q
+    from ..ai.exceptions import PermissionDeniedError
     from ..ai.permission_filter import FILTER_FIELD_BY_LEVEL, PermissionFilter
 
     permissions = PermissionFilter(session, user)
@@ -141,6 +157,13 @@ def enforce_report_scope(session: Session, user, filters: ReportFilters) -> Repo
             "Your account has no data scope assigned, so no business data can be "
             "returned. Please contact your administrator.",
         )
+
+    table = q.view(session, view)
+    try:
+        permissions.assert_scope_is_honourable(
+            table, q.scope_policy(view), "this report")
+    except PermissionDeniedError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, exc.user_message) from exc
 
     supplied = [
         (level, getattr(filters, level))
@@ -157,16 +180,26 @@ def enforce_report_scope(session: Session, user, filters: ReportFilters) -> Repo
     if supplied:
         return filters
 
-    import dataclasses
-
     expressible = {field.name for field in dataclasses.fields(filters)}
-    for level in user.scope_levels():          # deepest first
-        if level not in expressible:
-            continue                            # e.g. sub-territory has no filter
+    # Only a level this view can actually filter on. Taking the deepest scope
+    # level regardless would pin ``region_code`` on a caller scoped to a region
+    # *and* a plant and then have the stock view discard it, leaving their plant
+    # scope unapplied — a scope silently dropped by the very function that
+    # exists to apply it.
+    for level in user.scope_levels():          # deepest first, within each chain
+        if level not in expressible or level not in table.c:
+            continue
         codes = user.data_scope[level]
         if len(codes) != 1:
             break
         return dataclasses.replace(filters, **{level: codes[0]})
+
+    if not any(level in table.c for level in user.scope_levels()):
+        # Nothing of this scope is expressible here and the view's policy is to
+        # disclose anyway — material stock, which is not held below company and
+        # has no finer figure to withhold. Unchanged behaviour, now reached by a
+        # stated rule instead of by the filter quietly evaporating downstream.
+        return filters
 
     raise HTTPException(
         status.HTTP_403_FORBIDDEN,
@@ -224,6 +257,7 @@ def report_filters(
     unit_code: str | None = None,
     territory_code: str | None = None,
     sub_territory_code: str | None = None,
+    plant_code: str | None = Query(None, description="One plant, for stock."),
     sku_code: str | None = None,
     category: str | None = None,
     brand: str | None = None,
@@ -251,6 +285,7 @@ def report_filters(
         unit_code=unit_code,
         territory_code=territory_code,
         sub_territory_code=sub_territory_code,
+        plant_code=plant_code,
         sku_code=sku_code,
         category=category,
         brand=brand,

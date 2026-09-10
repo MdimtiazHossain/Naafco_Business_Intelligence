@@ -52,6 +52,17 @@ from .schemas import (
 
 logger = logging.getLogger("app.ai.tools")
 
+#: How a refusal names the report it is about. A reader does not know what
+#: ``vw_sales_detail`` is, and "this report" twice in one sentence explains
+#: nothing about which of their questions was refused.
+_SUBJECT_BY_VIEW: dict[str, str] = {
+    q.SALES_VIEW: "sales figures",
+    q.TARGET_VIEW: "target figures",
+    q.TARGET_VS_ACTUAL_VIEW: "target achievement",
+    q.CREDIT_INVOICE_VIEW: "Credit Control",
+    q.MATERIAL_STOCK_VIEW: "material stock",
+}
+
 
 @dataclass
 class ToolContext:
@@ -62,9 +73,30 @@ class ToolContext:
     user: UserContext
     today: dt.date = field(default_factory=dt.date.today)
 
-    def scoped(self, filters: ScopeFilters) -> ScopeFilters:
-        """Apply the user's data scope. Called first by every tool."""
-        return self.permissions.enforce(filters)
+    def scoped(self, filters: ScopeFilters, *views: str) -> ScopeFilters:
+        """Apply the user's data scope, and settle what the views cannot express.
+
+        Called first by every tool, and **the views are not optional**. Passing
+        them here rather than checking later is what keeps the promise at the
+        top of this module: a report that must refuse a scope refuses before a
+        row is read, so the refusal can never be mistaken for an empty result.
+
+        ``_note_unsupported`` looks like the natural home for this and is the
+        wrong one — every caller of it builds its ``ToolResult`` *after* the
+        query, so a refusal raised there would already have read the rows it
+        was refusing to show.
+
+        A tool reading two views passes both; the strictest answer wins, since
+        each is checked in turn and any may raise.
+        """
+        enforced = self.permissions.enforce(filters)
+        for view_name in views:
+            self.permissions.assert_scope_is_honourable(
+                q.view(self.session, view_name),
+                q.scope_policy(view_name),
+                _SUBJECT_BY_VIEW.get(view_name, "this report"),
+            )
+        return enforced
 
     def period_name(self, start: dt.date, end: dt.date) -> str:
         """What to call a range a tool computed rather than one a reader named.
@@ -169,6 +201,34 @@ def _note_unsupported(result: ToolResult, session: Session, view_name: str,
         )
 
 
+def _honoured_or_noted(ctx: "ToolContext", result: ToolResult, view_name: str,
+                       what: str) -> bool:
+    """Whether ``view_name`` can honour the caller's scope, noting it if not.
+
+    The alternative to :meth:`ToolContext.scoped`, for a tool that answers
+    **several** questions from several views. Refusing the whole answer because
+    one of its parts cannot be scoped would deny a reader the parts that can
+    be: a regional manager would lose their stock and achievement alerts to
+    protect a receivables figure they were never going to be shown.
+
+    The note says the section was *not evaluated*, which is the honest reading.
+    Silently omitting it would read as "nothing was overdue" — a claim nobody
+    checked, and the worst of the three possible answers.
+    """
+    try:
+        ctx.permissions.assert_scope_is_honourable(
+            q.view(ctx.session, view_name), q.scope_policy(view_name),
+            _SUBJECT_BY_VIEW.get(view_name, "this report"))
+    except PermissionDeniedError:
+        result.notes.append(
+            f"{what} were not checked: this report cannot apply your data scope "
+            f"to {_SUBJECT_BY_VIEW.get(view_name, view_name)}, so nothing is "
+            f"reported for them either way."
+        )
+        return False
+    return True
+
+
 def _empty(result: ToolResult) -> ToolResult:
     """No rows is a legitimate answer, not an error — but it is flagged."""
     result.notes.append("No data found for the selected period and filters.")
@@ -204,7 +264,7 @@ def _volume_result(ctx: ToolContext, tool: str, view_name: str, noun: str,
     sum of the lines in scope — the same arithmetic as net sales. Lines the
     file gave no volume for are excluded and counted, never read as zero.
     """
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, view_name)
     result = _base(tool, arguments, filters, "volume")
 
     rows = q.volume_by_group(ctx.session, view_name, filters,
@@ -261,7 +321,7 @@ def get_sales_volume(ctx: ToolContext, arguments: VolumeToolInput) -> ToolResult
           "gross profit, average selling price and gross margin %.",
           BaseToolInput, [Intent.SALES_SUMMARY])
 def get_sales_summary(ctx: ToolContext, arguments: BaseToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW)
     totals = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
                                 arguments.date_from, arguments.date_to)
     result = _base("get_sales_summary", arguments, filters, "net_sales")
@@ -336,7 +396,7 @@ def _add_share(ctx: ToolContext, result: ToolResult, rows: list[dict[str, Any]],
 
 def _grouped_sales(tool: str, ctx: ToolContext, arguments: GroupedToolInput,
                    group_by: GroupBy | None = None) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW)
     group = group_by or arguments.group_by
     result = _base(tool, arguments, filters, "net_sales")
     _note_unsupported(result, ctx.session, q.SALES_VIEW, filters)
@@ -384,7 +444,7 @@ def _grouped_sales(tool: str, ctx: ToolContext, arguments: GroupedToolInput,
 @register("get_sales_trend", "Daily or monthly sales over a period, for trend charts.",
           TrendToolInput, [Intent.SALES_TREND])
 def get_sales_trend(ctx: ToolContext, arguments: TrendToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW)
     if arguments.compare_years or arguments.include_target:
         return _multi_year_trend(ctx, arguments, filters)
 
@@ -588,7 +648,7 @@ def get_sales_growth(ctx: ToolContext, arguments: GrowthToolInput) -> ToolResult
 
 def _growth(tool: str, ctx: ToolContext, arguments: GrowthToolInput,
             measures: q.MeasureSet, measure: str, view_name: str) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, view_name)
     current = q.aggregate_totals(ctx.session, measures, filters, arguments.date_from,
                                  arguments.date_to)
     previous = q.aggregate_totals(ctx.session, measures, filters, arguments.compare_from,
@@ -642,7 +702,7 @@ def get_sales_achievement(ctx: ToolContext, arguments: AchievementToolInput) -> 
 
 def _target_view(tool: str, ctx: ToolContext, arguments: AchievementToolInput,
                  gap_only: bool = False) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW, q.TARGET_VIEW)
     # The narrowing goes *into* the query rather than being applied to what it
     # returns: this list is already cut to ``limit``, so filtering it here tested
     # the reader's condition against a pre-selected handful. See
@@ -765,7 +825,7 @@ _SNAPSHOT_NOTE = (
           "in-transit quantities, with the total across all four.",
           StockToolInput, [Intent.STOCK_SUMMARY])
 def get_stock_summary(ctx: ToolContext, arguments: StockToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.MATERIAL_STOCK_VIEW)
     totals = q.material_stock_totals(ctx.session, filters, today=ctx.today,
                                      soon_days=_stock_horizon(arguments))
     result = _base("get_stock_summary", arguments, filters, "total_stock")
@@ -846,7 +906,7 @@ def _stock_by(tool: str, ctx: ToolContext, arguments: "StockToolInput",
     answer different questions and a stock report states all four. ``sort_by``
     decides only the order and the headline sentence.
     """
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.MATERIAL_STOCK_VIEW)
     measure = arguments.sort_by
     rows, truncated = q.material_stock_by(ctx.session, filters, group,
                                           limit=arguments.limit,
@@ -922,7 +982,7 @@ def get_stock_by_material_brand(ctx: ToolContext,
           "date recorded.",
           StockToolInput, [Intent.STOCK_EXPIRY])
 def get_stock_expiry(ctx: ToolContext, arguments: StockToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.MATERIAL_STOCK_VIEW)
     soon_days = _stock_horizon(arguments)
     rows = q.expiry_buckets(ctx.session, filters, today=ctx.today, soon_days=soon_days)
     result = _base("get_stock_expiry", arguments, filters, "total_stock")
@@ -959,7 +1019,7 @@ def get_stock_expiry(ctx: ToolContext, arguments: StockToolInput) -> ToolResult:
           "Individual stock positions at or past their shelf life, soonest first.",
           StockToolInput, [Intent.EXPIRING_STOCK])
 def get_expiring_stock(ctx: ToolContext, arguments: StockToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.MATERIAL_STOCK_VIEW)
     soon_days = _stock_horizon(arguments)
     rows, truncated = q.expiring_rows(ctx.session, filters, today=ctx.today,
                                       soon_days=soon_days, limit=arguments.limit)
@@ -990,7 +1050,7 @@ def get_expiring_stock(ctx: ToolContext, arguments: StockToolInput) -> ToolResul
 @register("get_target_summary", "Total target for a period.",
           BaseToolInput, [Intent.TARGET_SUMMARY])
 def get_target_summary(ctx: ToolContext, arguments: BaseToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.TARGET_VIEW)
     totals = q.aggregate_totals(ctx.session, q.TARGET_MEASURES, filters,
                                 arguments.date_from, arguments.date_to)
     result = _base("get_target_summary", arguments, filters, "target_amount")
@@ -1111,7 +1171,7 @@ def get_map_layer(ctx: ToolContext, arguments: MapLayerToolInput) -> ToolResult:
     sign the executive brand table uses and deliberately not ``queries.gap``,
     which is the reverse.
     """
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW, q.TARGET_VIEW)
     group = arguments.group_by
     result = _base("get_map_layer", arguments, filters, "net_sales")
     _note_unsupported(result, ctx.session, q.SALES_VIEW, filters)
@@ -1312,7 +1372,7 @@ def get_material_brand_target_performance(ctx: ToolContext,
     if not result.rows:
         return result
 
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW, q.TARGET_VIEW)
     target_rows, _ = q.aggregate_by(
         ctx.session, q.TARGET_MEASURES, filters, arguments.date_from,
         arguments.date_to, GroupBy.MATERIAL_BRAND, limit=q.MAX_ROWS,
@@ -1371,7 +1431,7 @@ def get_material_brand_target_performance(ctx: ToolContext,
           "alerts, best and worst region, top brand.",
           BusinessSummaryToolInput, [Intent.BUSINESS_SUMMARY])
 def get_business_summary(ctx: ToolContext, arguments: BusinessSummaryToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW, q.TARGET_VIEW, q.MATERIAL_STOCK_VIEW)
     result = _base("get_business_summary", arguments, filters, "net_sales")
     result.sources = [q.SALES_VIEW, q.TARGET_VIEW, q.MATERIAL_STOCK_VIEW]
 
@@ -1437,62 +1497,6 @@ def get_business_summary(ctx: ToolContext, arguments: BusinessSummaryToolInput) 
 # ---------------------------------------------------------------------------
 
 
-class CreditScopeRefused(PermissionDeniedError):
-    """The caller's data scope cannot be enforced on the credit view.
-
-    An ``AgentError``, so the orchestrator phrases it for the reader instead of
-    turning it into the generic "something went wrong" every unexpected
-    exception becomes. A refusal the user cannot understand is one they will
-    report as a bug — and this one has a real answer: their scope cannot be
-    applied to receivables, and an administrator is who changes that.
-
-    ``PermissionDeniedError`` specifically, because that is what this is. The
-    figures exist and the caller may not have them, which is the same statement
-    the endpoint's 403 makes.
-    """
-
-    code = "CREDIT_SCOPE_NOT_ENFORCEABLE"
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(
-            detail,
-            user_message=(
-                "I can't answer receivables questions for your data scope. Credit "
-                "invoices are recorded by company, plant and customer, so a scope "
-                "set at region or territory level can't be applied to them — and "
-                "I won't answer with figures that ignore it. Ask an administrator "
-                "about Credit Control access."
-            ),
-        )
-
-
-def _credit_scope_or_refuse(ctx: ToolContext) -> None:
-    """Refuse a receivables question this view cannot scope, before querying it.
-
-    **This is what stops the assistant becoming a way around the endpoint.**
-    ``queries.filter_conditions`` skips a filter naming a column the view lacks,
-    and ``vw_credit_invoice_detail`` reaches the customer's sub-territory and no
-    further — so a region-scoped caller's scope would be dropped and they would
-    be answered with the whole company's receivables.
-
-    The stock tools meet the same gap and merely *disclose* it, through
-    ``_note_unsupported``. That is right there and wrong here: stock is
-    deliberately not held below company, and a national stock figure with a note
-    is a reasonable answer. Credit exposure is the basis for stopping a
-    customer's supply, and ``/api/reports/credit-control`` refuses rather than
-    discloses — so this path refuses too, or the two surfaces would disagree
-    about who may see what, which is precisely the thing a single tool layer
-    exists to prevent.
-    """
-    from ..reporting.credit import ScopeNotHonourable, assert_scope_is_honourable
-    from ..reporting.service import ReportFilters
-
-    try:
-        assert_scope_is_honourable(ctx.user, ReportFilters())
-    except ScopeNotHonourable as exc:
-        raise CreditScopeRefused(str(exc)) from exc
-
-
 def _credit_dates(ctx: ToolContext, arguments: CreditToolInput) -> tuple[dt.date, int]:
     """The reporting date and the Due Soon horizon for one question.
 
@@ -1521,8 +1525,7 @@ def _credit_base(tool: str, ctx: ToolContext, arguments: CreditToolInput,
           "as at a reporting date. Outstanding counts open invoices only.",
           CreditToolInput, [Intent.CREDIT_SUMMARY])
 def get_credit_summary(ctx: ToolContext, arguments: CreditToolInput) -> ToolResult:
-    _credit_scope_or_refuse(ctx)
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.CREDIT_INVOICE_VIEW)
     as_on, due_soon = _credit_dates(ctx, arguments)
     totals = q.credit_totals(ctx.session, filters, arguments.date_from,
                              arguments.date_to, as_on=as_on, due_soon_days=due_soon)
@@ -1550,8 +1553,7 @@ def get_credit_summary(ctx: ToolContext, arguments: CreditToolInput) -> ToolResu
           "they are, as at a reporting date. Open invoices only.",
           CreditToolInput, [Intent.CREDIT_AGING])
 def get_credit_aging(ctx: ToolContext, arguments: CreditToolInput) -> ToolResult:
-    _credit_scope_or_refuse(ctx)
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.CREDIT_INVOICE_VIEW)
     as_on, _due_soon = _credit_dates(ctx, arguments)
     rows = q.credit_aging_rows(ctx.session, filters, arguments.date_from,
                                arguments.date_to, as_on=as_on)
@@ -1582,8 +1584,7 @@ def get_credit_aging(ctx: ToolContext, arguments: CreditToolInput) -> ToolResult
           "the oldest due date for each.",
           CreditToolInput, [Intent.CREDIT_OVERDUE])
 def get_overdue_customers(ctx: ToolContext, arguments: CreditToolInput) -> ToolResult:
-    _credit_scope_or_refuse(ctx)
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.CREDIT_INVOICE_VIEW)
     as_on, _due_soon = _credit_dates(ctx, arguments)
     rows, truncated = q.overdue_customers(ctx.session, filters, arguments.date_from,
                                           arguments.date_to, as_on=as_on)
@@ -1618,20 +1619,29 @@ def get_business_alerts(ctx: ToolContext, arguments: AlertToolInput) -> ToolResu
     result.sources = [q.SALES_VIEW, q.TARGET_VIEW, q.MATERIAL_STOCK_VIEW]
     alerts: list[dict[str, Any]] = []
 
-    rows, _, _ = q.target_vs_actual(ctx.session, filters, arguments.date_from,
-                                    arguments.date_to, GroupBy.REGION, limit=200)
-    for row in rows:
-        achievement = row["achievement_percent"]
-        if achievement is not None and achievement < arguments.achievement_below_percent:
-            alerts.append(_alert(
-                "LOW_ACHIEVEMENT",
-                "CRITICAL" if achievement < arguments.achievement_below_percent * 0.75
-                else "HIGH",
-                entity=row.get("label") or row["code"], entity_type="region",
-                metric="achievement_percent", value=achievement,
-                threshold=arguments.achievement_below_percent,
-                attention="Review coverage, stock availability and pending orders.",
-            ))
+    # Each section is guarded on its own view rather than the whole tool being
+    # guarded on all of them. This tool answers four questions, and a caller
+    # whose scope one view cannot express usually has another that can — a
+    # plant-scoped reader gets their stock alerts and not their sales ones,
+    # which is exactly the split that makes their access mean anything.
+    sales_scoped = _honoured_or_noted(
+        ctx, result, q.SALES_VIEW, "Achievement and sales-decline alerts")
+    if sales_scoped:
+        rows, _, _ = q.target_vs_actual(ctx.session, filters, arguments.date_from,
+                                        arguments.date_to, GroupBy.REGION, limit=200)
+        for row in rows:
+            achievement = row["achievement_percent"]
+            if (achievement is not None
+                    and achievement < arguments.achievement_below_percent):
+                alerts.append(_alert(
+                    "LOW_ACHIEVEMENT",
+                    "CRITICAL" if achievement < arguments.achievement_below_percent * 0.75
+                    else "HIGH",
+                    entity=row.get("label") or row["code"], entity_type="region",
+                    metric="achievement_percent", value=achievement,
+                    threshold=arguments.achievement_below_percent,
+                    attention="Review coverage, stock availability and pending orders.",
+                ))
 
     # HIGH_OVERDUE is back, against a source that exists (revision 0031). It
     # measures the overdue *share* of the portfolio rather than the amount: a
@@ -1640,19 +1650,10 @@ def get_business_alerts(ctx: ToolContext, arguments: AlertToolInput) -> ToolResu
     # grows.
     #
     # Skipped rather than refused when the caller's scope cannot be enforced on
-    # the credit view. This tool answers four questions at once and the other
-    # three are properly scoped, so refusing the lot would deny a regional
-    # manager their stock and achievement alerts to protect a receivables figure
-    # they simply do not get. The note says the alert was not evaluated, which is
-    # the honest reading — not that nothing was overdue.
-    try:
-        _credit_scope_or_refuse(ctx)
-    except CreditScopeRefused:
-        result.notes.append(
-            "Overdue receivables were not checked: this report cannot apply your "
-            "data scope to credit invoices, so no receivables figure is included."
-        )
-    else:
+    # the credit view — the rule this tool established, now shared with the
+    # other three sections through ``_honoured_or_noted``.
+    if _honoured_or_noted(ctx, result, q.CREDIT_INVOICE_VIEW,
+                          "Overdue receivables"):
         credit = q.credit_totals(
             ctx.session, filters, arguments.date_from, arguments.date_to,
             as_on=ctx.today,
@@ -1708,22 +1709,26 @@ def get_business_alerts(ctx: ToolContext, arguments: AlertToolInput) -> ToolResu
             attention=f"Move or sell within {soon_days} days.",
         ))
 
-    span = (arguments.date_to - arguments.date_from).days + 1
-    previous_to = arguments.date_from - dt.timedelta(days=1)
-    previous_from = previous_to - dt.timedelta(days=span - 1)
-    current_sales = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
-                                       arguments.date_from, arguments.date_to)
-    previous_sales = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
-                                        previous_from, previous_to)
-    change = q.compare_totals(current_sales, previous_sales, "net_sales")
-    if (change["growth_percent"] is not None
-            and change["growth_percent"] < -arguments.sales_decline_percent):
-        alerts.append(_alert(
-            "SALES_DECLINE", "HIGH", entity="Total sales", entity_type="company",
-            metric="growth_percent", value=change["growth_percent"],
-            threshold=-arguments.sales_decline_percent,
-            attention="Run a root-cause analysis to locate the contributors.",
-        ))
+    # Same guard as the achievement section above, and deliberately the same
+    # note: both read the sales view, so one sentence covers them and two would
+    # say the same thing twice to a reader who can act on neither.
+    if sales_scoped:
+        span = (arguments.date_to - arguments.date_from).days + 1
+        previous_to = arguments.date_from - dt.timedelta(days=1)
+        previous_from = previous_to - dt.timedelta(days=span - 1)
+        current_sales = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
+                                           arguments.date_from, arguments.date_to)
+        previous_sales = q.aggregate_totals(ctx.session, q.SALES_MEASURES, filters,
+                                            previous_from, previous_to)
+        change = q.compare_totals(current_sales, previous_sales, "net_sales")
+        if (change["growth_percent"] is not None
+                and change["growth_percent"] < -arguments.sales_decline_percent):
+            alerts.append(_alert(
+                "SALES_DECLINE", "HIGH", entity="Total sales", entity_type="company",
+                metric="growth_percent", value=change["growth_percent"],
+                threshold=-arguments.sales_decline_percent,
+                attention="Run a root-cause analysis to locate the contributors.",
+            ))
 
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     alerts.sort(key=lambda a: severity_order.get(a["severity"], 9))
@@ -1765,7 +1770,7 @@ def _alert(alert_type: str, severity: str, entity: Any, entity_type: str, metric
           "Returns facts and interpretations separately.",
           RootCauseToolInput, [Intent.ROOT_CAUSE_ANALYSIS])
 def get_root_cause_analysis(ctx: ToolContext, arguments: RootCauseToolInput) -> ToolResult:
-    filters = ctx.scoped(arguments.filters)
+    filters = ctx.scoped(arguments.filters, q.SALES_VIEW)
     result = _base("get_root_cause_analysis", arguments, filters, "net_sales")
     result.sources = [q.SALES_VIEW]
 

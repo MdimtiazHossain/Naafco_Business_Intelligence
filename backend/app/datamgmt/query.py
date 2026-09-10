@@ -329,8 +329,27 @@ def list_transactions(session: Session, user: UserContext,
     from ..api.routes_dashboard import tool_context
 
     context = tool_context(session, user)
-    scoped = context.scoped(request.business_filters or ScopeFilters())
     table = _table_for(session, entity, request.include_voided)
+    # Checked against the table this query will actually read — which for
+    # ``include_voided`` is the fact table, not the view — but under the
+    # *dataset's* policy, which the view name identifies. The policy is a
+    # decision about the dataset and does not change because somebody ticked
+    # "show voided rows".
+    #
+    # **The two tables honour different scopes, and that is the point.**
+    # ``_transaction_columns`` says why: the view resolves the organisational
+    # names while the fact table holds only the surrogate keys, so
+    # ``fact_sales`` carries no ``region_code`` at all — and
+    # ``filter_conditions`` skips a filter naming a column that is not there.
+    # A scoped caller asking to see voided sales rows was therefore served
+    # *everybody's*, silently. They are now refused. The ordinary path is
+    # untouched: without ``include_voided`` this reads the view, which carries
+    # every organisational level. ``fact_material_stock`` does carry
+    # ``company_code`` and ``plant_code``, so the stock list is unaffected
+    # either way.
+    scoped = context.scoped(request.business_filters or ScopeFilters())
+    context.permissions.assert_scope_is_honourable(
+        table, q.scope_policy(entity.view_name or ""), "this transaction list")
 
     conditions = q.filter_conditions(table, scoped, request.date_from,
                                      request.date_to)

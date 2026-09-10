@@ -31,9 +31,21 @@ from .deps import enforce_report_scope, get_session, internal_error, report_filt
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
+#: The view each report reads, for the scope check. Deliberately the *narrow*
+#: view each handler actually queries rather than the wide detail view of the
+#: same dataset: ``sales_report`` reads ``vw_daily_sales`` and ``target_report``
+#: reads ``vw_target_vs_actual``, and it is exactly the columns those two lack
+#: that used to make a scope vanish here.
+_SCOPE_VIEW: dict[str, str] = {
+    "sales": "vw_daily_sales",
+    "stock": "vw_material_stock_detail",
+    "target": "vw_target_vs_actual",
+}
+
+
 def _run(handler, session: Session, filters: ReportFilters, user: UserContext,
          name: str) -> dict[str, Any]:
-    scoped = enforce_report_scope(session, user, filters)
+    scoped = enforce_report_scope(session, user, filters, _SCOPE_VIEW[name])
     try:
         return handler(session, scoped)
     except Exception as exc:  # noqa: BLE001 - internals never reach the client

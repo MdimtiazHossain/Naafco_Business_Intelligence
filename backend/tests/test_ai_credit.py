@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session
 
 from app.ai.permission_filter import PermissionFilter
 from app.ai.schemas import CreditToolInput, Intent, ScopeFilters
-from app.ai.tools import CreditScopeRefused, REGISTRY, ToolContext
+from app.ai.exceptions import ScopeNotEnforceable
+from app.ai.tools import REGISTRY, ToolContext
 from app.etl import credit
 from app.etl.pipeline import run_import
 from app.etl.readers import RecordsSourceReader
@@ -167,14 +168,17 @@ def test_a_scope_this_view_cannot_enforce_is_refused(credit_engine, users) -> No
     keeps getting supplied.
     """
     for tool in ("get_credit_summary", "get_credit_aging", "get_overdue_customers"):
-        with pytest.raises(CreditScopeRefused):
+        with pytest.raises(ScopeNotEnforceable):
             run(credit_engine, users, tool, username="dhaka_rm")
 
 
 def test_the_refusal_names_the_level_it_could_not_apply(credit_engine, users) -> None:
-    with pytest.raises(CreditScopeRefused) as raised:
+    with pytest.raises(ScopeNotEnforceable) as raised:
         run(credit_engine, users, "get_credit_summary", username="dhaka_rm")
     assert "region_code" in str(raised.value)
+    # And it tells the reader which level, in words, rather than only in the
+    # server-side detail: a refusal nobody can act on gets reported as a bug.
+    assert "region" in raised.value.user_message
 
 
 def test_an_unrestricted_caller_is_not_refused(credit_engine, users) -> None:
@@ -193,7 +197,7 @@ def test_the_agent_cannot_be_a_way_around_the_endpoint(credit_engine, users) -> 
 
     with pytest.raises(ScopeNotHonourable):
         assert_scope_is_honourable(users["dhaka_rm"], ReportFilters())
-    with pytest.raises(CreditScopeRefused):
+    with pytest.raises(ScopeNotEnforceable):
         run(credit_engine, users, "get_credit_summary", username="dhaka_rm")
 
 

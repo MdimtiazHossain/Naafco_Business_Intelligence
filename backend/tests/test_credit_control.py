@@ -267,6 +267,31 @@ def test_migration_creates_the_tables_and_views(migrated_engine):
     } <= views
 
 
+def test_the_honoured_scope_levels_are_the_ones_the_view_carries(migrated_engine):
+    """A hand-written list, pinned to what it names.
+
+    ``SCOPE_LEVELS_HONOURED`` stays a literal because the check runs without a
+    session on every request, so it cannot go and ask the view. That makes it
+    exactly the kind of list this codebase has been bitten by before — one that
+    outlives what it describes. ``plant_code`` was already a column here long
+    before a scope could be granted at plant level, and the list did not know.
+
+    ``customer_code`` is the deliberate exception: it is a column on the view
+    and is honoured here, while no dimension declares it a grantable scope
+    level, so it is checked against the view and not against the registry.
+    """
+    from sqlalchemy import MetaData, Table
+
+    from app.reporting.credit import SCOPE_LEVELS_HONOURED
+    from app.security.scope import SCOPE_LEVELS
+
+    view = Table("vw_credit_invoice_detail", MetaData(),
+                 autoload_with=migrated_engine)
+    carried = {level for level in SCOPE_LEVELS if level in view.c}
+    assert SCOPE_LEVELS_HONOURED - {"customer_code"} == carried
+    assert "customer_code" in view.c
+
+
 def test_the_views_are_queryable_when_empty(migrated_engine):
     """An empty warehouse answers with no rows, not with an error.
 

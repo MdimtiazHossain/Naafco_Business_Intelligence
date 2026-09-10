@@ -92,8 +92,16 @@ INVOICE_SEARCH_COLUMNS: tuple[str, ...] = (
 #: :func:`assert_scope_is_honourable` refuses instead. Refusing is the same
 #: answer ``enforce_report_scope`` already gives a caller whose scope it cannot
 #: express — a 403 that names the problem beats a page of somebody else's debt.
+#: ``plant_code`` joined this set when a data scope could first be *granted* at
+#: plant level. It was always a column on the view — an invoice states the plant
+#: that raised it — so this is the list catching up with the view rather than
+#: the view gaining anything. Kept as a literal because this check runs without
+#: a session and must stay cheap enough for every request;
+#: ``test_credit_control`` pins it equal to the scope-bearing columns the view
+#: actually carries, which is what stops a hand-written list outliving what it
+#: names.
 SCOPE_LEVELS_HONOURED: frozenset[str] = frozenset({
-    "company_code", "customer_code", "sub_territory_code",
+    "company_code", "customer_code", "sub_territory_code", "plant_code",
 })
 
 
