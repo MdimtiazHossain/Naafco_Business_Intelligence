@@ -169,11 +169,10 @@ export default function Dashboard() {
    * produced the row. Navigating to a bare path instead drops them and lands
    * the user on an empty report for whatever the default period happens to be.
    */
-  const brandLink = (code: string) => {
+  const customerLink = (code: string) => {
     const params = new URLSearchParams(searchParams);
-    params.set('level', 'material_brand');
-    params.set('material_brand', code);
-    return `/materials?${params.toString()}`;
+    params.set('customer_code', code);
+    return `/customers?${params.toString()}`;
   };
 
   // The frame: the KPI strip, the period, and which cards this build serves.
@@ -187,7 +186,7 @@ export default function Dashboard() {
   const sections = useDashboardSections(data?.sections, query);
 
   // Each panel is guarded independently rather than only on `data`. A backend
-  // serving an older shape omits a key entirely, and `sections.byName.top_brands.rows`
+  // serving an older shape omits a key entirely, and `sections.byName.x.rows`
   // throws on the missing key rather than falling back — which took the whole
   // page down behind the error boundary instead of leaving one chart empty.
   const trendRows = sections.byName.sales_trend?.rows ?? [];
@@ -198,7 +197,15 @@ export default function Dashboard() {
   // net sales that this card's `actual_sales` already is — the same column of
   // the same view over the same window, read twice.
   const regionRows = sections.byName.region_overview?.rows ?? [];
-  const brandRows = sections.byName.top_brands?.rows ?? [];
+  const customerRows = sections.byName.top_customers?.rows ?? [];
+  // The year columns that table draws, oldest first and without the plan: the
+  // same series the region card turns into bars, read as columns instead. The
+  // browser names no year of its own — a hard-coded "24-25" is wrong the day
+  // the financial year turns, and would be wrong now on any period whose third
+  // year back recorded nothing.
+  const customerYears = orderedByYear(
+    trendSeriesFrom(sections.byName.top_customers?.chart),
+  ).filter((series) => !series.key.startsWith('target'));
   const territorySalesRows = sections.byName.territory_sales?.rows ?? [];
   const brandSalesRows = sections.byName.brand_sales?.rows ?? [];
 
@@ -399,37 +406,39 @@ export default function Dashboard() {
           </div>
 
           {/*
-            Full width, and outside the two-column grid above: ten columns of
-            plan against actual do not fit in half a dashboard, and wrapping
-            them into a second card would break the row a reader follows across.
-            `DataTable` scrolls horizontally on its own, so narrow screens keep
+            Full width, and outside the two-column grid above: a customer name
+            plus three years of taka does not fit in half a dashboard, and
+            `DataTable` scrolls horizontally on its own so a narrow screen keeps
             the same table rather than a different one.
 
-            Volume columns carry no unit. A brand sold in both mass and volume
-            units has no single volume figure and shows a dash; the backend says
-            so in the result notes rather than adding kilograms to litres.
+            The year columns are **not written here**. They come from the
+            backend's own `chart.series`, ordered oldest-first by the same
+            helper the region card's bars use, so the table shows two columns
+            rather than three when the third year recorded nothing — and no
+            financial year is spelled into the browser, which would be wrong
+            the moment the year rolled over.
           */}
-          <Section title={t('dashboard.topBrands')}>
+          <Section title={t('dashboard.topCustomers')}>
             <DataTable
-              tableId="dashboard.brands"
-              rows={brandRows}
+              tableId="dashboard.customers"
+              rows={customerRows}
               columns={[
-                { key: 'rank', header: t('common.rank') },
-                { key: 'label', header: t('filters.materialBrand') },
-                { key: 'target_volume', header: t('dashboard.targetVol') },
-                { key: 'volume', header: t('dashboard.salesVol') },
-                { key: 'target_amount', header: t('dashboard.targetBdt') },
-                { key: 'net_sales', header: t('dashboard.salesBdt') },
-                { key: 'volume_achievement_percent', header: t('dashboard.volAch') },
-                { key: 'achievement_percent', header: t('dashboard.bdtAch') },
-                { key: 'volume_shortfall', header: t('dashboard.volShortfall') },
-                { key: 'amount_shortfall', header: t('dashboard.bdtShortfall') },
+                { key: 'label', header: t('filters.customer') },
+                ...customerYears.map((year) => ({
+                  key: year.key,
+                  header: year.label,
+                })),
+                // Growth is the last column because it reads as the change
+                // between the two before it — and it is exactly that: the
+                // backend caps the window to what has elapsed, so this figure
+                // and those columns cannot disagree.
+                { key: 'growth_percent', header: t('common.growth') },
               ]}
-              searchable={false}
-              pageSize={15}
-              onRowClick={(row) => navigate(brandLink(String(row.code)))}
+              searchable
+              pageSize={25}
+              onRowClick={(row) => navigate(customerLink(String(row.code)))}
             />
-            <ResultNotes notes={sections.byName.top_brands?.notes} />
+            <ResultNotes notes={sections.byName.top_customers?.notes} />
           </Section>
         </div>
       </QueryState>

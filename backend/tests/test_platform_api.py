@@ -249,7 +249,7 @@ def test_dashboard_returns_kpis_and_charts(platform: TestClient) -> None:
     # nine seconds before anything appeared.
     assert body["sections"] == ["sales_trend", "monthly_performance",
                                 "region_overview", "territory_sales",
-                                "brand_sales", "top_brands"]
+                                "brand_sales", "top_customers"]
     assert card(platform, token, "sales_trend", window)["rows"]
     # One card where there were two. ``region_performance`` and
     # ``target_achievement`` were merged into ``region_overview``, because the

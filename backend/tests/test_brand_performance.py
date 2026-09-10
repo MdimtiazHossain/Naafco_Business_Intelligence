@@ -1059,39 +1059,63 @@ def client(brand_engine, platform):
     return platform
 
 
-def test_the_dashboard_ranks_fifteen_brands_not_products(client):
+def test_the_dashboard_still_groups_brands_and_never_products(client):
+    """Top 15 Brands is gone; the rule it enforced is not.
+
+    That card was replaced by Top 50 Customers — the dashboard already answered
+    the brand question twice (``brand_sales`` ranks brands, and the Sales page
+    breaks down by brand) and named no customer at all. Both names are asserted
+    against the frame's own section list rather than against the body: read off
+    the body, an absent key passes on any response whatsoever, which is exactly
+    the failure this guard exists to catch.
+    """
     token = login(client, "ceo")
     body = client.get(f"/api/dashboard?{HTTP_WINDOW}", headers=auth(token)).json()
 
-    # The frame names its cards and each is fetched separately, so the absent
-    # name is asserted against that list rather than against the frame body —
-    # against the body it would pass on any response at all, which is the whole
-    # failure mode this assertion exists to catch.
-    assert "top_brands" in body["sections"]
+    assert "top_customers" in body["sections"]
+    assert "top_brands" not in body["sections"]
     assert "top_products" not in body["sections"]
-    rows = card(client, token, "top_brands", f"?{HTTP_WINDOW}")["rows"]
-    assert len(rows) <= 15
-    assert [row["label"] for row in rows][:1] == ["Example Brand"]
+
+    # The surviving brand card still groups by brand, which is the rule the
+    # removed card was one enforcement of.
+    brands = card(client, token, "brand_sales", f"?{HTTP_WINDOW}")
+    assert brands["values"]["group_by"] == "material_brand"
 
 
-def test_the_dashboard_brand_rows_carry_exactly_the_four_reported_measures(client):
-    token = login(client, "ceo")
+def test_the_brand_target_tool_reports_only_the_measures_a_sale_states(
+    brand_engine,
+):
+    """Pinned on the tool, because the tool is what still exists.
 
-    row = card(client, token, "top_brands", f"?{HTTP_WINDOW}")["rows"][0]
-    for field in ("rank", "label", "quantity", "volume", "net_sales"):
-        assert field in row
+    This rode on the dashboard's brand card and would have been deleted with
+    it — but the guarantee belongs to ``get_material_brand_target_performance``,
+    which is untouched and on the assistant's allow-list. A card is one caller;
+    the shape of a row is the tool's.
+    """
+    with Session(brand_engine) as session:
+        result = execute_tool(
+            _context(session), "get_material_brand_target_performance",
+            GroupedToolInput(date_from=WINDOW[0], date_to=WINDOW[1],
+                             group_by=GroupBy.MATERIAL_BRAND,
+                             limit=15).model_dump(mode="json"),
+        ).result
+
+    assert result.rows
+    for field in ("rank", "label", "volume", "net_sales"):
+        assert field in result.rows[0], field
     # The unit never travels as a column of its own.
-    assert "volume_unit" not in row
+    assert "volume_unit" not in result.rows[0]
 
 
 def test_the_dashboard_brand_ranking_respects_a_region_filter(client):
+    """Scope still narrows the brand card — now the one that survived."""
     token = login(client, "ceo")
-    everywhere = card(client, token, "top_brands", f"?{HTTP_WINDOW}")
-    khulna = card(client, token, "top_brands",
+    everywhere = card(client, token, "brand_sales", f"?{HTTP_WINDOW}")
+    khulna = card(client, token, "brand_sales",
                   f"?{HTTP_WINDOW}&region_code=REG002")
 
     def by_brand(section):
-        return {row["label"]: row["net_sales"] for row in section["rows"]}
+        return {row["label"]: row["actual_sales"] for row in section["rows"]}
 
     # Khulna carries only part of the business, so both the membership and the
     # figures move with the filter.

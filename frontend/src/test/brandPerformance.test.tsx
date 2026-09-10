@@ -101,6 +101,44 @@ const TREND_ROWS = [
     achievement_percent: 0.0, growth_percent: null },
 ];
 
+/**
+ * The Top 50 Customers rows: a name, three years of net sales, and the growth.
+ *
+ * The three year figures are deliberately consistent with the growth — 50 L to
+ * 62.5 L is +25% — because that agreement is the whole point of the card. The
+ * backend cuts the window to what has elapsed so the columns and the percentage
+ * beside them describe the same spans; a fixture that ignored that would let a
+ * regression through.
+ */
+const CUSTOMER_ROWS = [
+  { code: 'CUST-1', label: 'M/S Shamim Enterprise',
+    net_sales_minus_2: 5_400_000, net_sales_minus_1: 5_000_000,
+    actual_sales: 6_250_000, growth_percent: 25 },
+  // No sales two years back: absent, not zero, so the column shows a dash.
+  { code: 'CUST-2', label: 'Master Traders',
+    net_sales_minus_2: null, net_sales_minus_1: null,
+    actual_sales: 5_200_000, growth_percent: null },
+];
+
+/**
+ * The achievement tool's own spec, which is **not** the trend one above.
+ *
+ * The difference is the key for this period's actual: a trend calls it
+ * `net_sales`, `get_target_achievement` calls it `actual_sales`, and the rows
+ * it returns are keyed to match. A fixture that borrowed the trend spec drew
+ * two of the three year columns and silently dropped the third — which is what
+ * happened while this card was being built.
+ */
+const ACHIEVEMENT_CHART_SPEC = {
+  type: 'bar', x_axis: 'label', y_axis: 'actual_sales',
+  series: [
+    { key: 'net_sales_minus_1', label: 'FY 2025-26' },
+    { key: 'net_sales_minus_2', label: 'FY 2024-25' },
+    { key: 'target_amount', label: 'FY 2026-27' },
+    { key: 'actual_sales', label: 'FY 2026-27' },
+  ],
+};
+
 const TREND_CHART_SPEC = {
   type: 'line', x_axis: 'label', y_axis: 'net_sales',
   series: [
@@ -132,7 +170,11 @@ const SECTIONS: Record<string, unknown> = {
   // way and ranked by what was sold.
   territory_sales: { rows: [], chart: TREND_CHART_SPEC, notes: [] },
   brand_sales: { rows: [], chart: TREND_CHART_SPEC, notes: [] },
-  top_brands: { rows: BRAND_ROWS, notes: [] },
+  // Top 50 Customers, which replaced Top 15 Brands. Its year columns are read
+  // from `chart.series` rather than written into the page, so the fixture has
+  // to carry a spec — a table with no spec draws a customer name and a growth
+  // and nothing between them, which is what this shape proves.
+  top_customers: { rows: CUSTOMER_ROWS, chart: ACHIEVEMENT_CHART_SPEC, notes: [] },
 };
 
 function materialsPage(level: string, rows: Record<string, unknown>[]) {
@@ -169,28 +211,40 @@ describe('Dashboard brand ranking', () => {
     } as never);
   });
 
-  it('shows Top 15 Brands rather than Top Products', async () => {
+  it('shows Top 50 Customers, and neither Top Brands nor Top Products', async () => {
     wrap(<Dashboard />);
-    expect(await screen.findByText('Top 15 Brands')).toBeInTheDocument();
+    expect(await screen.findByText('Top 50 Customers')).toBeInTheDocument();
+    expect(screen.queryByText('Top 15 Brands')).not.toBeInTheDocument();
     expect(screen.queryByText('Top Products')).not.toBeInTheDocument();
   });
 
-  it('has no Sales Volume KPI card, but keeps the brand table column', async () => {
+  it('shows a growth that agrees with the columns beside it', async () => {
     wrap(<Dashboard />);
-    await screen.findByText('Top 15 Brands');
+    await screen.findByText('Top 50 Customers');
 
-    // Every remaining "Sales Volume" on the page is the brand table's column
-    // heading. The executive card is gone; the column stays, because the
-    // removal was that one card and volume is still reported wherever it can
-    // be broken down.
-    const occurrences = screen.getAllByText('Sales Volume');
-    expect(occurrences).toHaveLength(1);
-    expect(occurrences[0].closest('th')).not.toBeNull();
+    // 50 L to 62.5 L is +25%, and the row states exactly that. A percentage
+    // contradicting the figures it sits next to is the defect this card exists
+    // to avoid, and the one that produced +96% on the region chart.
+    const row = screen.getByText('M/S Shamim Enterprise').closest('tr');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toContain('25%');
+  });
+
+  it('has no Sales Volume anywhere on the dashboard', async () => {
+    wrap(<Dashboard />);
+    await screen.findByText('Top 50 Customers');
+
+    // The KPI card went first; the brand table that still carried the column
+    // heading has now gone too, so the phrase should not appear at all. Volume
+    // is still reported wherever it can be broken down — the Sales page's own
+    // volume section, and the brand card's bars, which are drawn rather than
+    // written.
+    expect(screen.queryByText('Sales Volume')).not.toBeInTheDocument();
   });
 
   it('colours the stock status cards on the label as well as the value', async () => {
     wrap(<Dashboard />);
-    await screen.findByText('Top 15 Brands');
+    await screen.findByText('Top 50 Customers');
 
     expect(screen.getByText('Unrestricted Stock (KG/LTR)')).toHaveClass(
       'stock-status--unrestricted',
@@ -203,23 +257,25 @@ describe('Dashboard brand ranking', () => {
     expect(screen.getByText('13,354.8')).toHaveClass('stock-status--expired');
   });
 
-  it('sets each brand plan against what it sold, in the specified order', async () => {
+  it('lays the customer table out in the order it was asked for', async () => {
     wrap(<Dashboard />);
-    await screen.findByText('Top 15 Brands');
+    await screen.findByText('Top 50 Customers');
 
     const headers = screen.getAllByRole('columnheader').map((cell) => cell.textContent);
     // Exact sequence, not a subset: the reading order across the row is the
-    // requirement — plan, then actual, for volume and then for value.
+    // requirement — the name, three years oldest first, then the growth between
+    // the last two. The three year headings are the backend's own labels, so a
+    // financial year is never spelled into the browser; and there is no target
+    // column, because a table of what was sold is not a table of the plan.
     expect(headers).toEqual([
-      'Rank', 'Material Brand', 'Target Volume', 'Sales Volume', 'Target BDT',
-      'Sales BDT', 'Vol Ach%', 'BDT Ach%', 'Vol SF/SP', 'BDT SF/SP',
+      'Customer', 'FY 2024-25', 'FY 2025-26', 'FY 2026-27', 'Growth',
     ]);
-    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.getByText('M/S Shamim Enterprise')).toBeInTheDocument();
   });
 
   it('drops the quantity column', async () => {
     wrap(<Dashboard />);
-    await screen.findByText('Top 15 Brands');
+    await screen.findByText('Top 50 Customers');
 
     const headers = screen.getAllByRole('columnheader').map((cell) => cell.textContent);
     expect(headers).not.toContain('Quantity');
@@ -230,7 +286,7 @@ describe('Dashboard brand ranking', () => {
 
   it('never shows a unit column beside the volume figures', async () => {
     wrap(<Dashboard />);
-    await screen.findByText('Top 15 Brands');
+    await screen.findByText('Top 50 Customers');
 
     const headers = screen.getAllByRole('columnheader').map((cell) => cell.textContent);
     for (const forbidden of ['KG', 'LTR', 'MT', 'ML', 'Volume Unit', 'Unit']) {
@@ -242,18 +298,20 @@ describe('Dashboard brand ranking', () => {
     expect(screen.queryByText('MIXED')).not.toBeInTheDocument();
   });
 
-  it('renders an unset target as a dash rather than a zero or NaN', async () => {
+  it('renders a year with no sales as a dash rather than a zero or NaN', async () => {
     wrap(<Dashboard />);
-    await screen.findByText('Top 15 Brands');
+    await screen.findByText('Top 50 Customers');
 
-    const gammaRow = screen.getByText('Gamma').closest('tr');
-    expect(gammaRow).not.toBeNull();
-    const cells = within(gammaRow as HTMLElement)
+    const row = screen.getByText('Master Traders').closest('tr');
+    expect(row).not.toBeNull();
+    const cells = within(row as HTMLElement)
       .getAllByRole('cell')
       .map((cell) => cell.textContent);
-    // Target Vol, Sales Vol, Vol Ach%, BDT Ach% and Vol SF/SP are all
-    // unanswerable for this brand, and every one of them says so.
-    expect(cells.filter((text) => text === '—').length).toBeGreaterThanOrEqual(5);
+    // This customer traded in neither earlier year, so both columns and the
+    // growth between them are unanswerable — and every one of them says so.
+    // A zero would claim they bought nothing, which is a measurement nobody
+    // made, and a growth against nothing is not −100%.
+    expect(cells.filter((text) => text === '—').length).toBeGreaterThanOrEqual(3);
     for (const text of cells) {
       expect(text).not.toMatch(/NaN|Infinity/);
     }
@@ -261,7 +319,7 @@ describe('Dashboard brand ranking', () => {
 
   it('no longer carries the Total Quantity card or the aging donut', async () => {
     wrap(<Dashboard />);
-    await screen.findByText('Top 15 Brands');
+    await screen.findByText('Top 50 Customers');
 
     expect(screen.queryByText('Total Quantity')).not.toBeInTheDocument();
     expect(screen.queryByText('Outstanding Aging')).not.toBeInTheDocument();

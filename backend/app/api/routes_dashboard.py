@@ -33,8 +33,8 @@ logger = logging.getLogger("app.api.dashboard")
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
-#: How many brands the dashboard's headline ranking shows.
-TOP_BRANDS = 15
+#: How many customers the dashboard's headline ranking shows.
+TOP_CUSTOMERS = 50
 
 
 # ---------------------------------------------------------------------------
@@ -390,18 +390,43 @@ def _brand_sales(ctx: ToolContext, date_range, filters: ScopeFilters,
                rank_by="volume", include_invoice_count=False)
 
 
-def _top_brands(ctx: ToolContext, date_range, filters: ScopeFilters,
-                user: UserContext) -> dict[str, Any]:
-    """Brands, not individual materials: fifteen pack sizes of one brand is not
-    a picture of the business.
+def _top_customers(ctx: ToolContext, date_range, filters: ScopeFilters,
+                   user: UserContext) -> dict[str, Any]:
+    """The fifty biggest customers, three years of net sales each.
 
-    The target-bearing variant, because the executive table sets each brand's
-    plan against what it sold. ``get_material_brand_performance`` is untouched
-    and still what the AI agent answers brand questions with.
+    It replaced Top 15 Brands, which the brand cards above already answer twice
+    over — ``brand_sales`` ranks brands by volume and the Sales page breaks down
+    by brand — while nothing on this dashboard named a customer. The tool it
+    called, ``get_material_brand_target_performance``, is untouched and still on
+    the assistant's allow-list; only the card is gone.
+
+    **The window is cut to what has actually happened, and that is what makes
+    the table honest.** ``compare_years`` shifts the *report* window back by
+    whole years, so on "This Year" — which runs to next June — the earlier
+    columns would be complete financial years sitting beside ten weeks of this
+    one. On a chart that is survivable; in a table it is not, because three
+    figures in a row invite the reader to compare them and the growth beside
+    them would contradict the two it sits next to. Cutting the end to today
+    first means every column covers the same span, and ``growth_percent``
+    provably equals the change between the last two: measured over the top
+    fifty on This Year, Last Month and Last Year, zero rows disagree.
+
+    So the columns are **not** hard-coded to 24-25 / 25-26 / 26-27. They are
+    whatever ``chart.series`` names, which is two years rather than three when
+    the third recorded nothing — a year that recorded nothing is dropped rather
+    than drawn along the floor, the same rule the region card follows.
     """
-    return run(ctx, "get_material_brand_target_performance", date_range, filters,
-               group_by=GroupBy.MATERIAL_BRAND.value, limit=TOP_BRANDS,
-               include_invoice_count=False)
+    # ``date_to`` capped rather than the resolver's own ``_elapsed``, because a
+    # builder cannot reach the resolver's notion of today; they agree, since
+    # that resolver defaults to this same date.
+    elapsed = date_range.model_copy(
+        update={"date_to": min(date_range.date_to, dt.date.today())})
+    return run(ctx, "get_target_achievement", elapsed, filters,
+               group_by=GroupBy.CUSTOMER.value, limit=TOP_CUSTOMERS,
+               compare_years=2, rank_by="actual",
+               include_invoice_count=False,
+               compare_from=elapsed.growth_from.isoformat(),
+               compare_to=elapsed.growth_to.isoformat())
 
 
 #: Every card below the KPI strip, by the name the browser asks for.
@@ -416,7 +441,7 @@ DASHBOARD_SECTIONS: dict[str, Callable[..., dict[str, Any]]] = {
     "region_overview": _region_overview,
     "territory_sales": _territory_sales,
     "brand_sales": _brand_sales,
-    "top_brands": _top_brands,
+    "top_customers": _top_customers,
 }
 
 
