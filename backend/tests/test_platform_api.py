@@ -399,23 +399,52 @@ def test_region_overview_grows_against_the_window_the_kpi_uses(
 def test_growth_is_always_the_same_dates_a_year_earlier(
     period: str, expect_from: str, expect_to: str,
 ) -> None:
-    """One rule, stated once, for every period the dashboard offers.
+    """One rule, stated once, for every period the platform offers.
 
-    Pinned on ``growth_window`` rather than through HTTP because this is where
-    the decision is made and both readers — the region card and the Total Sales
-    KPI — take it from here. Testing it per card would let the two drift.
+    Pinned on the resolved range rather than through any one surface, because
+    the dashboard, the map, the Sales page and the Materials page all read this
+    pair. Testing it per surface is what let them drift apart in the first
+    place — three of them grew against the preceding period instead.
     """
     import datetime as dt
 
-    from app.api import routes_dashboard
+    from app.ai.date_resolver import DateResolver
+    from app.ai.schemas import DateRangeType
 
-    today = dt.date(2026, 9, 10)
-    resolved = routes_dashboard.resolve_range(period, None, None, today=today)
-    grew_from, grew_to = routes_dashboard.growth_window(resolved, today=today)
+    resolved = DateResolver(today=dt.date(2026, 9, 10)).of_type(
+        DateRangeType(period))
 
-    assert (grew_from.isoformat(), grew_to.isoformat()) == (expect_from, expect_to)
+    assert (resolved.growth_from.isoformat(),
+            resolved.growth_to.isoformat()) == (expect_from, expect_to)
     # And it is genuinely a year back, not merely earlier.
-    assert grew_from.year == resolved.date_from.year - 1
+    assert resolved.growth_from.year == resolved.date_from.year - 1
+
+
+def test_the_growth_pair_and_the_comparison_pair_are_different_questions() -> None:
+    """Both survive, because both are asked.
+
+    On a month they diverge, and that divergence is the whole bug: August's
+    preceding period is July, while its growth base is August last year. On a
+    *year* they coincide — the year before a financial year is both its
+    preceding period and the same dates twelve months back — so the test says
+    where they must differ rather than asserting they always do.
+    """
+    import datetime as dt
+
+    from app.ai.date_resolver import DateResolver
+    from app.ai.schemas import DateRangeType
+
+    resolver = DateResolver(today=dt.date(2026, 9, 10))
+
+    month = resolver.of_type(DateRangeType.LAST_MONTH)
+    assert (month.compare_from, month.compare_to) == (
+        dt.date(2026, 7, 1), dt.date(2026, 7, 31)), "July is still reachable"
+    assert (month.growth_from, month.growth_to) == (
+        dt.date(2025, 8, 1), dt.date(2025, 8, 31))
+
+    year = resolver.of_type(DateRangeType.LAST_YEAR)
+    assert (year.compare_from, year.compare_to) == (
+        year.growth_from, year.growth_to)
 
 
 def test_the_region_card_draws_every_region(
@@ -632,7 +661,17 @@ def test_sales_page_carries_the_expected_sections(platform: TestClient) -> None:
     token = login(platform, "ceo")
     body = platform.get("/api/pages/sales?date_from=2026-08-01&date_to=2026-08-31", headers=auth(token)).json()
     assert body["summary"]["value"] == pytest.approx(1_800_000)
-    assert body["growth"]["values"]["growth_percent"] is not None
+    # The growth section is there; its figure is not, and must not be. This
+    # page grows year on year like every other surface, and these fixtures hold
+    # no 2025 sales — so there is nothing to grow against, and a number here
+    # would be invented. The window it *would* have used is still reported.
+    growth = body["growth"]["values"]
+    assert "growth_percent" in growth
+    assert growth["growth_percent"] is None
+    # And it names the window it would have grown against: a month in 2025, not
+    # July 2026. This is the string the page shows the reader, so it is the one
+    # worth pinning — a figure and a label disagreeing is how this began.
+    assert "2025" in growth["previous_period"], growth["previous_period"]
     for section in ("daily_trend", "target_vs_actual", "region_performance",
                     "brand_performance", "customer_performance"):
         assert section in body

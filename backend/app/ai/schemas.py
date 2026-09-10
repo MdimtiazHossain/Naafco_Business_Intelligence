@@ -216,10 +216,31 @@ class ResolvedDateRange(BaseModel):
     date_to: dt.date
     label: str
     financial_year: str | None = None
-    #: The comparable preceding period, used for growth and comparisons.
+    #: The comparable **preceding** period — the month before, the quarter
+    #: before. This is what "compare August with July" means, and it is what
+    #: the assistant answers a "vs last month" question from.
     compare_from: dt.date | None = None
     compare_to: dt.date | None = None
     compare_label: str | None = None
+    #: The same dates **a year earlier**, which is what *growth* means here.
+    #:
+    #: A second pair rather than a reinterpretation of the first, because the
+    #: two answer different questions and one field cannot hold both. There
+    #: used to be only the preceding period, so every surface that wanted
+    #: growth reached for it — it was the only pair there — and three of them
+    #: got the wrong question. The Region Performance card reported +96% for a
+    #: region whose sales had fallen 11% year on year, comparing August with
+    #: July instead of with August, and contradicted the earlier-year bars
+    #: drawn beside it.
+    #:
+    #: Bangladeshi FMCG is seasonal: the month before is not a baseline for the
+    #: month after. Anything drawing a figure it calls "growth" reads this pair;
+    #: anything genuinely asking about the period before reads the one above.
+    #: The end is capped at today before the shift, so a window running into the
+    #: future — "This Year" reaches next June — is compared by the part of it
+    #: that has actually happened rather than against a complete previous year.
+    growth_from: dt.date | None = None
+    growth_to: dt.date | None = None
 
     @model_validator(mode="after")
     def _ordered(self) -> "ResolvedDateRange":

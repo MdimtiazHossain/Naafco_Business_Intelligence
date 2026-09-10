@@ -19,7 +19,7 @@ from typing import Any, Sequence
 from sqlalchemy import Table, and_, func, select, text
 from sqlalchemy.orm import Session
 
-from ..etl.calendar import FinancialYearConfig, to_date_id
+from ..etl.calendar import FinancialYearConfig, shift_years, to_date_id
 from ..etl.transforms import achievement_percent, growth_percent
 from ..etl.validation import safe_divide
 
@@ -207,7 +207,7 @@ def sales_report(session: Session, filters: ReportFilters) -> dict[str, Any]:
 
 def _period_metrics(session: Session, view: Table, filters: ReportFilters,
                     measure: str, reference: dt.date) -> dict[str, Any]:
-    """Daily / MTD / YTD / previous-month figures and month-on-month growth."""
+    """Daily / MTD / YTD figures, and growth against the same month last year."""
     config = FinancialYearConfig.from_settings()
 
     def total_between(start: dt.date, end: dt.date) -> Decimal:
@@ -222,6 +222,14 @@ def _period_metrics(session: Session, view: Table, filters: ReportFilters,
     mtd = total_between(month_start, reference)
     previous_month = total_between(previous_month_start, previous_month_end)
     ytd = total_between(config.year_start(reference), reference)
+    # The same month-to-date a year earlier: what ``growth_percent`` grows
+    # against. It used to grow against ``previous_month`` — month on month —
+    # which made this figure answer a different question from every other
+    # growth on the platform while carrying the same name. Both bases are
+    # returned, each under a field that says which it is, so neither reader has
+    # to guess what the percentage beside them was computed from.
+    previous_year_mtd = total_between(shift_years(month_start, -1),
+                                      shift_years(reference, -1))
 
     return {
         "as_on": reference.isoformat(),
@@ -230,7 +238,8 @@ def _period_metrics(session: Session, view: Table, filters: ReportFilters,
         "ytd": _f(ytd),
         "financial_year": config.label(reference),
         "previous_month": _f(previous_month),
-        "growth_percent": _f(growth_percent(mtd, previous_month)),
+        "previous_year_mtd": _f(previous_year_mtd),
+        "growth_percent": _f(growth_percent(mtd, previous_year_mtd)),
     }
 
 

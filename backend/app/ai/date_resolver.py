@@ -16,7 +16,7 @@ import datetime as dt
 import re
 from dataclasses import dataclass
 
-from ..etl.calendar import FinancialYearConfig
+from ..etl.calendar import FinancialYearConfig, shift_years
 from .exceptions import DateResolutionError
 from .schemas import DateRangeType, ResolvedDateRange
 
@@ -899,6 +899,7 @@ class DateResolver:
     def _build(self, range_type: DateRangeType, start: dt.date, end: dt.date,
                label: str) -> ResolvedDateRange:
         compare_from, compare_to, compare_label = self._comparison(range_type, start, end)
+        growth_from, growth_to = self._growth_window(start, end)
         return ResolvedDateRange(
             type=range_type,
             date_from=start,
@@ -908,7 +909,25 @@ class DateResolver:
             compare_from=compare_from,
             compare_to=compare_to,
             compare_label=compare_label,
+            growth_from=growth_from,
+            growth_to=growth_to,
         )
+
+    def _growth_window(self, start: dt.date, end: dt.date
+                       ) -> tuple[dt.date, dt.date]:
+        """The same dates a year earlier — see ``ResolvedDateRange``.
+
+        Computed here, once, rather than by each surface that draws a growth
+        figure. It lived in the dashboard's HTTP layer for exactly one change,
+        which put it out of reach of the map and the pages that needed the same
+        rule, and that is how three surfaces came to grow against the preceding
+        period instead.
+
+        The end is cut to today before the shift for the reason ``_elapsed``
+        gives above: "This Year" runs to next June, and shifting its nominal end
+        back would set two months of trading against a complete previous year.
+        """
+        return shift_years(start, -1), shift_years(self._elapsed(end), -1)
 
     def _comparison(self, range_type: DateRangeType, start: dt.date, end: dt.date
                     ) -> tuple[dt.date | None, dt.date | None, str | None]:

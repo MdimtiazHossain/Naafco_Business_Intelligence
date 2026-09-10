@@ -412,8 +412,12 @@ def map_data_endpoint(
         result = map_data.map_data(
             ctx, requested, date_from=date_range.date_from,
             date_to=date_range.date_to, filters=filters,
-            compare_from=date_range.compare_from,
-            compare_to=date_range.compare_to,
+            # The growth pair, not the comparison pair: a map coloured by
+            # growth was shading regions against the *preceding* period, so a
+            # seasonal rise read as a surge and the same region read green here
+            # and red on the dashboard. See ``ResolvedDateRange.growth_from``.
+            compare_from=date_range.growth_from,
+            compare_to=date_range.growth_to,
         )
         layers_payload = []
         for layer_data in result.layers:

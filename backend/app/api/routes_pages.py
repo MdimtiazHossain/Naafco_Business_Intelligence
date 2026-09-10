@@ -65,9 +65,16 @@ def _page(handler, *, page: str):
 
 
 def _compare(date_range) -> dict[str, str]:
+    """The window a growth figure is measured against: a year earlier.
+
+    The Sales page's headline growth read the *preceding* period, so it and the
+    dashboard's headline answered different questions about the same business —
+    one month on month, one year on year. Both read the growth pair now; see
+    ``ResolvedDateRange.growth_from``.
+    """
     return {
-        "compare_from": (date_range.compare_from or date_range.date_from).isoformat(),
-        "compare_to": (date_range.compare_to or date_range.date_to).isoformat(),
+        "compare_from": (date_range.growth_from or date_range.date_from).isoformat(),
+        "compare_to": (date_range.growth_to or date_range.date_to).isoformat(),
     }
 
 
@@ -485,13 +492,21 @@ def _last_transaction_by_customer(ctx, date_range, filters) -> dict[str, Any]:
 
 
 def _shift(date_range):
-    """The comparison period as a range object, for a like-for-like second call."""
+    """The window growth is measured against, as a range for a second call.
+
+    **The same dates a year earlier**, not the preceding period. This read the
+    comparison pair until the Region Performance card was found reporting +96%
+    growth for a region whose sales had fallen 11% year on year — it was
+    comparing August with July. Every surface drawing a figure it calls growth
+    now reads one pair, computed once by the resolver; see
+    ``ResolvedDateRange.growth_from``.
+    """
     from ..ai.schemas import ResolvedDateRange
 
-    start = date_range.compare_from or date_range.date_from
-    end = date_range.compare_to or date_range.date_to
+    start = date_range.growth_from or date_range.date_from
+    end = date_range.growth_to or date_range.date_to
     return ResolvedDateRange(type=date_range.type, date_from=start, date_to=end,
-                             label="comparison period")
+                             label="a year earlier")
 
 
 def _growth(current: Any, previous: Any) -> float | None:
