@@ -237,8 +237,13 @@ def test_dashboard_returns_kpis_and_charts(platform: TestClient) -> None:
     assert "sales_volume" not in body
     sales = next(k for k in body["kpis"] if k["key"] == "total_sales")
     assert sales["value"] == pytest.approx(1_800_000)
-    assert sales["previous_value"] is not None
-    assert sales["growth_percent"] is not None
+    # The KPI carries a growth *slot* whether or not a figure can fill it, so
+    # the browser draws one card shape. The figure itself is absent here and
+    # must be: growth is year on year (``growth_window``) and these fixtures
+    # hold no 2025 sales, so there is nothing to grow against. A number here
+    # would be one this platform invented.
+    assert "growth_percent" in sales
+    assert sales["growth_percent"] is None
     # The frame names its cards rather than carrying them: each is its own
     # request now, because eight aggregates in one response made the page wait
     # nine seconds before anything appeared.
@@ -337,12 +342,17 @@ def test_the_country_card_says_when_it_is_not_the_country(
 def test_region_overview_grows_against_the_window_the_kpi_uses(
     platform: TestClient,
 ) -> None:
-    """The card's bars, its growth line and the headline answer to one window.
+    """Growth is the same dates a year earlier, and the headline agrees.
 
-    A custom range from 1 to 31 August compares against the whole of July, which
-    is the window the Total Sales KPI beside it grows against. Reading the
-    last-period figure from a second call would be two reads of one view, and
-    two reads of one number is how two cards on one screen come to disagree.
+    August is compared with **August last year**, not with July. Read against
+    the preceding period this card reported +96% growth for a region whose sales
+    had fallen 11% year on year, and contradicted the bars drawn beside it: the
+    A 25-26 bar showed the decline while the line above it claimed a near
+    doubling. Growth in a seasonal FMCG business is year on year.
+
+    The KPI beside the card grows against the identical window, so the headline
+    and the card cannot tell different stories about one period — which is why
+    both call ``growth_window`` rather than each choosing for itself.
     """
     token = login(platform, "ceo")
     window = "?date_from=2026-08-01&date_to=2026-08-31"
@@ -350,22 +360,62 @@ def test_region_overview_grows_against_the_window_the_kpi_uses(
     region = card(platform, token, "region_overview", window)
 
     totals = region["values"]
-    assert totals["compare_from"] == "2026-07-01"
-    assert totals["compare_to"] == "2026-07-31"
-    assert totals["previous"] == pytest.approx(2_400_000)
+    assert totals["compare_from"] == "2025-08-01"
+    assert totals["compare_to"] == "2025-08-31"
 
     kpi = next(k for k in body["kpis"] if k["key"] == "total_sales")
     assert totals["previous"] == pytest.approx(kpi["previous_value"])
-    assert totals["growth_percent"] == pytest.approx(kpi["growth_percent"])
+    assert totals["growth_percent"] == kpi["growth_percent"]
 
     rows = {row["code"]: row for row in region["rows"]}
-    # Every bar the card draws comes from this one row: target, actual and last
-    # period's actual, with the two percentage lines beside them.
+    # Every bar the card draws comes from this one row: target, actual and the
+    # year-earlier actual, with the two percentage lines beside them.
     for key in ("target_amount", "actual_sales", "previous_sales",
                 "achievement_percent", "growth_percent"):
         assert key in rows["REG001"], key
-    assert rows["REG001"]["previous_sales"] == pytest.approx(2_000_000)
-    assert rows["REG001"]["growth_percent"] == pytest.approx(-25.0)
+
+    # These fixtures hold no 2025 sales at all, and that is the point of the
+    # last two assertions: a region with nothing in the comparison window has
+    # **no** growth, not -100%. Inventing a collapse out of an absent year is
+    # exactly what this platform refuses to do.
+    assert rows["REG001"]["previous_sales"] is None
+    assert rows["REG001"]["growth_percent"] is None
+
+
+@pytest.mark.parametrize("period, expect_from, expect_to", [
+    # A month is compared with the same month a year earlier, never with the
+    # month before it — the fault that produced +96% for a falling region.
+    ("LAST_MONTH", "2025-08-01", "2025-08-31"),
+    ("THIS_MONTH", "2025-09-01", "2025-09-10"),
+    # A quarter with the same quarter, and the year-to-date with the same days.
+    ("THIS_QUARTER", "2025-07-01", "2025-09-10"),
+    ("YTD", "2025-07-01", "2025-09-10"),
+    # "This Year" runs to next June, so the end is cut to what has happened
+    # before the shift: two months against a whole year would read as collapse.
+    ("THIS_YEAR", "2025-07-01", "2025-09-10"),
+    # A finished year shifts whole, having no unlived part to cut.
+    ("LAST_YEAR", "2024-07-01", "2025-06-30"),
+])
+def test_growth_is_always_the_same_dates_a_year_earlier(
+    period: str, expect_from: str, expect_to: str,
+) -> None:
+    """One rule, stated once, for every period the dashboard offers.
+
+    Pinned on ``growth_window`` rather than through HTTP because this is where
+    the decision is made and both readers — the region card and the Total Sales
+    KPI — take it from here. Testing it per card would let the two drift.
+    """
+    import datetime as dt
+
+    from app.api import routes_dashboard
+
+    today = dt.date(2026, 9, 10)
+    resolved = routes_dashboard.resolve_range(period, None, None, today=today)
+    grew_from, grew_to = routes_dashboard.growth_window(resolved, today=today)
+
+    assert (grew_from.isoformat(), grew_to.isoformat()) == (expect_from, expect_to)
+    # And it is genuinely a year back, not merely earlier.
+    assert grew_from.year == resolved.date_from.year - 1
 
 
 def test_the_region_card_draws_every_region(

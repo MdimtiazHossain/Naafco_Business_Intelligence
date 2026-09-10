@@ -24,6 +24,7 @@ from ..ai.tools import ToolContext, execute_tool
 from ..auth import audit
 from ..config import get_settings
 from ..database.models_ai import AuditAction, Notification
+from ..etl.calendar import shift_years
 from ..etl.mapping import MasterDataIndex
 from ..auth.permissions import require_section
 from ..security.sections import SectionKey
@@ -149,6 +150,35 @@ def date_range_params(
     date_to: dt.date | None = Query(None),
 ):
     return resolve_range(period, date_from, date_to)
+
+
+def growth_window(date_range, today: dt.date | None = None
+                  ) -> tuple[dt.date, dt.date]:
+    """The same dates a year earlier — what growth means in this business.
+
+    **Not the preceding period.** A resolved range carries ``compare_from`` /
+    ``compare_to`` describing the window *before* it — the previous month, the
+    previous quarter — and reading growth from that pair is how this card came
+    to report +96% for a region whose sales had fallen 11%: August 2026 was
+    1.49 Cr against July's 0.76 Cr, and against August 2025's 1.68 Cr. The card
+    contradicted itself on screen, because the bars beside the line already drew
+    the earlier years and showed the decline plainly.
+
+    Bangladeshi FMCG is seasonal, so the month before is not a baseline for the
+    month after; the same month a year earlier is. That is also the measure the
+    Monthly Performance card has always used (``net_sales_minus_1``), so the two
+    cards now mean one thing by the legend they share.
+
+    The end is capped at today before the shift, because "This Year" runs to the
+    end of the financial year: without it, two months of trading would be set
+    against a complete previous year and every region would read as collapsing.
+
+    ``today`` is injectable for the same reason ``DateResolver`` takes it — so a
+    test can state the day rather than patch the clock out from under the whole
+    process.
+    """
+    end = min(date_range.date_to, today or dt.date.today())
+    return shift_years(date_range.date_from, -1), shift_years(end, -1)
 
 
 def _narrower_than_the_country(user: UserContext,
@@ -330,10 +360,17 @@ def _region_overview(ctx: ToolContext, date_range, filters: ScopeFilters,
 
     The comparison window is the one the Total Sales KPI grows against, so a
     region's growth here and the headline growth cannot tell different stories
-    about the same period. The pair is passed only when the range carries one,
-    never defaulted to this window's own dates: comparing a period against
-    itself would put a previous-period bar equal to the actual on every region
-    and a growth line flat at 0%, which is a statement rather than a gap.
+    about the same period. It is **the same dates a year earlier**, not the
+    preceding period — see ``growth_window`` for the +96% that rule was written
+    to stop. It is always passed now: a year-shifted window can never coincide
+    with the window it is compared against, so the case the old conditional
+    guarded (a previous-period bar equal to the actual, a growth line flat at
+    0%) cannot arise.
+
+    That also makes ``previous_sales`` and ``net_sales_minus_1`` the same
+    figure, deliberately: the growth line and the first earlier-year bar are
+    then arithmetically incapable of disagreeing, which is exactly what went
+    wrong when they were two different measures under one legend.
 
     **Every region, and the limit states no number of its own.** It asked for
     ten, and the deployment has thirteen — so three were dropped from a card
@@ -348,15 +385,12 @@ def _region_overview(ctx: ToolContext, date_range, filters: ScopeFilters,
     facts, so the platform ceiling never bites and asking for it is how this
     card says "all of them".
     """
-    comparable = (date_range.compare_from is not None
-                  and date_range.compare_to is not None)
+    grew_from, grew_to = growth_window(date_range)
     return run(
         ctx, "get_target_achievement", date_range, filters,
         group_by=GroupBy.REGION.value, limit=MAX_LIMIT, compare_years=2,
         include_invoice_count=False,
-        **({"compare_from": date_range.compare_from.isoformat(),
-            "compare_to": date_range.compare_to.isoformat()}
-           if comparable else {}),
+        compare_from=grew_from.isoformat(), compare_to=grew_to.isoformat(),
     )
 
 
@@ -434,11 +468,14 @@ def dashboard(
     try:
         ctx = tool_context(session, user)
         summary = run(ctx, "get_business_summary", date_range, filters)
+        # Year on year, like the card below it — see ``growth_window``. The
+        # resolver's own pair describes the *preceding* period, which is a
+        # different question and made these two figures answer it differently
+        # from the bars drawn beside them.
+        grew_from, grew_to = growth_window(date_range)
         growth = run(ctx, "get_sales_growth", date_range, filters,
-                     compare_from=(date_range.compare_from or
-                                   date_range.date_from).isoformat(),
-                     compare_to=(date_range.compare_to or
-                                 date_range.date_to).isoformat())
+                     compare_from=grew_from.isoformat(),
+                     compare_to=grew_to.isoformat())
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
