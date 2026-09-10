@@ -917,6 +917,19 @@ class DateResolver:
         Month-shaped ranges compare against the same span of the previous month
         (so an MTD figure is compared like for like, not against a full month);
         everything else shifts back by its own length.
+
+        **A window that has not finished is compared by the part of it that
+        has**, which is what ``_elapsed`` below is for. "Like for like" was
+        already this method's promise and it held for every range that ends
+        today — but ``THIS_YEAR`` deliberately runs to the end of the financial
+        year, so its *nominal* length is twelve months while its lived length,
+        on 10 Sep, is two. Shifting back by the nominal length set two months of
+        trading against a complete previous year and reported every region of a
+        healthy business as collapsing: Chattogram read −87% where the same
+        elapsed period a year earlier gives −41%, and the national headline read
+        −87.6% against a true −21.1%. The report window is untouched — a target
+        is set for the whole year and "This Year" still covers the year it
+        names; only the thing it is *measured against* is cut to match.
         """
         if range_type in (DateRangeType.THIS_MONTH, DateRangeType.MTD):
             previous_end = self._month_start(start) - dt.timedelta(days=1)
@@ -933,13 +946,24 @@ class DateResolver:
                           DateRangeType.FINANCIAL_YEAR):
             previous_end = start - dt.timedelta(days=1)
             previous_start = self.fy.year_start(previous_end)
-            span = (end - start).days
+            span = (self._elapsed(end) - start).days
             return previous_start, min(previous_start + dt.timedelta(days=span),
                                        previous_end), "Previous financial year"
 
-        span = (end - start).days + 1
+        span = (self._elapsed(end) - start).days + 1
         previous_end = start - dt.timedelta(days=1)
         return previous_end - dt.timedelta(days=span - 1), previous_end, "Previous period"
+
+    def _elapsed(self, end: dt.date) -> dt.date:
+        """The last day of a window that can have happened yet.
+
+        Applied to both branches above rather than to the year alone, because
+        the fault is the class and not the instance: a named *current* quarter
+        and the current ``FINANCIAL_YEAR`` end in the future for the same reason
+        ``THIS_YEAR`` does, and would have compared the same way. It is a no-op
+        for every window ending today or earlier, which is all the others.
+        """
+        return min(end, self.today)
 
     @staticmethod
     def _parse_date(text: str) -> dt.date | None:

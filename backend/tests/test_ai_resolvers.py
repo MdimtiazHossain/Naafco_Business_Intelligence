@@ -111,6 +111,58 @@ def test_this_year_is_the_whole_financial_year_not_year_to_date(
         this_year.date_to - this_year.date_from).days
 
 
+def test_an_unfinished_year_is_compared_by_the_part_of_it_that_has_happened(
+    resolver: DateResolver,
+) -> None:
+    """The window keeps the whole year; only what it is measured against shrinks.
+
+    "This Year" runs to 30 Jun deliberately — a target is set for the whole year
+    — but its comparison used to shift back by that *nominal* length and so set
+    six weeks of trading against a complete previous year. Every region of a
+    healthy business then reported a collapse: on the deployment one region read
+    −87% where the same elapsed period a year earlier gives −41%, and the
+    national headline read −87.6% against a true −21.1%.
+    """
+    this_year = resolver.of_type(DateRangeType.THIS_YEAR)
+
+    # Untouched: the card still covers the year it names, so achievement is
+    # still measured against the year's whole target.
+    assert (this_year.date_from, this_year.date_to) == (
+        dt.date(2026, 7, 1), dt.date(2027, 6, 30))
+
+    # The comparison is the elapsed part, shifted back a year — 1 Jul to 15 Aug,
+    # not the whole of FY 2025-26.
+    assert (this_year.compare_from, this_year.compare_to) == (
+        dt.date(2025, 7, 1), dt.date(2025, 8, 15))
+    elapsed = (TODAY - this_year.date_from).days
+    assert (this_year.compare_to - this_year.compare_from).days == elapsed
+
+    # YTD already compared like for like and must not have moved.
+    ytd = resolver.of_type(DateRangeType.YTD)
+    assert (ytd.compare_from, ytd.compare_to) == (this_year.compare_from,
+                                                  this_year.compare_to)
+
+
+def test_a_finished_year_is_still_compared_against_a_whole_one(
+    resolver: DateResolver,
+) -> None:
+    """The cap is for windows reaching into the future, and nothing else.
+
+    "Last Year" is over, so its length and its lived length are the same and it
+    must still be set against the complete year before it — capping there would
+    compare twelve months with six weeks, the very fault this exists to fix,
+    pointing the other way.
+    """
+    last_year = resolver.of_type(DateRangeType.LAST_YEAR)
+
+    assert (last_year.date_from, last_year.date_to) == (
+        dt.date(2025, 7, 1), dt.date(2026, 6, 30))
+    assert (last_year.compare_from, last_year.compare_to) == (
+        dt.date(2024, 7, 1), dt.date(2025, 6, 30))
+    assert (last_year.compare_to - last_year.compare_from).days == (
+        last_year.date_to - last_year.date_from).days
+
+
 @pytest.mark.parametrize("today, expected_label, expected_from, expected_to", [
     # The last day of FY 2025-26 still belongs to it…
     (dt.date(2026, 6, 30), "FY 2025-26", dt.date(2025, 7, 1), dt.date(2026, 6, 30)),
