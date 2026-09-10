@@ -368,6 +368,57 @@ def test_region_overview_grows_against_the_window_the_kpi_uses(
     assert rows["REG001"]["growth_percent"] == pytest.approx(-25.0)
 
 
+def test_the_region_card_draws_every_region(
+    platform: TestClient, agent_engine, monkeypatch
+) -> None:
+    """No region is left off, and the assertion states no count of its own.
+
+    The card asked for ten against a deployment holding thirteen, so three were
+    dropped from a card whose title promises the regions rather than the best of
+    them — and because this tool ranks by *achievement*, the three that went
+    missing were not the three smallest, so no reader could work out the rule.
+
+    **The limit is what is asserted, not the row count**, and that is the whole
+    design of this test. These fixtures hold two regions, so every row fits
+    under any cap worth writing — a test that counted rows would pass just as
+    happily on the build that was dropping three of the deployment's thirteen.
+    What has to hold is that the card imposes no ceiling of its own and takes
+    the platform's, because that is the thing a future edit would undo.
+    """
+    from sqlalchemy import select
+
+    from app.ai.schemas import MAX_LIMIT
+    from app.api import routes_dashboard
+    from app.database.models import DimRegion
+
+    asked: dict[str, Any] = {}
+    original = routes_dashboard.run
+
+    def recording(ctx, tool, date_range, filters, **extra):
+        if tool == "get_target_achievement" and extra.get("group_by") == "region":
+            asked.update(extra)
+        return original(ctx, tool, date_range, filters, **extra)
+
+    monkeypatch.setattr(routes_dashboard, "run", recording)
+    token = login(platform, "ceo")
+    region = card(platform, token, "region_overview")
+
+    assert asked, "the region card never made the call this test is about"
+    assert asked["limit"] == MAX_LIMIT, (
+        f"the card capped itself at {asked['limit']}; it must take the "
+        "platform's ceiling so a region opened tomorrow is drawn too"
+    )
+
+    # And the rows that do exist are all there, which is what the limit buys.
+    with Session(agent_engine) as session:
+        every = {code for (code,) in session.execute(
+            select(DimRegion.region_code)).all()}
+    drawn = {row["code"] for row in region["rows"]}
+    assert every, "the master holds no regions, so this proves nothing"
+    assert every <= drawn, f"missing from the card: {sorted(every - drawn)}"
+    assert not region.get("truncated")
+
+
 def test_the_ranked_cards_are_ranked_by_what_was_sold(
     platform: TestClient,
 ) -> None:

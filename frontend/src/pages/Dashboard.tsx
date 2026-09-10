@@ -328,9 +328,11 @@ export default function Dashboard() {
           </Section>
 
           {/*
-            Full width, because it carries five series over ten regions: the
+            Full width, because it carries six series over every region: the
             two-column grid this replaced gave each half a plot too narrow to
-            read a region name in.
+            read a region name in. The count is deliberately not written down
+            here — the card draws whatever the master data holds, and a number
+            in this comment would be wrong the day a region is opened.
 
             Money on the left axis, ratios on the right. The two were previously
             in separate cards, which meant a reader comparing a region's

@@ -19,7 +19,7 @@ from ..ai import queries as q
 from ..ai.date_resolver import DateResolver
 from ..ai.permission_filter import PermissionFilter, UserContext
 from ..ai.exceptions import DateResolutionError
-from ..ai.schemas import DateRangeType, GroupBy, ScopeFilters
+from ..ai.schemas import MAX_LIMIT, DateRangeType, GroupBy, ScopeFilters
 from ..ai.tools import ToolContext, execute_tool
 from ..auth import audit
 from ..config import get_settings
@@ -334,12 +334,25 @@ def _region_overview(ctx: ToolContext, date_range, filters: ScopeFilters,
     never defaulted to this window's own dates: comparing a period against
     itself would put a previous-period bar equal to the actual on every region
     and a growth line flat at 0%, which is a statement rather than a gap.
+
+    **Every region, and the limit states no number of its own.** It asked for
+    ten, and the deployment has thirteen — so three were dropped from a card
+    whose title promises the regions rather than the best of them. The omission
+    was worse than a short list because this tool ranks by *achievement*: on the
+    financial year it was dropping Cumilla at 2.37 Cr while drawing Sreemangal
+    at 1.33 Cr, so the three that went missing were not the three smallest and
+    no reader could work out the rule. Raising it to thirteen would be the same
+    defect with a longer fuse — the fourteenth region would vanish on the day it
+    was opened, which is the stale-list failure at the top of CLAUDE.md. The
+    rows are bounded by the master data (one per region) rather than by the
+    facts, so the platform ceiling never bites and asking for it is how this
+    card says "all of them".
     """
     comparable = (date_range.compare_from is not None
                   and date_range.compare_to is not None)
     return run(
         ctx, "get_target_achievement", date_range, filters,
-        group_by=GroupBy.REGION.value, limit=10, compare_years=2,
+        group_by=GroupBy.REGION.value, limit=MAX_LIMIT, compare_years=2,
         include_invoice_count=False,
         **({"compare_from": date_range.compare_from.isoformat(),
             "compare_to": date_range.compare_to.isoformat()}
