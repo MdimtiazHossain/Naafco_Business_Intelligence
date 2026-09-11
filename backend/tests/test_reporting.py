@@ -187,7 +187,19 @@ def test_sales_report_metrics(loaded_engine) -> None:
     assert metrics["previous_month"] == 600.0
     assert metrics["ytd"] == 3600.0                       # FY starts 1 July
     assert metrics["financial_year"] == "FY 2026-27"
-    assert metrics["growth_percent"] == pytest.approx(400.0)
+
+    # Growth is year on year everywhere on this platform, so this figure is
+    # month-to-date against the *same* month-to-date a year earlier — not
+    # against `previous_month`, which it used to read and which made this one
+    # report answer a different question from every other growth while carrying
+    # the same name.
+    #
+    # These fixtures hold nothing in 2025, so there is nothing to grow against
+    # and the honest answer is no answer: a period with no base has no growth,
+    # never -100% and never a percentage against zero. Both bases are returned
+    # under their own names, so a reader can see which is which.
+    assert metrics["previous_year_mtd"] == 0.0
+    assert metrics["growth_percent"] is None
     assert metrics["achievement"]["achievement_percent"] == pytest.approx(30.0)
     assert metrics["achievement"]["gap"] == 7000.0
     assert report["rows"]

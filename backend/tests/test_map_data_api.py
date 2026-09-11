@@ -149,7 +149,19 @@ def test_data_draws_the_design_the_map_opens_with(client):
     assert set(by_code) == {"REG001", "REG002"}
     assert by_code["REG001"]["name"] == "Dhaka"
     assert by_code["REG001"]["net_sales"] > 0
-    assert by_code["REG001"]["growth_percent"] is not None
+    # The map grows year on year like every other surface, and these fixtures
+    # hold nothing in 2025 — so there is no base and therefore no growth. The
+    # key is present and empty rather than absent: a region the comparison
+    # window does not reach has no growth, never -100%.
+    #
+    # It used to read the *preceding* period, which had data here and so gave a
+    # figure. That is what made the same region come out green on the map and
+    # red on the dashboard, and why this assertion had to change rather than the
+    # behaviour behind it.
+    assert "growth_percent" in by_code["REG001"]
+    assert by_code["REG001"]["growth_percent"] is None
+    # The window it would have grown against is a year back, not a month back.
+    assert body["period"]["growth_from"] == "2025-08-01"
 
     # Extents and breaks describe the drawn points, for the legend.
     extent = region["extents"]["net_sales"]
