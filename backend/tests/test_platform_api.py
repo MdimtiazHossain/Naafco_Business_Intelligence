@@ -498,6 +498,49 @@ def test_the_region_card_draws_every_region(
     assert not region.get("truncated")
 
 
+def test_an_unfinished_year_shows_whole_earlier_years_and_says_so(
+    platform: TestClient,
+) -> None:
+    """A column headed FY 2024-25 holds that financial year, not part of it.
+
+    The card briefly cut its window to today so that every column covered the
+    same span and the growth equalled the change between the last two. That was
+    arithmetically tidy and made the headings lie: "FY 2025-26" held ten weeks
+    of FY 2025-26. A reader comes to this table to see what a customer bought
+    last year, so the label wins.
+
+    What it costs is that on an unfinished year the last column is only the part
+    that has happened, and the growth — year on year over the elapsed days, as
+    everywhere else — is *not* the change between the two columns beside it.
+    That is stated in a note rather than left for the reader to deduce, and this
+    pins the note rather than trusting the comment above it.
+    """
+    token = login(platform, "ceo")
+    card_section = card(platform, token, "top_customers", "?period=THIS_YEAR")
+
+    notes = " ".join(card_section.get("notes") or [])
+    assert "so far" in notes, card_section.get("notes")
+    assert "earlier years are complete" in notes
+    # And it says growth is not the change between the columns, because that is
+    # the one thing a reader would otherwise assume.
+    assert "not the change between the last two columns" in notes
+
+
+def test_a_finished_period_carries_no_unfinished_year_note(
+    platform: TestClient,
+) -> None:
+    """The note is for a window running past today, and only for that.
+
+    A note that appeared on every period would be read as boilerplate and stop
+    being read at all, which is worse than not having one.
+    """
+    token = login(platform, "ceo")
+    notes = " ".join(
+        card(platform, token, "top_customers", "?period=LAST_MONTH")
+        .get("notes") or [])
+    assert "so far" not in notes, notes
+
+
 def test_the_ranked_cards_are_ranked_by_what_was_sold(
     platform: TestClient,
 ) -> None:

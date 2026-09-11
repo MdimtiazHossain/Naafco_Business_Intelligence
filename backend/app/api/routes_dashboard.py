@@ -400,33 +400,60 @@ def _top_customers(ctx: ToolContext, date_range, filters: ScopeFilters,
     called, ``get_material_brand_target_performance``, is untouched and still on
     the assistant's allow-list; only the card is gone.
 
-    **The window is cut to what has actually happened, and that is what makes
-    the table honest.** ``compare_years`` shifts the *report* window back by
-    whole years, so on "This Year" — which runs to next June — the earlier
-    columns would be complete financial years sitting beside ten weeks of this
-    one. On a chart that is survivable; in a table it is not, because three
-    figures in a row invite the reader to compare them and the growth beside
-    them would contradict the two it sits next to. Cutting the end to today
-    first means every column covers the same span, and ``growth_percent``
-    provably equals the change between the last two: measured over the top
-    fifty on This Year, Last Month and Last Year, zero rows disagree.
+    **On a year period, a column headed FY 2024-25 holds that financial year,
+    whole.** The window is passed as the reader chose it, so ``compare_years``
+    shifts it back by whole years — which is what the heading claims and the
+    only reading that makes a history table a history.
 
-    So the columns are **not** hard-coded to 24-25 / 25-26 / 26-27. They are
+    On a *shorter* period the columns are that same span shifted back, so "Last
+    Month" draws August 2026 against August 2025 and August 2024. The headings
+    still name the financial year each window falls in, which is the shared
+    tool's rule and right for the region card's legend — three bars that differ
+    by years should say so rather than repeating the month. As a table heading
+    it is looser than it looks, and correcting it would move that legend too;
+    it is left alone deliberately rather than overlooked.
+
+    This was briefly the other way. The window was cut to today first, so every
+    column covered the same elapsed span and ``growth_percent`` equalled the
+    change between the last two exactly. That bought internal consistency at the
+    price of the columns meaning something other than what they said: "FY
+    2025-26" held ten weeks of FY 2025-26. Between a figure that is what it
+    claims and a table that is arithmetically self-contained, the label wins —
+    a reader comes to this card to see what a customer bought last year.
+
+    **The cost is real and is stated rather than left to be inferred.** On an
+    unfinished year the last column is only the part that has happened, so it
+    sits low beside two complete ones, and ``growth_percent`` — which compares
+    the same dates a year earlier, as growth does everywhere here — will not be
+    the change between the two columns beside it. A note says so whenever the
+    window runs past today. Every other period is unaffected: This Month, This
+    Quarter, YTD and the rest already end today, and the completed ones end in
+    the past, so only "This Year" ever differed.
+
+    The columns are **not** hard-coded to 24-25 / 25-26 / 26-27. They are
     whatever ``chart.series`` names, which is two years rather than three when
     the third recorded nothing — a year that recorded nothing is dropped rather
     than drawn along the floor, the same rule the region card follows.
     """
-    # ``date_to`` capped rather than the resolver's own ``_elapsed``, because a
-    # builder cannot reach the resolver's notion of today; they agree, since
-    # that resolver defaults to this same date.
-    elapsed = date_range.model_copy(
-        update={"date_to": min(date_range.date_to, dt.date.today())})
-    return run(ctx, "get_target_achievement", elapsed, filters,
-               group_by=GroupBy.CUSTOMER.value, limit=TOP_CUSTOMERS,
-               compare_years=2, rank_by="actual",
-               include_invoice_count=False,
-               compare_from=elapsed.growth_from.isoformat(),
-               compare_to=elapsed.growth_to.isoformat())
+    section = run(ctx, "get_target_achievement", date_range, filters,
+                  group_by=GroupBy.CUSTOMER.value, limit=TOP_CUSTOMERS,
+                  compare_years=2, rank_by="actual",
+                  include_invoice_count=False,
+                  compare_from=date_range.growth_from.isoformat(),
+                  compare_to=date_range.growth_to.isoformat())
+
+    today = dt.date.today()
+    if date_range.date_to > today and isinstance(section.get("notes"), list):
+        # Only when the period has not finished, and phrased as what the figures
+        # *are* rather than as a warning: the earlier columns being whole years
+        # is the point of the card, not a defect to apologise for.
+        section["notes"].insert(0, (
+            f"{ctx.financial_year_name(date_range.date_from, date_range.date_to)}"
+            f" covers {date_range.date_from} to {today} so far; the earlier "
+            "years are complete. Growth compares the same dates a year "
+            "earlier, so it is not the change between the last two columns."
+        ))
+    return section
 
 
 #: Every card below the KPI strip, by the name the browser asks for.

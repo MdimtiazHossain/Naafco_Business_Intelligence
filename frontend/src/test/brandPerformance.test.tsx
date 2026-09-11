@@ -104,11 +104,13 @@ const TREND_ROWS = [
 /**
  * The Top 50 Customers rows: a name, three years of net sales, and the growth.
  *
- * The three year figures are deliberately consistent with the growth — 50 L to
- * 62.5 L is +25% — because that agreement is the whole point of the card. The
- * backend cuts the window to what has elapsed so the columns and the percentage
- * beside them describe the same spans; a fixture that ignored that would let a
- * regression through.
+ * These figures are a *finished* period — Last Month, say — where the three
+ * columns and the growth describe the same spans and 50 L to 62.5 L is the
+ * +25% stated. On an unfinished year they would not agree, deliberately: the
+ * earlier columns are then whole financial years while the last is the part of
+ * this one that has happened, and the growth stays year on year over the
+ * elapsed days. The card says so in a note rather than bending either figure,
+ * and `test_platform_api` is where that case is pinned.
  */
 const CUSTOMER_ROWS = [
   { code: 'CUST-1', label: 'M/S Shamim Enterprise',
