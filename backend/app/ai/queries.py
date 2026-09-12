@@ -1350,6 +1350,12 @@ def credit_totals(session: Session, filters: ScopeFilters,
     overdue = and_(open_invoice, table.c.due_date < as_on)
     due_soon = and_(open_invoice, table.c.due_date >= as_on,
                     table.c.due_date <= as_on + dt.timedelta(days=due_soon_days))
+    # The third of the three, so the assistant and the page partition the open
+    # book the same way. Without it the agent could state an outstanding total
+    # and an overdue total and have no answer for the difference — which on the
+    # SPL book is ৳45.59 Cr, more than the overdue figure itself.
+    due_later = and_(open_invoice,
+                     table.c.due_date > as_on + dt.timedelta(days=due_soon_days))
 
     statement = select(
         func.count().label("invoice_count"),
@@ -1365,18 +1371,48 @@ def credit_totals(session: Session, filters: ScopeFilters,
         func.sum(case((due_soon, table.c.balance_amount), else_=0))
             .label("due_soon_amount"),
         func.sum(case((due_soon, 1), else_=0)).label("due_soon_invoice_count"),
+        func.sum(case((due_later, table.c.balance_amount), else_=0))
+            .label("due_later_amount"),
+        func.sum(case((due_later, 1), else_=0)).label("due_later_invoice_count"),
     ).select_from(table)
     if conditions:
         statement = statement.where(and_(*conditions))
     row = session.execute(statement).one()
     totals = dict(row._mapping)
-    # Reported as a magnitude, exactly as ``reporting.credit`` does it. The
-    # column is stored signed because that is what makes the balance a plain sum,
-    # but an assistant that answered "-1,100,000 BDT paid" would be stating the
-    # opposite of what happened. The two surfaces flip it the same way so a
-    # question asked in chat and the same figure read off the page agree.
-    if totals.get("payment_amount") is not None:
-        totals["payment_amount"] = -totals["payment_amount"]
+    # Decimals become floats, like every other row leaving this module. They
+    # were left as Decimal here alone, so `model_dump(mode="json")` rendered
+    # every receivables figure as a *string* — which JSON-decodes to a string,
+    # arrives in the browser as a string, and silently breaks both arithmetic
+    # and comparison on the one card that leads with a ratio. Every other query
+    # here goes through `normalize_value`; this one now does too.
+    totals = {key: normalize_value(value) for key, value in totals.items()}
+
+    # The two ratios the page states, computed here so the assistant and the
+    # page cannot disagree about them — and **suppressed rather than zeroed**
+    # when their denominator is nothing. A portfolio with nothing outstanding
+    # has no overdue *proportion*, and 0% would read as good news about a book
+    # that does not exist. This is the same rule `reporting.credit._share`
+    # applies; it was missing here, so the assistant could state an overdue
+    # amount and had no answer at all for "what share is that".
+    def _share(part, whole):
+        if part is None or not whole:
+            return None
+        return round(part / whole * 100, 2)
+
+    totals["overdue_share_percent"] = _share(
+        totals.get("overdue_amount"), totals.get("outstanding_amount"))
+    totals["payment_rate_percent"] = _share(
+        totals.get("payment_amount"), totals.get("net_invoice_amount"))
+
+    # Nothing is flipped here any more, and the deletion is the feature.
+    #
+    # This used to negate ``payment_amount`` so the assistant would not answer
+    # "-1,100,000 BDT paid", and ``reporting.credit`` did the same thing
+    # separately so the page and the chat would agree. Two copies of one rule
+    # agreed only as long as somebody kept them agreeing. The sign is now settled
+    # once at the load (``etl.credit.canonical_deductions``): a stored deduction
+    # is the amount by which it reduced the balance, so the figure read here is
+    # already the one to state, whichever extract the row came from.
     return totals
 
 

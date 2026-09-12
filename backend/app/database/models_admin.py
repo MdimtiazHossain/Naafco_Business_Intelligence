@@ -200,6 +200,32 @@ class UploadBatch(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False,
                                         default=UploadStatus.UPLOADED)
 
+    #: How this file signs a deduction, as **declared for this upload** — one of
+    #: ``etl.credit.DEDUCTION_CONVENTIONS``, or NULL for an upload type that
+    #: states no deductions.
+    #:
+    #: Defaulted from ``etl.credit.detect_convention`` and shown in the preview
+    #: with the counts it was read off, so the person committing the file sees
+    #: both the answer and the evidence. It is a declaration because two real
+    #: receivables extracts disagree and both are ``credit_invoice``: one
+    #: constant could not have been right for both, and a file whose deductions
+    #: all happen to be zero carries no evidence at all and is refused rather
+    #: than guessed at.
+    deduction_convention: Mapped[str | None] = mapped_column(String(16))
+
+    #: For a **scoped restatement**, the values of the dataset's
+    #: ``restatement_scope_field`` this file states in full. Rows inside the
+    #: scope that the file does not name are voided when it is committed.
+    #:
+    #: NULL for an ordinary upload, which stands nothing down. Defaulted from the
+    #: values the file contains and **confirmed by a person in the preview** —
+    #: never taken silently, because inferring from a file's contents what to
+    #: stand down is the most dangerous form of invented data this platform can
+    #: commit: a file that accidentally omitted a company would erase that
+    #: company's book, and the erasure would look exactly like a correct
+    #: restatement.
+    restatement_scope: Mapped[list | None] = mapped_column(JSON_TYPE)
+
     user_id: Mapped[int | None] = mapped_column(FK_TYPE)
     username: Mapped[str | None] = mapped_column(String(64))
 

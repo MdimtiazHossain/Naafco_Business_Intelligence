@@ -26,7 +26,7 @@ import {
   trendSeriesFrom,
   type TrendSeries,
 } from '../charts/Charts';
-import { KpiCard } from '../components/KpiCard';
+import { KpiCard, StatCard } from '../components/KpiCard';
 import { PageHeader, ResultNotes, Section } from '../components/PageHeader';
 import { ExportButtons } from '../components/ExportButtons';
 import { KpiSkeleton, QueryState } from '../components/States';
@@ -206,6 +206,11 @@ export default function Dashboard() {
   const customerYears = orderedByYear(
     trendSeriesFrom(sections.byName.top_customers?.chart),
   ).filter((series) => !series.key.startsWith('target'));
+  // Present only for a reader who holds Credit Control: the server leaves the
+  // card out of `sections` otherwise, so `byName` never gains the key and the
+  // block below draws nothing. Absent rather than disabled, which is the rule
+  // this application follows for a control whose only outcome is a refusal.
+  const overdue = sections.byName.overdue_receivables;
   const territorySalesRows = sections.byName.territory_sales?.rows ?? [];
   const brandSalesRows = sections.byName.brand_sales?.rows ?? [];
 
@@ -256,6 +261,69 @@ export default function Dashboard() {
               <KpiCard key={kpi.key} kpi={kpi} icon={KPI_ICONS[kpi.key]} />
             ))}
           </div>
+
+          {/*
+            Receivables, under the KPI strip and above the charts.
+
+            This card was refused for three revisions and the reason was never
+            that an overdue figure is uninteresting: the credit view reached the
+            customer's sub-territory and no further, so a regional manager —
+            the reader this page is most often open in front of — could only
+            have been shown an unscoped national total or refused the whole
+            dashboard. Revision 0040 gave that view the sales hierarchy, so the
+            figure here is the reader's own region.
+
+            It leads with the **share**, not the amount, for the same reason the
+            HIGH_OVERDUE alert does: a crore overdue is alarming on a small book
+            and routine on a large one, so a taka threshold would need re-setting
+            every time the business grew.
+
+            It draws nothing at all when the server did not offer the card, and
+            `n/a` rather than 0% when the book is empty — a portfolio with
+            nothing in it has no overdue proportion, and 0% would read as good
+            news about something that does not exist.
+          */}
+          {overdue ? (
+            <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-3">
+              <StatCard
+                label={t('dashboard.overdueShare')}
+                value={
+                  overdue.values.overdue_share_percent === null ||
+                  overdue.values.overdue_share_percent === undefined
+                    ? t('common.notAvailable')
+                    : formatPercent(overdue.values.overdue_share_percent as number)
+                }
+                tone={
+                  typeof overdue.values.overdue_share_percent === 'number' &&
+                  overdue.values.overdue_share_percent >= 25
+                    ? 'danger'
+                    : 'default'
+                }
+                hint={t('dashboard.overdueOf', {
+                  amount: formatAmount(overdue.values.outstanding_amount as number),
+                })}
+              />
+              <StatCard
+                label={t('dashboard.overdueAmount')}
+                value={formatAmount(overdue.values.overdue_amount as number)}
+                hint={t('credit.invoiceCount', {
+                  count: (overdue.values.overdue_invoice_count as number) ?? 0,
+                })}
+              />
+              <div className="card p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  {t('dashboard.overdueAsOn')}
+                </p>
+                {/* The tool states its own reporting date in a note, and it is
+                    carried through rather than re-derived here: the same invoice
+                    is Not Yet Due in June and Over Due in August, so a figure
+                    without the date it was measured on is not one anybody can
+                    check. No business calculation lives in the browser, and
+                    neither does this. */}
+                <ResultNotes notes={overdue.notes} />
+              </div>
+            </div>
+          ) : null}
 
           <Section title={t('dashboard.salesTrend')}>
             <TrendChart

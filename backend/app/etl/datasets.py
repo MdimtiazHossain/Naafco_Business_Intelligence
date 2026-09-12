@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from . import credit as credit_rules
 from ..utils.text import snake_case
 
 #: Organisational levels, shallowest first. Mirrors the Phase 1 hierarchy.
@@ -68,6 +69,17 @@ class FieldSpec:
     #: twice. The **stored** value keeps its original spacing and case — the
     #: normalisation applies to the comparison only, never to the data.
     normalise_for_key: bool = False
+    #: Literal values that are a *spreadsheet error*, not a code.
+    #:
+    #: `#N/A` is what Excel leaves behind when a VLOOKUP finds nothing, and the
+    #: SPL extract carries it in every hierarchy column on 75 rows worth
+    #: ৳23.76 Cr. Stored as-is it would become a territory named "#N/A" that
+    #: groups, filters and totals like any other — money attributed to a place
+    #: that does not exist. Matched case-insensitively after trimming, and the
+    #: row is **rejected with the full original row kept**, never dropped: this
+    #: is a fifth of the book and it has to be visible in
+    #: ``etl_rejected_records`` rather than quietly absent from a total.
+    reject_values: tuple[str, ...] = ()
 
     def matches(self, header: str) -> bool:
         key = snake_case(header)
@@ -170,6 +182,52 @@ class DatasetSpec:
     #: is a data-entry error, and reporting it at upload is the only point at
     #: which it is cheap to fix.
     check_assignment_consistency: bool = False
+    #: Whether a load of this dataset must be told how its file signs a
+    #: deduction — one of :data:`app.etl.credit.DEDUCTION_CONVENTIONS`.
+    #:
+    #: **It is a property of the file, not of the dataset**, which is why this is
+    #: a requirement rather than a value. It used to be a value here, and that
+    #: was wrong in a way only two real files could reveal: the Credit Invoice
+    #: extract posts a payment negative, the SPL extract posts it positive, both
+    #: are ``credit_invoice``, and one constant cannot be right for both.
+    #: Running either through the other's rule roughly doubles every balance.
+    #:
+    #: So the convention is declared per upload, defaulted from
+    #: :func:`app.etl.credit.detect_convention` and confirmed in the preview, and
+    #: recorded on the batch that loads the file. A dataset that requires one and
+    #: is not given one refuses to load rather than picking a side.
+    requires_deduction_convention: bool = False
+    #: The column a **scoped restatement** is bounded by, or ``None`` for a
+    #: dataset that cannot be restated.
+    #:
+    #: A restatement is a file that states the whole of something as at a date:
+    #: the rows it names are updated in place and the rows it does not name are
+    #: *voided*, because the source is saying they are no longer open. The SPL
+    #: receivables extract is one — company 1000's entire book as at 31 August
+    #: 2026 — and treating it as an ordinary incremental load would leave every
+    #: settled invoice standing in the warehouse for ever.
+    #:
+    #: **This is not REPLACE, and the difference is this field.** REPLACE empties
+    #: whatever a file does not mention, globally; a restatement is bounded by a
+    #: scope that is *declared at upload and confirmed in the preview*, and
+    #: voids rather than deletes. The precedent is ``targetmgmt.lock``, which
+    #: restates a plan's own rows and voids the keys it drops — the same shape
+    #: for the same reason.
+    #:
+    #: The scope is never inferred from the file's contents. Deriving what to
+    #: destroy from what happens to be present is the most dangerous form of
+    #: invented data there is: a file that accidentally omitted a company would
+    #: erase that company's book, and the erasure would look exactly like a
+    #: correct restatement.
+    restatement_scope_field: str | None = None
+    #: The column whose total says what a restatement's void is *worth*, or
+    #: ``None`` to report a count alone.
+    #:
+    #: Declared rather than assumed, because "how much money just left the
+    #: reports" has no generic answer: a receivable's is its outstanding
+    #: balance, and a dataset with no such column should say nothing rather than
+    #: report a zero somebody would read as "nothing was lost".
+    restatement_amount_field: str | None = None
     description: str = ""
 
     @property
@@ -591,16 +649,84 @@ CREDIT_INVOICE = DatasetSpec(
         ("last_payment_date", "last_payment_date_id"),
         ("clearing_date", "clearing_date_id"),
     ),
-    org_levels=(),
+    # The four levels the SPL extract states that actually resolve, and
+    # deliberately **not** zone or region.
+    #
+    # The file carries all six, and its top two are shifted a whole level:
+    # measured over all 15,576 rows, `Region_Code == Area_Code` on every one,
+    # 0 of its 13 distinct "zone" codes exist in `dim_zone` and 0 of its 16
+    # "region" codes exist in `dim_region` — while area (16/16), unit (20/20),
+    # territory (154/154) and sub-territory (267/267) resolve completely. Three
+    # region *names* also carry two codes each (Jashore, Rajshahi, Bogura), so
+    # the column cannot even be repaired by name.
+    #
+    # Naming them here would therefore reject every row for an area code that is
+    # not a region. Zone and region are instead **derived from the master chain**
+    # above sub-territory, which is the rule Target already follows: "a Target
+    # file states a territory and the ETL walks the master hierarchy up to
+    # company, so the region a target belongs to is always the one the master
+    # says it belongs to." The file's own two columns are kept in staging, where
+    # the source shape belongs, and reach no report.
+    #
+    # The four that *are* named are cross-checked against each other by
+    # `resolve_org`, which is free consistency: the file's territory already
+    # agrees with the master's parent-of-sub-territory on all 15,501 resolvable
+    # rows, and this is what would catch a future export drifting.
+    #
+    # **`unit_code` joined them, and the deployment is what proved it.** The
+    # first load against production rejected 1,205 rows for HIERARCHY_MISMATCH
+    # on that column alone. Nothing was wrong with the loader: the org master had
+    # been updated — three new units created and eight territories re-parented
+    # onto them — while the extract still names the old parent, so `resolve_org`
+    # correctly refused a row that claimed a territory and a unit the master no
+    # longer connects.
+    #
+    # Measured against the deployment's current master over all 15,501 rows
+    # carrying a hierarchy: sub-territory resolves 15,501/15,501, territory
+    # equals its sub-territory's parent on 15,501/15,501, area equals its unit's
+    # parent on 15,501/15,501 — and unit equals its territory's parent on only
+    # 14,296. One stale column, and the re-parenting kept the area unchanged,
+    # which is why every other level still agrees.
+    #
+    # So the unit is derived from the territory rather than read, and the rows
+    # get the master's *current* answer instead of the file's stale one. Area is
+    # deliberately kept: it agrees on every row, and a level that agrees is a
+    # free cross-check of the file against the master — which is the whole
+    # reason the resolvable levels are named here rather than all derived.
+    org_levels=("company_code", "area_code", "territory_code",
+                "sub_territory_code"),
     # No material. A credit invoice is money owed against a document, not against
     # an item: the source states no material code, and the invoice total is not
     # decomposable into lines from anything this file carries.
     material_required=False,
-    # Company plus invoice number, and nothing else. An ERP has already decided
-    # what an invoice *is*, so its number is the identity — there is no
-    # attribute-reconstructed fallback here of the kind sales needs, because
-    # there is no line grain below the document to reconstruct.
-    business_key_fields=("company_code", "invoice_no"),
+    # Which way this file signs a deduction is declared per upload, not here:
+    # the two real extracts disagree and both are `credit_invoice`. See the spec
+    # field above for why that could never have been one constant.
+    requires_deduction_convention=True,
+    # A receivables extract states one company's whole book as at a date, so a
+    # row it stops naming has been settled rather than forgotten. Company is
+    # what bounds that claim -- see the spec field, and note the scope is still
+    # declared per upload rather than read off this file.
+    restatement_scope_field="company_code",
+    restatement_amount_field="balance_amount",
+    # Company, **customer** and document number.
+    #
+    # The customer is in the key because the document number is not unique
+    # without it. In the SPL extract 285 `Assignment` values repeat and 268 of
+    # them span more than one customer, so `(company, invoice_no)` collides on
+    # 575 rows and 290 of them would be refused as DUPLICATE_IN_FILE — a real
+    # invoice rejected for sharing a reference with somebody else's.
+    #
+    # It does not close the gap entirely: 17 rows remain, 17 documents where one
+    # customer carries the same Assignment twice with different dates and
+    # different amounts. None of them is a byte-identical repeat, so they are
+    # **not** silently collapsed — they are refused by name and kept in
+    # `etl_rejected_records` for somebody to look at, which is the honest
+    # outcome for a row this system cannot tell apart. Adding the amount to the
+    # key would clear them and is refused: a business key is the grain, and
+    # keying on a measure means a corrected figure creates a second row instead
+    # of updating the first, which breaks idempotent re-import.
+    business_key_fields=("company_code", "customer_code", "invoice_no"),
     description=(
         "Credit invoices: what was billed, what has been posted against it, and "
         "the terms that decide when it falls due."
@@ -610,50 +736,107 @@ CREDIT_INVOICE = DatasetSpec(
                   required=True, description="Company code that raised the invoice."),
         FieldSpec("invoice_no", FieldKind.CODE,
                   ("invoice", "invoice number", "bill no", "billing document",
-                   "invoice_number", "vbeln"),
+                   "invoice_number", "vbeln", "assignment"),
                   required=True, normalise_for_key=True,
-                  description="Invoice number; unique within its company, not "
-                              "globally."),
+                  description="Invoice number; unique within its company *and "
+                              "customer*, not globally. The SPL extract calls "
+                              "it Assignment."),
         FieldSpec("customer_code", FieldKind.CODE,
                   ("customer", "customer id", "dealer code", "party code",
                    "kunnr"),
                   required=True,
                   description="Who owes it. Resolved against the Customer "
                               "Master; a code the master lacks is a deferred "
-                              "mapping, not a rejection."),
+                              "mapping, not a rejection. Part of the business "
+                              "key, because a document number repeats across "
+                              "customers in the SPL extract."),
+        # --- the organisational chain ------------------------------------
+        #
+        # Every one is `reject_values=("#N/A",)`: Excel's failed-VLOOKUP marker
+        # is not a code, and stored as one it becomes a territory that groups and
+        # totals like a real place.
+        #
+        # Zone and region are staged and **not** resolved -- see `org_levels`
+        # above for the measurement that rules them out. They are declared so the
+        # file's own columns survive in staging rather than being reported as
+        # unmapped, which would read as "this export has columns we do not
+        # understand" when in fact we understand them and distrust them.
+        FieldSpec("zone_code", FieldKind.CODE, ("zone", "zone_code"),
+                  reject_values=("#N/A",),
+                  description="As the file states it. Not resolved: 0 of its 13 "
+                              "values exist in dim_zone. The zone on the fact is "
+                              "derived from the master chain."),
+        FieldSpec("region_code", FieldKind.CODE, ("region", "region_code"),
+                  reject_values=("#N/A",),
+                  description="As the file states it. Not resolved: it holds the "
+                              "area code on all 15,576 rows."),
+        FieldSpec("area_code", FieldKind.CODE, ("area", "area_code"),
+                  reject_values=("#N/A",),
+                  description="Resolved and cross-checked against the master."),
+        FieldSpec("unit_code", FieldKind.CODE, ("unit", "unit_code"),
+                  reject_values=("#N/A",),
+                  description="Resolved and cross-checked against the master."),
+        FieldSpec("territory_code", FieldKind.CODE, ("territory", "territory_code"),
+                  reject_values=("#N/A",),
+                  description="Resolved and cross-checked against the master."),
+        FieldSpec("sub_territory_code", FieldKind.CODE,
+                  ("subterritory_code", "sub territory", "sub-territory"),
+                  reject_values=("#N/A",),
+                  description="The deepest level the file states, and what the "
+                              "whole chain above it is derived from."),
         FieldSpec("plant_code", FieldKind.CODE, ("plant", "plant id", "werks"),
                   description="Plant the invoice was raised from. Optional: it "
                               "describes the invoice, and nothing is keyed on it."),
         FieldSpec("invoice_date", FieldKind.DATE,
                   ("invoice dt", "billing date", "document date", "bill date",
-                   "invoice_dt", "fkdat"),
+                   "invoice_dt", "fkdat", "journal entry date"),
                   required=True,
                   description="When the invoice was raised. The reporting date, "
                               "and the date the credit period runs from."),
+        # **Not required, and no longer aliasing "payment terms".**
+        #
+        # It was both, and both were wrong for this source. The SPL extract's
+        # Payment Terms column holds a *code* — `NT90`, `NCST` — so aliasing it
+        # to a NUMERIC field failed to parse on every row that states one; and
+        # 8,651 of 15,576 rows state no term at all, so `required` refused those.
+        # The term is derived instead (see `transforms.derive_credit_invoice`),
+        # from the code where the file names one and from the row's own two dates
+        # where it does not.
         FieldSpec("credit_days", FieldKind.NUMERIC,
-                  ("credit day", "credit term", "credit terms", "payment terms",
-                   "terms", "credit period"),
-                  required=True, allow_negative=False,
-                  description="Days allowed to pay. Not constrained to the seven "
-                              "known values — an unexpected term is flagged and "
-                              "kept, because refusing it on an assumption we "
-                              "have not verified would lose a real invoice."),
+                  ("credit day", "credit term", "credit period"),
+                  allow_negative=False,
+                  description="Days allowed to pay. Derived where the file does "
+                              "not state a number. Not constrained to the known "
+                              "values — an unexpected term is flagged and kept, "
+                              "because refusing it on an assumption we have not "
+                              "verified would lose a real invoice."),
+        FieldSpec("payment_terms", FieldKind.TEXT,
+                  ("payment terms", "terms", "term code", "zterm"),
+                  description="The term code as the file writes it (NT90, NCST, "
+                              "…). Kept as text and mapped to days by "
+                              "credit.PAYMENT_TERM_DAYS; the code is the file's "
+                              "vocabulary and the days are what the fact stores."),
         FieldSpec("invoice_value", FieldKind.NUMERIC,
                   ("invoice amount", "gross amount", "bill value", "bill amount",
-                   "invoice_amt"),
+                   "invoice_amt", "rounded_total"),
                   required=True, default_numeric=0,
-                  description="What was billed, before anything posted against it."),
+                  description="What was billed, before anything posted against "
+                              "it. The SPL extract's rounded_total: the identity "
+                              "balances on that column, not on `total`, which "
+                              "differs on 616 rows by at most ৳0.50."),
         FieldSpec("return_amount", FieldKind.NUMERIC,
-                  ("return", "returns", "sales return", "return value"),
+                  ("return", "returns", "sales return", "return value", "rev_rtn"),
                   default_numeric=0,
                   description="Goods returned against this invoice. Deducted to "
-                              "give the net invoice amount."),
+                              "give the net invoice amount, under both "
+                              "deduction conventions."),
         FieldSpec("payment_amount", FieldKind.NUMERIC,
                   ("payment", "paid", "paid amount", "collection", "receipt"),
                   default_numeric=0,
                   description="Total posted in payment. One aggregate figure — "
                               "the source states no individual transactions, so "
-                              "no payment history is reconstructed from it."),
+                              "no payment history is reconstructed from it, and "
+                              "there is still no collections reporting."),
         FieldSpec("discount_amount", FieldKind.NUMERIC,
                   ("discount", "disc", "cash discount", "discount value"),
                   default_numeric=0,
@@ -689,11 +872,52 @@ CREDIT_INVOICE = DatasetSpec(
         # row's own columns imply, the derived value wins and the disagreement is
         # recorded — a source computing its due date from a term it did not send
         # us must not be able to move a figure this system reports.
+        # The stated due date, and it **wins** — the docstring below is the one
+        # this file's own comment used to contradict, and revision 0031 settled
+        # it the other way round. `effective_due_date` is preferred over
+        # `Net Due Date` because the SPL extract carries both and they differ by
+        # exactly one day on the 3,496 rows whose journal date equals their due
+        # date (immediate terms), which is deterministic and is the source's own
+        # correction rather than ours to re-derive.
         FieldSpec("due_date", FieldKind.DATE,
-                  ("due dt", "payment due date", "net due date", "due"),
-                  description="The file's own due date, if it states one. Never "
-                              "stored: invoice date + credit days wins, and a "
-                              "disagreement becomes DUE_DATE_MISMATCH."),
+                  ("due dt", "payment due date", "due", "effective_due_date"),
+                  description="The file's own due date. Stored: it wins over "
+                              "invoice date + credit days, and a disagreement "
+                              "becomes DUE_DATE_MISMATCH rather than moving the "
+                              "figure."),
+        # A field of its own rather than a second alias on `due_date`.
+        #
+        # The SPL extract carries both columns and they are *not* the same: they
+        # differ by exactly one day on the 3,496 rows whose journal date equals
+        # their net due date. Aliasing both to `due_date` parsed and loaded
+        # perfectly well and let the file's **column order** decide which one a
+        # row ended up with — `effective_due_date` happens to sit to the right of
+        # `Net Due Date`, so it happened to win. A re-exported file with the
+        # columns the other way round would have silently moved 3,496 due dates
+        # by a day, with nothing to show for it.
+        FieldSpec("net_due_date", FieldKind.DATE, ("net due date", "net_due_date"),
+                  description="The pre-adjustment due date. Staged, and used "
+                              "only to derive a due date for a row that states "
+                              "no effective one; never stored."),
+        # --- read to be checked against, then discarded -------------------
+        #
+        # `od` and `maturity` are the source's own overdue split, frozen at the
+        # snapshot date the file was taken on. They are staged so the load can
+        # compare its own derivation against them and report the disagreement,
+        # and they reach **no fact column**: an overdue figure computed on
+        # 2026-08-31 is wrong on 2026-09-01 while still looking authoritative,
+        # which is the same reason `days_overdue`, `aging_bucket` and
+        # `credit_status` are not columns either.
+        #
+        # They are also not the book. `od` is overdue, `maturity` is only what
+        # matures inside the snapshot month, and ৳35.75 Cr due after it — a third
+        # of the total — appears in neither.
+        FieldSpec("source_od", FieldKind.NUMERIC, ("od",),
+                  description="The source's overdue figure at its snapshot date. "
+                              "Compared against, never stored."),
+        FieldSpec("source_maturity", FieldKind.NUMERIC, ("maturity",),
+                  description="The source's maturing figure at its snapshot "
+                              "date. Compared against, never stored."),
         FieldSpec("balance_amount", FieldKind.NUMERIC,
                   ("balance", "outstanding", "outstanding amount", "due amount"),
                   description="The file's own balance, if it states one. Never "

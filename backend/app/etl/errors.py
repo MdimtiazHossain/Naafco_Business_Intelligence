@@ -41,6 +41,12 @@ def _e(code: str, category: str, description: str) -> ErrorSpec:
 MISSING_REQUIRED_FIELD = _e(
     "MISSING_REQUIRED_FIELD", ErrorCategory.MISSING_REQUIRED_FIELD,
     "A field the dataset declares as required is empty.")
+SPREADSHEET_ERROR_VALUE = _e(
+    "SPREADSHEET_ERROR_VALUE", ErrorCategory.MISSING_REQUIRED_FIELD,
+    "A code column holds a spreadsheet error marker such as #N/A, which is what "
+    "a failed lookup leaves behind rather than a value the column can hold. The "
+    "row is kept in full so the amount it carries is visible rather than absent "
+    "from a total.")
 MISSING_SOURCE_COLUMN = _e(
     "MISSING_SOURCE_COLUMN", ErrorCategory.STRUCTURE,
     "A required column is absent from the source file.")

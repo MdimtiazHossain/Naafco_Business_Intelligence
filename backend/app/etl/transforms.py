@@ -13,6 +13,7 @@ Rules honoured:
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -166,7 +167,23 @@ def build_target_measures(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def derive_credit_invoice(record: dict[str, Any]) -> dict[str, Any]:
+@dataclass(frozen=True)
+class LoadOptions:
+    """What a derivation needs to know about *this load* rather than this row.
+
+    One object rather than a keyword per setting, so a second such setting does
+    not churn the signature of every derivation that does not care about it.
+    """
+
+    #: How the file being loaded signs a deduction, where the dataset says the
+    #: question has an answer. Declared per upload and applied exactly once, by
+    #: :func:`app.etl.credit.canonical_deductions`, so nothing downstream of the
+    #: load has to know which extract a row came from.
+    deduction_convention: str | None = None
+
+
+def derive_credit_invoice(record: dict[str, Any],
+                          options: LoadOptions) -> dict[str, Any]:
     """Compute a credit invoice's stable derivations into the cleaned record.
 
     This runs *before* the fact row is assembled, and that ordering is the whole
@@ -189,26 +206,91 @@ def derive_credit_invoice(record: dict[str, Any]) -> dict[str, Any]:
     from . import credit
 
     invoice_date = record.get("invoice_date")
-    credit_days = record.get("credit_days")
-    if invoice_date is None or credit_days is None:
-        # Both are required fields, so a row reaching here without them has
-        # already been rejected; returning nothing keeps this a pure function
-        # rather than raising on a row the pipeline is finished with.
+    if invoice_date is None:
+        # Required, so a row reaching here without it has already been rejected;
+        # returning nothing keeps this a pure function rather than raising on a
+        # row the pipeline is finished with.
         return {}
+
+    # --- the due date -----------------------------------------------------
+    #
+    # The stated one wins (revision 0031). Where the file states none, the SPL
+    # extract's own rule is derived rather than guessed: its `effective_due_date`
+    # equals `Net Due Date` except on the 3,496 rows whose journal date equals
+    # their net due date, where it is one day later — immediate terms, where the
+    # money is due the day *after* the document rather than on it. Measured over
+    # all 15,576 rows: 12,080 equal, 3,496 exactly +1, and **not one** row
+    # differing by anything else.
+    stated_due = record.get("due_date")
+    net_due = record.get("net_due_date")
+    if stated_due is None and net_due is not None:
+        stated_due = net_due + dt.timedelta(days=1) if net_due == invoice_date else net_due
+
+    # --- the term ---------------------------------------------------------
+    #
+    # Three sources, in descending order of directness, and only the last is
+    # flagged. A number the file states is the term. A code the file states is
+    # the term in the source's own vocabulary — mapped, not derived, so it is
+    # not flagged; where that code disagrees with the row's own dates the
+    # existing DUE_DATE_MISMATCH says so, which is what that flag already means.
+    # Neither stated: read the term back out of the two dates, and flag it,
+    # because a derived term is weaker evidence than a stated one.
+    credit_days = record.get("credit_days")
+    derived_term = False
+    if credit_days is None:
+        credit_days = credit.term_days(record.get("payment_terms"))
+    if credit_days is None:
+        reference = stated_due or net_due
+        credit_days = (
+            credit.credit_days_from_dates(invoice_date=invoice_date, due_date=reference)
+            if reference is not None else 0
+        )
+        derived_term = True
+
+    # --- the signs ---------------------------------------------------------
+    #
+    # The one place this file's own convention is consulted. From here on the
+    # four deductions mean what `credit.DEDUCTION_CANONICAL_RULE` says they mean,
+    # and the canonical values are what reach the fact — so the views, the page
+    # and the assistant never learn which extract a row came from and cannot come
+    # to different conclusions about it.
+    #
+    # The file's original signs are not lost: staging holds every column as text
+    # and each rejected row keeps its whole `raw_data`, with the batch recording
+    # the convention they were read under.
+    assert options.deduction_convention is not None  # the pipeline refuses first
+    return_amount, payment_amount, discount_amount, adjustment_amount = (
+        credit.canonical_deductions(
+            options.deduction_convention,
+            return_amount=_dec(record.get("return_amount")),
+            payment_amount=_dec(record.get("payment_amount")),
+            discount_amount=_dec(record.get("discount_amount")),
+            adjustment_amount=_dec(record.get("adjustment_amount")),
+        )
+    )
 
     derived = credit.derive(
         invoice_date=invoice_date,
         credit_days=int(credit_days),
         invoice_value=_dec(record.get("invoice_value")),
-        return_amount=_dec(record.get("return_amount")),
-        payment_amount=_dec(record.get("payment_amount")),
-        discount_amount=_dec(record.get("discount_amount")),
-        adjustment_amount=_dec(record.get("adjustment_amount")),
-        stated_due_date=record.get("due_date"),
+        return_amount=return_amount,
+        payment_amount=payment_amount,
+        discount_amount=discount_amount,
+        adjustment_amount=adjustment_amount,
+        stated_due_date=stated_due,
         stated_balance=_dec(record.get("balance_amount"), None),
+        credit_days_derived=derived_term,
     )
     return {
+        "credit_days": int(credit_days),
         "due_date": derived.due_date,
+        # The canonical figures replace the file's own on the cleaned record, so
+        # the fact stores what the warehouse means rather than what this
+        # particular export happened to say.
+        "return_amount": return_amount,
+        "payment_amount": payment_amount,
+        "discount_amount": discount_amount,
+        "adjustment_amount": adjustment_amount,
         "net_invoice_amount": derived.net_invoice_amount,
         "balance_amount": derived.balance_amount,
         "data_quality_flag": derived.data_quality_flag,
@@ -246,6 +328,114 @@ def build_credit_invoice_measures(record: dict[str, Any]) -> dict[str, Any]:
         "data_quality_flag": record.get("data_quality_flag"),
         "payment_mode": record.get("payment_mode"),
     }
+
+
+#: A load disagreeing with the source's own overdue split by more than this is a
+#: defect rather than rounding. Measured: the derivation reproduces the SPL
+#: extract's ``od`` to within 0.6%, and the residue is whole-taka rounding —
+#: ``od`` and ``maturity`` are integers in every row of that file while the
+#: derived figure carries paisa.
+OVERDUE_AGREEMENT_TOLERANCE_PERCENT = Decimal("1.0")
+
+
+def credit_invoice_load_notes(records: list[dict[str, Any]]) -> list[str]:
+    """Compare the load's own overdue split against the source's, then forget it.
+
+    ``od`` and ``maturity`` are the source's answer to "how much is late",
+    computed on the day the extract was taken. They are staged, checked here, and
+    reach **no fact column**, for the reason ``days_overdue`` is not a column
+    either: an overdue figure is a function of the day you ask, and one frozen at
+    upload is wrong the next morning while still looking authoritative.
+
+    They are also not the whole book, which is why this compares only the part
+    they cover. ``od`` is overdue and ``maturity`` is what matures inside the
+    snapshot month; in the SPL extract ৳35.75 Cr falls due after it and appears
+    in neither, so a comparison against the full outstanding total would report a
+    third of the portfolio as a disagreement.
+
+    **The as-on date is measured, not assumed, and that is what this function had
+    wrong.** No column states when the extract was run. The latest journal date
+    is only a *lower bound* on it — a book whose last posting is 31 August is
+    extracted on the 31st or on some later day — so reading that date as the
+    as-on date reported the SPL file as disagreeing by -2.27%, on 172 rows that
+    were every one of them due **exactly on** the last journal date. Those rows
+    are late if the extract was run the next morning and not late if it was run
+    that evening, and the arithmetic cannot tell the two apart from the file.
+
+    So both candidates are computed and the note names the one the source's own
+    ``od`` implies. That is a measurement rather than a constant fitted to the
+    answer, and it degrades honestly: a derivation that is genuinely wrong
+    disagrees at *both* candidates, and the note then reports the stricter one.
+    For the SPL extract the day after agrees to ৳1.32 on ৳36.22 Cr with not one
+    row differing by more than ৳0.50, which is what a file called
+    ``Sep_OD_Maturity`` holding August postings should be expected to say.
+    """
+    stated = [r for r in records if r.get("source_od") is not None
+              or r.get("source_maturity") is not None]
+    if not stated:
+        return []
+
+    invoice_dates = [r["invoice_date"] for r in records if r.get("invoice_date")]
+    if not invoice_dates:
+        return []
+    last_posting = max(invoice_dates)
+
+    def _overdue_at(as_on: dt.date) -> tuple[Decimal, int]:
+        """What this load says is late on ``as_on``, and over how many invoices.
+
+        ``due < as_on`` is this platform's own boundary, not a choice made here:
+        ``credit.days_overdue`` is ``(as_on - due).days`` and an invoice due today
+        is NOT_YET_DUE at zero days. Both candidates below use it, so what the
+        comparison varies is the date and never the rule.
+        """
+        total, covered = ZERO, 0
+        for record in records:
+            due = record.get("due_date")
+            balance = _dec(record.get("balance_amount"))
+            if due is None or balance is None:
+                continue
+            if due < as_on:
+                total += balance
+                covered += 1
+        return total, covered
+
+    source_od = sum((_dec(r.get("source_od")) for r in stated), ZERO)
+    if source_od == ZERO:
+        derived, _ = _overdue_at(last_posting)
+        return [f"The source states no overdue figure, so this load's own "
+                f"{derived:,.0f} as at {last_posting} could not be checked "
+                f"against it."]
+
+    # The extract was run on the last posting date or afterwards; one day covers
+    # both readings, because a further day moves nothing that these two do not.
+    candidates = [last_posting, last_posting + dt.timedelta(days=1)]
+    measured = []
+    for as_on in candidates:
+        derived, covered = _overdue_at(as_on)
+        measured.append((abs((derived - source_od) / source_od * 100), as_on,
+                         derived, covered))
+    _, as_on, derived_od, covered = min(measured, key=lambda m: m[0])
+
+    gap = (derived_od - source_od) / source_od * 100
+    agrees = abs(gap) <= OVERDUE_AGREEMENT_TOLERANCE_PERCENT
+    verdict = "agrees with" if agrees else "DISAGREES WITH"
+    implied = ("" if not agrees else
+               f" The file states no as-on date; {as_on} is the one its own "
+               f"figures imply, the day "
+               + ("of" if as_on == last_posting else "after")
+               + " its last posting.")
+    return [
+        f"Overdue as at {as_on}: this load derives {derived_od:,.0f} across "
+        f"{covered:,} invoices and the file states {source_od:,.0f} — "
+        f"{gap:+.2f}%, which {verdict} the source.{implied} Neither `od` nor "
+        f"`maturity` is stored; both are read only to be checked."
+    ]
+
+
+#: Whole-load checks, keyed by data type. A dataset with no entry has none.
+LOAD_NOTES = {
+    "credit_invoice": credit_invoice_load_notes,
+}
 
 
 MEASURE_BUILDERS = {

@@ -668,12 +668,24 @@ export function ComparisonBarChart({
   xKey,
   series,
   height = 280,
+  stacked = false,
   emptyMessage,
 }: {
   data: Record<string, any>[];
   xKey: string;
   series: { key: string; label: string; color?: string }[];
   height?: number;
+  /**
+   * Stack the series instead of placing them side by side.
+   *
+   * Grouped and stacked answer different questions and are not a style choice.
+   * Grouped compares series *against each other* — plan against outcome, this
+   * year against last. Stacked compares each bar's **total** across categories
+   * while showing what it is made of, which is only honest when the parts are
+   * mutually exclusive and add up to that total: receivables split into overdue
+   * and not-yet-overdue does; two years of sales does not.
+   */
+  stacked?: boolean;
   emptyMessage?: string;
 }) {
   const theme = useChartTheme();
@@ -717,7 +729,14 @@ export function ComparisonBarChart({
             dataKey={entry.key}
             name={entry.label}
             fill={entry.color ?? CHART_COLORS[index % CHART_COLORS.length]}
-            radius={[4, 4, 0, 0]}
+            // One stack id for every series, which is what puts them in one
+            // bar. Rounding only the last of them: a radius on each segment
+            // would draw gaps between parts of a single total and make a stack
+            // look like a group of thin bars.
+            stackId={stacked ? 'stack' : undefined}
+            radius={
+              stacked && index !== series.length - 1 ? undefined : [4, 4, 0, 0]
+            }
           />
         ))}
       </BarChart>

@@ -163,27 +163,29 @@ export const STOCK_FILTERS: FilterLevel[] = [
  * The Credit Control filter set — every filter that page offers, and only those.
  *
  * Same rule as `STOCK_FILTERS`: these are the ones `vw_credit_invoice_detail`
- * can actually honour. An invoice states a company, a plant and a customer, and
- * the customer carries its sub-territory; the sales hierarchy between company
- * and sub-territory names columns the view does not have, so offering region or
- * territory here would advertise a control that silently does nothing.
+ * can actually honour, so a chip on this bar always means something. **The
+ * sales hierarchy joined the set in revision 0040**, which gave that view the
+ * six levels between company and sub-territory. Until then this list stopped at
+ * the sub-territory the customer carried, and offering Region here would have
+ * advertised a control that silently did nothing — the same defect from the
+ * other side of the same gap that made the page refuse a region-scoped reader
+ * outright.
  *
- * There are no material filters either. A credit invoice is money owed against
- * a *document*, not against an item — the source states no material code, and
- * the invoice total cannot be decomposed into lines from anything this file
- * carries.
+ * There are still no material filters. A credit invoice is money owed against a
+ * *document*, not against an item — the source states no material code, and the
+ * invoice total cannot be decomposed into lines from anything this file carries.
  *
  * The last four are the credit-specific narrowings. Two are stored columns and
  * two are derived **for the As On date**, which is why they travel with it: the
  * same invoice is Not Yet Due in June and Over Due in August, so a status chip
  * without the date it was resolved against would be meaningless.
  *
- * Order is the order the bar draws them: who owes it, then what kind of debt.
+ * Order is the order the bar draws them: where the debt sits, then who owes it,
+ * then what kind of debt it is.
  */
 export const CREDIT_FILTERS: FilterLevel[] = [
-  'company_code',
+  ...HIERARCHY_ORDER,
   'plant_code',
-  'sub_territory_code',
   'customer_code',
   'credit_days',
   'payment_mode',

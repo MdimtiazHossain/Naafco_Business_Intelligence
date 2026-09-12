@@ -24,19 +24,27 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { CategoryBarChart, DonutChart } from '../charts/Charts';
+import { AGING_COLORS, CategoryBarChart, ComparisonBarChart, DonutChart } from '../charts/Charts';
+import { AgingMatrix } from '../components/AgingMatrix';
 import { ExportButtons } from '../components/ExportButtons';
 import { InvoiceDetailPanel } from '../components/InvoiceDetailPanel';
 import { StatCard } from '../components/KpiCard';
 import { PageHeader, Section } from '../components/PageHeader';
 import { KpiSkeleton, QueryState } from '../components/States';
-import { CREDIT_FILTERS, useFilters } from '../contexts/FilterContext';
+import {
+  CREDIT_FILTERS,
+  FILTER_LABELS,
+  HIERARCHY_ORDER,
+  useFilters,
+} from '../contexts/FilterContext';
 import { useT } from '../contexts/I18nContext';
 import { GlobalFilterBar } from '../filters/GlobalFilterBar';
 import { creditService } from '../services';
 import { DataTable, renderTotalValue, type Column } from '../tables/DataTable';
 import { sumWhere } from '../tables/totals';
 import type {
+  FilterLevel,
+  CreditExposureRow,
   CreditCustomerPage,
   CreditCustomerRow,
   CreditInvoicePage,
@@ -44,9 +52,31 @@ import type {
 } from '../types/api';
 import { formatAmount, formatDate, formatPercent, statusClass } from '../utils/format';
 
-type View = 'customers' | 'invoices';
+type View = 'customers' | 'invoices' | 'hierarchy';
+
+/** One label per tab, so the button and the section heading cannot drift. */
+const VIEW_LABEL: Record<View, string> = {
+  customers: 'credit.customerView',
+  invoices: 'credit.invoiceView',
+  hierarchy: 'credit.hierarchyView',
+};
 
 const PAGE_SIZE = 25;
+
+/**
+ * The levels this page can cut receivables by.
+ *
+ * Derived from `HIERARCHY_ORDER` rather than listed, so a level added to the
+ * warehouse appears in this selector without anybody editing a list here — and
+ * it mirrors `reporting.credit.EXPOSURE_LEVELS`, which derives itself the same
+ * way on the server. The server validates what arrives regardless; this list
+ * decides what a reader is *offered*, and the two deriving from the same chain
+ * is what keeps the offer and the refusal in step.
+ *
+ * `customer_code` is last because a customer is where credit exposure actually
+ * lives: it is the entity whose supply gets stopped.
+ */
+const EXPOSURE_LEVELS: FilterLevel[] = [...HIERARCHY_ORDER, 'customer_code'];
 
 export default function CreditControlPage() {
   const t = useT();
@@ -60,6 +90,14 @@ export default function CreditControlPage() {
     button steps through it.
   */
   const view = (params.get('view') as View) ?? 'customers';
+  /*
+    Which organisational level the matrix, the exposure chart and the hierarchy
+    tab are cut at. In the URL like everything else on this page, so "receivables
+    by territory as at month end" is a link — and read by the *server*, which
+    validates it against the levels the credit view can actually group by and
+    refuses an unknown one rather than quietly falling back.
+  */
+  const level = params.get('level') ?? 'region_code';
   const asOn = params.get('as_on') ?? undefined;
   const page = Number(params.get('page') ?? '1');
   const search = params.get('q') ?? '';
@@ -84,7 +122,7 @@ export default function CreditControlPage() {
   // view has no column for; sending them would make the page look narrowed while
   // every figure stayed the total.
   const base = queryFor(CREDIT_FILTERS);
-  const query = { ...base, as_on_date: asOn };
+  const query = { ...base, as_on_date: asOn, group_level: level };
   const tableQuery = {
     ...query,
     search: search || undefined,
@@ -111,7 +149,108 @@ export default function CreditControlPage() {
   });
 
   const metrics = summary.data?.metrics;
+  /*
+    The stack's second segment. Not a business calculation — both figures come
+    from the server and this is only the subtraction a stacked bar implies, done
+    once here rather than in the chart so the tooltip can name it. Floored at
+    zero: a group whose overdue figure somehow exceeded its outstanding one is a
+    data-quality problem, and drawing a negative segment would render it as a bar
+    growing downwards rather than as the nothing it should be.
+  */
+  const exposureRows = (summary.data?.exposure_by_level?.rows ?? []).map((row) => ({
+    ...row,
+    not_overdue_amount: Math.max(
+      (row.outstanding_amount ?? 0) - (row.overdue_amount ?? 0),
+      0,
+    ),
+  }));
   const trend = summary.data?.outstanding_trend;
+
+  /*
+    The hierarchy table's columns, and **one `tableId` for every level**.
+
+    `credit-control.hierarchy`, not `credit-control.hierarchy.${level}`. Every
+    level lists exactly these columns — only what the code and name refer to
+    changes — so a reader who hid Customers and widened Outstanding while looking
+    at regions means that arrangement to survive switching to territories. This
+    is the rule `performance.breakdown` follows across its drill levels, and the
+    opposite of `master-data.${entityKey}`, where each entity genuinely has
+    different columns and an arrangement could not transfer.
+
+    `reconcileOrder` is what makes it safe: a stored order naming a column this
+    table no longer has drops it, and a column the table has *gained* is inserted
+    beside the one it was declared after rather than silently omitted — which
+    would leave a column with no control anywhere to bring it back.
+  */
+  const hierarchyColumns: Column<CreditExposureRow>[] = [
+    { key: 'name', header: t('credit.group'), sortable: true },
+    // Hidden by default rather than absent: the code is what an export and a
+    // support conversation need, and what a reader scanning regions does not.
+    // Hidden is a starting arrangement, not a decision — the column panel
+    // brings it back, and `reconcileOrder` keeps it reachable.
+    { key: 'code', header: t('credit.groupCode'), sortable: true, hidden: true },
+    {
+      key: 'outstanding_amount',
+      header: t('credit.outstanding'),
+      align: 'right',
+      sortable: true,
+      render: (row) => formatAmount(row.outstanding_amount),
+      total: (rows: CreditExposureRow[]) =>
+        renderTotalValue(
+          sumWhere(rows, 'outstanding_amount', (row) =>
+            (row.outstanding_amount ?? 0) >= 0),
+          'outstanding_amount',
+          t,
+        ),
+    },
+    {
+      key: 'overdue_amount',
+      header: t('credit.overdue'),
+      align: 'right',
+      sortable: true,
+      render: (row) => formatAmount(row.overdue_amount),
+      total: (rows: CreditExposureRow[]) =>
+        renderTotalValue(
+          sumWhere(rows, 'overdue_amount', () => true),
+          'overdue_amount',
+          t,
+        ),
+    },
+    {
+      key: 'overdue_share_percent',
+      header: t('credit.overdueShare'),
+      align: 'right',
+      sortable: true,
+      // `n/a`, never 0%. A group with nothing outstanding has no overdue
+      // proportion, and the server sends null rather than a zero for exactly
+      // that reason — rendering it as 0% here would undo the distinction.
+      render: (row) =>
+        row.overdue_share_percent === null
+          ? t('common.notAvailable')
+          : formatPercent(row.overdue_share_percent),
+      // No footer. A total of percentages is not a percentage, and the
+      // portfolio-wide share is already on the card above.
+    },
+    {
+      key: 'open_invoice_count',
+      header: t('credit.openInvoicesColumn'),
+      align: 'right',
+      sortable: true,
+    },
+    {
+      key: 'customer_count',
+      header: t('credit.customers'),
+      align: 'right',
+      sortable: true,
+    },
+    {
+      key: 'invoice_count',
+      header: t('credit.invoices'),
+      align: 'right',
+      sortable: true,
+      hidden: true,
+    },
+  ];
 
   const invoiceColumns: Column<CreditInvoiceRow>[] = [
     { key: 'invoice_no', header: t('credit.invoiceNo'), sortable: true },
@@ -324,10 +463,10 @@ export default function CreditControlPage() {
         isLoading={summary.isLoading}
         error={summary.error}
         onRetry={() => void summary.refetch()}
-        skeleton={<KpiSkeleton count={6} />}
+        skeleton={<KpiSkeleton count={7} />}
       >
         <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-6">
+          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-7">
             <StatCard
               label={t('credit.totalInvoice')}
               value={formatAmount(metrics?.total_invoice_amount)}
@@ -393,6 +532,24 @@ export default function CreditControlPage() {
                 days: summary.data?.due_soon_days ?? 0,
               })}
             />
+            {/*
+              The seventh card, and the one that makes the other two add up.
+
+              Overdue and Due Soon were shown without it, so the two largest
+              figures on this strip did not account for Outstanding and nothing
+              on screen said what the remainder was. On the real book it is the
+              *largest* of the three — money that is neither late nor imminent,
+              which the source's own columns do not publish either. Neutral tone
+              deliberately: it is not a warning, it is the rest of the book.
+            */}
+            <StatCard
+              label={t('credit.dueLater')}
+              value={formatAmount(metrics?.due_later_amount)}
+              hint={t('credit.dueLaterHint', {
+                count: metrics?.due_later_invoice_count ?? 0,
+                days: summary.data?.due_soon_days ?? 0,
+              })}
+            />
           </div>
 
           {/*
@@ -425,10 +582,108 @@ export default function CreditControlPage() {
               xKey="bucket"
               yKey="outstanding_amount"
               colorByIndex={false}
+              // Horizontal, because eight bucket names do not fit across a
+              // phone and were being rotated to the point of illegibility. Read
+              // down the side they need no rotation at all, and the ramp still
+              // runs top to bottom in severity order — which is the reading
+              // direction anyway.
+              horizontal
               valueLabel={t('credit.outstanding')}
               emptyMessage={t('common.noData')}
             />
           </Section>
+
+          {/*
+            Where the debt is, cut at whichever level the reader chose. One
+            selector drives all three sections below and the hierarchy tab, so
+            the matrix, the chart and the table can never be showing different
+            levels at the same moment.
+          */}
+          <Section
+            title={t('credit.agingByLevel', {
+              level: t(FILTER_LABELS[level as FilterLevel]),
+            })}
+            actions={
+              <label className="flex items-center gap-2 text-xs text-slate-500">
+                {t('credit.groupBy')}
+                <select
+                  className="input tap-y py-1 text-xs"
+                  value={level}
+                  onChange={(event) => update({ level: event.target.value })}
+                >
+                  {EXPOSURE_LEVELS.map((option) => (
+                    <option key={option} value={option}>
+                      {t(FILTER_LABELS[option])}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            }
+          >
+            <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+              {t('credit.agingByLevelNote')}
+            </p>
+            <AgingMatrix
+              matrix={summary.data?.aging_by_level}
+              levelLabel={t(FILTER_LABELS[level as FilterLevel])}
+              emptyMessage={t('common.noData')}
+            />
+          </Section>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Section title={t('credit.exposureByLevel')}>
+              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                {t('credit.exposureNote')}
+              </p>
+              {/*
+                Stacked rather than grouped, and that is a claim rather than a
+                style: the two parts are mutually exclusive and add to the bar's
+                total, so the height of each bar *is* that group's outstanding.
+                Grouped, the reader would have to add two bars by eye to get the
+                figure the ranking is actually ordered by.
+              */}
+              <ComparisonBarChart
+                data={exposureRows}
+                xKey="name"
+                stacked
+                series={[
+                  {
+                    key: 'overdue_amount',
+                    label: t('credit.overdue'),
+                    color: AGING_COLORS['121-180'],
+                  },
+                  {
+                    key: 'not_overdue_amount',
+                    label: t('credit.notOverdue'),
+                    color: AGING_COLORS.NOT_YET_DUE,
+                  },
+                ]}
+                emptyMessage={t('common.noData')}
+              />
+            </Section>
+
+            <Section title={t('credit.dueProfile')}>
+              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                {/*
+                  The chart draws what is *not yet* late, so it has to say what
+                  it is leaving out — otherwise these five bars read as the whole
+                  book. The overdue total is named in the sentence rather than
+                  drawn as a sixth bar: the same taka on two charts is taka a
+                  reader will add.
+                */}
+                {t('credit.dueProfileNote', {
+                  amount: formatAmount(summary.data?.due_profile?.overdue_amount),
+                })}
+              </p>
+              <CategoryBarChart
+                data={summary.data?.due_profile?.buckets ?? []}
+                xKey="bucket"
+                yKey="due_amount"
+                valueLabel={t('credit.dueProfileValue')}
+                emptyMessage={t('common.noData')}
+              />
+            </Section>
+          </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Section title={t('credit.statusSplit')}>
@@ -463,10 +718,10 @@ export default function CreditControlPage() {
           </Section>
 
           <Section
-            title={view === 'invoices' ? t('credit.invoiceView') : t('credit.customerView')}
+            title={t(VIEW_LABEL[view])}
             actions={
               <div className="flex gap-1" role="tablist">
-                {(['customers', 'invoices'] as const).map((option) => (
+                {(['customers', 'invoices', 'hierarchy'] as const).map((option) => (
                   <button
                     key={option}
                     type="button"
@@ -477,19 +732,52 @@ export default function CreditControlPage() {
                       update({ view: option, page: undefined, sort: undefined, q: undefined })
                     }
                   >
-                    {option === 'invoices' ? t('credit.invoiceView') : t('credit.customerView')}
+                    {t(VIEW_LABEL[option])}
                   </button>
                 ))}
               </div>
             }
           >
             <QueryState
-              isLoading={table.isLoading}
-              error={table.error}
-              onRetry={() => void table.refetch()}
+              isLoading={view === 'hierarchy' ? summary.isLoading : table.isLoading}
+              error={view === 'hierarchy' ? summary.error : table.error}
+              onRetry={() =>
+                void (view === 'hierarchy' ? summary.refetch() : table.refetch())
+              }
             >
-              {view === 'invoices' ? (
+              {view === 'hierarchy' ? (
+                /*
+                  Read off the bundle rather than fetched again: the breakdown is
+                  already in the summary the cards and the matrix above are drawn
+                  from, and a second request could answer differently if a load
+                  landed between them — a table disagreeing with the chart
+                  directly above it is the failure the single bundle exists to
+                  prevent. It is a ranked top-N rather than a page, so it sorts
+                  and arranges in the browser and takes no paging controls.
+                */
+                <DataTable<CreditExposureRow>
+                  key="credit-control.hierarchy"
+                  tableId="credit-control.hierarchy"
+                  rows={summary.data?.exposure_by_level?.rows ?? []}
+                  columns={hierarchyColumns}
+                  // Drill-down: a group opens the customer list narrowed to it,
+                  // which is the question a reader asks next — "who inside this
+                  // region owes it?"
+                  onRowClick={(row) =>
+                    row.code
+                      ? update({
+                          view: 'customers',
+                          q: row.code,
+                          page: undefined,
+                          sort: undefined,
+                        })
+                      : undefined
+                  }
+                  emptyMessage={t('common.noData')}
+                />
+              ) : view === 'invoices' ? (
                 <DataTable<CreditInvoiceRow>
+                  key="credit-control.invoices"
                   tableId="credit-control.invoices"
                   rows={(table.data?.rows as CreditInvoiceRow[]) ?? []}
                   columns={invoiceColumns}
@@ -513,6 +801,7 @@ export default function CreditControlPage() {
                 />
               ) : (
                 <DataTable<CreditCustomerRow>
+                  key="credit-control.customers"
                   tableId="credit-control.customers"
                   rows={(table.data?.rows as CreditCustomerRow[]) ?? []}
                   columns={customerColumns}

@@ -24,8 +24,9 @@ from ..ai.tools import ToolContext, execute_tool
 from ..auth import audit
 from ..config import get_settings
 from ..database.models_ai import AuditAction, Notification
+from ..database.models_warehouse import DimDate, FactCreditInvoice
 from ..etl.mapping import MasterDataIndex
-from ..auth.permissions import require_section
+from ..auth.permissions import has_section, require_section
 from ..security.sections import SectionKey
 from .deps import get_current_user, get_session, internal_error
 
@@ -456,6 +457,59 @@ def _top_customers(ctx: ToolContext, date_range, filters: ScopeFilters,
     return section
 
 
+
+def _overdue_receivables(ctx: ToolContext, date_range, filters: ScopeFilters,
+                         user: UserContext) -> dict[str, Any]:
+    """What is overdue, as a share of what is owed, narrowed to the reader.
+
+    **This card was refused for three revisions, and the reason it is here now is
+    not that anybody changed their mind.** The dashboard is the one screen a
+    regional manager opens by default, and the credit view reached the customer's
+    sub-territory and no further — so the only two options were to refuse them
+    the whole dashboard over a receivables figure they were never going to see,
+    or to put an unscoped national overdue total on it. CLAUDE.md recorded the
+    condition rather than the verdict: the card goes back on the table once the
+    credit view carries the sales hierarchy. Revision 0040 is that, so the figure
+    on this card is now the reader's own region.
+
+    **It reports a share, not an amount**, for the same reason ``HIGH_OVERDUE``
+    does: a crore overdue is alarming on a small book and routine on a large one,
+    so a threshold in taka would need re-setting every time the business grew.
+
+    **The period is ignored, and the first version of this only said so.** Every
+    other card answers "what happened between these dates"; a receivable is a
+    *position*, and what is owed today is owed whichever month the reader has
+    selected. The docstring claimed that while the code passed the dashboard's
+    window straight through to a tool that filters on invoice date — so on the
+    default period the card came back empty on the real book, because the newest
+    extract's last posting is 31 August and the default period is September.
+    A card that reads "no data" about a ৳90 Cr book is worse than no card.
+
+    So the window is widened to the whole book: from the earliest invoice the
+    warehouse holds to the reporting date. The bounds exist only because
+    ``CreditToolInput`` requires them — every tool schema does, deliberately —
+    and they are read from the data rather than set to an arbitrary early date,
+    so the card cannot silently start excluding invoices older than a constant
+    somebody once guessed.
+
+    The reader's **filters** still apply. A period is not a narrowing of a
+    position; a region is.
+    """
+    earliest = ctx.session.execute(
+        select(func.min(DimDate.full_date))
+        .select_from(FactCreditInvoice)
+        .join(DimDate, DimDate.date_id == FactCreditInvoice.invoice_date_id)
+        .where(FactCreditInvoice.is_void == False)  # noqa: E712
+    ).scalar()
+    as_on = dt.date.today()
+    whole_book = date_range.model_copy(update={
+        "date_from": earliest or as_on,
+        "date_to": as_on,
+    })
+    return run(ctx, "get_credit_summary", whole_book, filters,
+               as_on_date=as_on.isoformat())
+
+
 #: Every card below the KPI strip, by the name the browser asks for.
 #:
 #: The registry is the list — the frame endpoint publishes ``sections`` from it
@@ -469,7 +523,36 @@ DASHBOARD_SECTIONS: dict[str, Callable[..., dict[str, Any]]] = {
     "territory_sales": _territory_sales,
     "brand_sales": _brand_sales,
     "top_customers": _top_customers,
+    "overdue_receivables": _overdue_receivables,
 }
+
+#: Cards that need a section of their own beyond the dashboard's.
+#:
+#: Receivables are the only one, and they are not incidental: credit exposure is
+#: the basis for stopping a customer's supply, so Credit Control is a permission
+#: in its own right rather than something that rides along with the reporting
+#: sections every role gets. A reader who does not hold it does not get the card
+#: **named** — it is absent, not refused — which is the same rule Target
+#: Management follows: a control whose only outcome is a refusal teaches people
+#: to ignore controls.
+SECTION_BY_DASHBOARD_CARD: dict[str, str] = {
+    "overdue_receivables": SectionKey.CREDIT_CONTROL,
+}
+
+
+def _cards_for(session: Session, user: UserContext) -> list[str]:
+    """The cards this reader may actually be served, in registry order.
+
+    Filtered rather than fixed, so the browser asks for what it can have. It
+    takes the list from the frame instead of carrying its own, so a card gated
+    here is a card it never requests — and the section endpoint applies the same
+    gate, because a list the browser is given is not a permission check.
+    """
+    return [
+        name for name in DASHBOARD_SECTIONS
+        if name not in SECTION_BY_DASHBOARD_CARD
+        or has_section(session, user, SECTION_BY_DASHBOARD_CARD[name])
+    ]
 
 
 @router.get("/dashboard")
@@ -562,8 +645,10 @@ def dashboard(
         "filters": {k: v for k, v in filters.model_dump(mode="json").items() if v},
         "kpis": kpis,
         # Named rather than assumed, so the browser asks for what this build
-        # actually serves instead of a list it carries separately.
-        "sections": list(DASHBOARD_SECTIONS),
+        # actually serves instead of a list it carries separately — and filtered
+        # to what *this reader* may be served, so a card they do not hold the
+        # section for is absent rather than drawn and then refused.
+        "sections": _cards_for(session, user),
     }
 
 
@@ -580,6 +665,17 @@ def dashboard_section(
     Not audited: the frame endpoint records the view, and auditing each card
     would file one opening of the dashboard as seven.
     """
+    required = SECTION_BY_DASHBOARD_CARD.get(name)
+    if required is not None and not has_section(session, user, required):
+        # A 404, the same answer as a card this build does not serve. The frame
+        # never named it to this reader, so from where they stand it does not
+        # exist — and a 403 here would disclose that a receivables card is on
+        # the dashboard of people senior to them.
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Unknown dashboard section '{name}'. "
+            f"This dashboard serves: {', '.join(_cards_for(session, user))}.")
+
     builder = DASHBOARD_SECTIONS.get(name)
     if builder is None:
         # Named in the refusal, because a caller that asked for a card this

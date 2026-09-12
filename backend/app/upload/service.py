@@ -27,6 +27,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -56,10 +57,13 @@ from ..etl.pipeline import (
     ImportResult,
     run_import,
 )
+from ..etl.declarations import Declarations, scan as declaration_scan
+from ..etl.datasets import get_dataset
 from ..etl.readers import SourceReader
 from ..utils.progress import ImportCancelled, Phase, ProgressReporter
 from . import master_loader
 from .errors import (
+    UndeclaredSetting,
     UploadIssue,
     failure_issue,
     hierarchy_fix,
@@ -139,6 +143,11 @@ def batch_to_dict(batch: UploadBatch) -> dict[str, Any]:
         "file_name": batch.file_name,
         "file_size": batch.file_size,
         "import_mode": batch.import_mode,
+        #: What this upload was told, so the history can answer "under which
+        #: convention was that loaded" and "what did that load stand down"
+        #: long after the file itself has been discarded.
+        "deduction_convention": batch.deduction_convention,
+        "restatement_scope": batch.restatement_scope,
         "status": batch.status,
         "user_id": batch.user_id,
         "username": batch.username,
@@ -216,7 +225,9 @@ def _aware(value: datetime) -> datetime:
 
 def create_batch(session: Session, upload_type: UploadType, stored: StoredUpload,
                  *, import_mode: str, user_id: int | None,
-                 username: str | None) -> UploadBatch:
+                 username: str | None,
+                 deduction_convention: str | None = None,
+                 restatement_scope: list[str] | None = None) -> UploadBatch:
     """Record the upload and queue it. No file is read here.
 
     Split out of :func:`run_validation` because the two now happen in different
@@ -228,6 +239,17 @@ def create_batch(session: Session, upload_type: UploadType, stored: StoredUpload
     ``upload_uuid`` is the Import Job ID. It is generated here rather than
     accepted from the client so that the identifier of a stored record is never
     something a caller chose.
+
+    The two declarations are optional and are recorded *before* the file is read,
+    so validation loads under what the caller stated rather than under what it
+    would otherwise have inferred. Left unset, validation fills them in from the
+    file and reports both in the preview — which is the ordinary path, and the
+    one where a person sees the default and its evidence before committing.
+
+    ``restatement_scope=[]`` is a real declaration and means "restate nothing":
+    an empty list is how a receivables file covering only part of a book is
+    loaded without standing anything down, and it is deliberately distinct from
+    ``None``, which means "you decide and show me".
     """
     batch = UploadBatch(
         upload_uuid=str(uuid.uuid4()),
@@ -239,6 +261,8 @@ def create_batch(session: Session, upload_type: UploadType, stored: StoredUpload
         file_hash=stored.sha256,
         stored_path=str(stored.path),
         import_mode=import_mode,
+        deduction_convention=deduction_convention,
+        restatement_scope=restatement_scope,
         status=UploadStatus.QUEUED,
         stage=Phase.QUEUED,
         user_id=user_id,
@@ -395,6 +419,15 @@ def _validate_transaction(session: Session, batch: UploadBatch,
     headers = [str(h) for h in reader.headers if h is not None]
     preview_rows = _read_preview(reader)
 
+    # What this load has to be *told* before it can run, read off the file as a
+    # proposal. Both are properties of the file rather than of the dataset, and
+    # this is the moment a person gets to see them — see ``etl.declarations``.
+    declarations = declaration_scan(get_dataset(upload_type.data_type), reader)
+    convention = _declared_convention(batch, declarations)
+    scope = _declared_scope(batch, declarations)
+    batch.deduction_convention = convention
+    batch.restatement_scope = list(scope) or None
+
     # The ETL opens its own session against the same database. Committing the
     # batch row first releases this session's write lock, which SQLite requires
     # and PostgreSQL benefits from — and it means a crash mid-import still
@@ -406,6 +439,7 @@ def _validate_transaction(session: Session, batch: UploadBatch,
         source_system=SOURCE_SYSTEM,
         load_mode=LOAD_MODE_BY_IMPORT_MODE.get(import_mode, LOAD_MODE_INCREMENTAL),
         date_format=date_format, dry_run=True, progress=progress,
+        deduction_convention=convention, restatement_scope=scope,
     )
     issues = issues_from_result(result)
 
@@ -421,6 +455,10 @@ def _validate_transaction(session: Session, batch: UploadBatch,
         "by_error_code": result.error_counts,
         "by_category": result.category_counts,
         "business_key": upload_type.business_key_description,
+        "deduction_convention": convention,
+        "deduction_evidence": (declarations.convention.evidence
+                               if declarations.convention else None),
+        "restatement": result.restatement.to_dict() if result.restatement else None,
     }
     _store_issues(session, batch, issues)
 
@@ -457,9 +495,133 @@ def _validate_transaction(session: Session, batch: UploadBatch,
             "volume is left empty rather than calculated from the quantity — "
             "add the column at source to report volume for these lines."
         )
+    warnings.extend(_declaration_warnings(declarations, result))
     return UploadOutcome(batch=batch, preview=preview,
                          columns=["__row", "__status", *resolved_columns, *headers],
                          issues=issues, warnings=warnings)
+
+
+
+def _declared_convention(batch: UploadBatch,
+                         declarations: "Declarations") -> str | None:
+    """What this upload will be loaded under: what was declared, else detected.
+
+    An explicit declaration on the batch always wins. It is how a person corrects
+    a detection they disagree with, and it is what the commit reads back, so the
+    file committed is loaded under the convention the preview showed.
+    """
+    if declarations.convention is None:
+        return None
+    if batch.deduction_convention:
+        return batch.deduction_convention
+    if declarations.convention.decisive:
+        return declarations.convention.convention
+    raise UndeclaredSetting(
+        "This file does not say how it signs a payment, a discount or an "
+        "adjustment, and the two conventions this platform knows would give it "
+        "different balances. " + declarations.convention.reason
+    )
+
+
+def _declared_scope(batch: UploadBatch,
+                    declarations: "Declarations") -> tuple[str, ...]:
+    """What this upload claims to state in full, and therefore may stand down.
+
+    Defaulted from the values the file contains and confirmed by committing a
+    preview that said what the default would void. An explicit scope on the batch
+    wins, which is how somebody narrows a restatement — or turns it off entirely
+    by declaring an empty one, which loads the file as an ordinary incremental
+    upload and voids nothing.
+
+    Note what the default is *not*: it is not "everything in the warehouse". A
+    file containing only company 1000 proposes to restate company 1000, and
+    companies it never mentions are outside the claim and untouched.
+    """
+    if batch.restatement_scope is not None:
+        return tuple(batch.restatement_scope)
+    return declarations.scope_values
+
+
+def _declaration_warnings(declarations: "Declarations",
+                          result: ImportResult) -> list[str]:
+    """Say what committing this file will do that reading it would not reveal.
+
+    Every sentence here is about a consequence rather than about the file, and
+    each exists because discovering it afterwards is the expensive way to find
+    out.
+    """
+    warnings: list[str] = []
+    if declarations.convention is not None and result.deduction_convention:
+        warnings.append(
+            f"Deductions in this file are read as {result.deduction_convention}: "
+            f"{declarations.convention.evidence}"
+        )
+
+    restatement = result.restatement
+    if restatement is None:
+        return warnings
+
+    scope = ", ".join(restatement.scope) or "nothing"
+    warnings.append(
+        f"This file is being treated as a full restatement of "
+        f"{restatement.scope_field} {scope}. It restates "
+        f"{restatement.restated_rows:,} existing row(s) and adds "
+        f"{restatement.new_rows:,} new one(s). Rows outside that scope are not "
+        "touched at all."
+    )
+    if restatement.superseded_rows:
+        warnings.append(
+            f"{restatement.superseded_rows:,} row(s) worth "
+            f"{_taka(restatement.superseded_amount)} are being SUPERSEDED: this "
+            "file names those same invoices, and because they were loaded by a "
+            "different extract they arrive under a new key rather than updating "
+            "the old row in place. The old rows are voided so the debt is "
+            "counted once. Nothing was settled and nothing was lost — the "
+            "authoritative record moved."
+        )
+    if restatement.voided_rows:
+        warnings.append(
+            f"{restatement.voided_rows:,} row(s) already in the warehouse for "
+            f"{restatement.scope_field} {scope} are NOT in this file, worth "
+            f"{_taka(restatement.voided_amount)}. Committing marks them void: "
+            "they leave every report at once, and the rows, their provenance and "
+            "their batches are kept. A later file naming them again brings them "
+            "back."
+        )
+    if restatement.held_rows:
+        held = ", ".join(restatement.held)
+        warnings.append(
+            f"{restatement.held_rows:,} row(s) worth "
+            f"{_taka(restatement.held_amount)} are inside that scope but were "
+            f"declared HELD OUT of it ({restatement.held_field} {held}), so "
+            "this load leaves them exactly as they are. They are neither "
+            "restated nor voided — a restatement stands down what a file stops "
+            "naming, and this upload does not accept their absence as evidence "
+            "that they were settled."
+        )
+    if restatement.voided_because_rejected:
+        warnings.append(
+            f"Of those, {restatement.voided_because_rejected:,} are rows this "
+            f"file DOES name but which were rejected above, worth "
+            f"{_taka(restatement.voided_because_rejected_amount)}. They are "
+            "stood down with nothing put in their place, so the book falls by "
+            "that amount for a data-quality reason rather than because anything "
+            "was settled. Fix those rows and re-upload if that is not intended."
+        )
+    return warnings
+
+
+def _taka(amount: Decimal) -> str:
+    """A figure in crore where that is the readable unit, else in taka.
+
+    A receivables book is stated in crore by everybody who works with it, and
+    "234,567,890" is not a number anybody checks at a glance — which is the whole
+    job of the sentences this appears in.
+    """
+    crore = Decimal("10000000")
+    if abs(amount) >= crore:
+        return f"BDT {amount / crore:,.2f} Cr"
+    return f"BDT {amount:,.0f}"
 
 
 def _resolved_preview_columns(
@@ -660,6 +822,13 @@ def _commit_transaction(session: Session, batch: UploadBatch,
         load_mode=LOAD_MODE_BY_IMPORT_MODE.get(batch.import_mode,
                                                LOAD_MODE_INCREMENTAL),
         date_format=date_format, dry_run=False, progress=progress,
+        # What the preview showed and the person committing accepted — read back
+        # off the batch rather than re-detected. Re-detecting here would let a
+        # commit stand down a different set of rows from the one the preview
+        # stated, which is the single thing a confirmed declaration exists to
+        # make impossible.
+        deduction_convention=batch.deduction_convention,
+        restatement_scope=batch.restatement_scope or None,
     )
 
     batch.etl_batch_id = result.batch_id
@@ -675,6 +844,8 @@ def _commit_transaction(session: Session, batch: UploadBatch,
         "by_error_code": result.error_counts,
         "by_category": result.category_counts,
         "etl_status": result.status,
+        "deduction_convention": result.deduction_convention,
+        "restatement": result.restatement.to_dict() if result.restatement else None,
     }
     batch.message = result.message or (
         f"{result.inserted_rows} inserted, {result.updated_rows} updated, "

@@ -29,8 +29,7 @@ from sqlalchemy.orm import Session
 from ..ai.permission_filter import UserContext
 from ..auth.permissions import require_section
 from ..reporting.credit import (
-    ScopeNotHonourable,
-    assert_scope_is_honourable,
+    UnknownGroupLevel,
     credit_control_report,
     credit_customers,
     credit_invoice_detail,
@@ -65,34 +64,44 @@ def _credit_query(
         None, description="NOT_YET_DUE, OVER_DUE or CLEARED — as at as_on_date."),
     aging_bucket: str | None = Query(
         None, description="One aging bucket — as at as_on_date."),
+    group_level: str | None = Query(
+        None,
+        description="Organisational level the aging matrix and exposure "
+                    "breakdown group by. Defaults to region_code."),
     search: str | None = Query(None, description="Substring of an identifier or name."),
     sort_by: str | None = Query(None, description="Whitelisted column; unknown falls back."),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
 ):
-    return resolve_query(
-        as_on=as_on_date, due_soon_days=due_soon_days, search=search,
-        credit_days=credit_days, payment_mode=payment_mode,
-        credit_status=credit_status, aging_bucket=aging_bucket,
-        sort_by=sort_by, sort_dir=sort_dir, page=page, page_size=page_size,
-    )
+    try:
+        return resolve_query(
+            as_on=as_on_date, due_soon_days=due_soon_days, search=search,
+            group_level=group_level,
+            credit_days=credit_days, payment_mode=payment_mode,
+            credit_status=credit_status, aging_bucket=aging_bucket,
+            sort_by=sort_by, sort_dir=sort_dir, page=page, page_size=page_size,
+        )
+    except UnknownGroupLevel as exc:
+        # Named in the refusal rather than falling back to the default: a caller
+        # served a region breakdown after asking for a territory one would be
+        # reading correct figures under the wrong heading.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
 
 def _scoped(session: Session, user: UserContext,
             filters: ReportFilters) -> ReportFilters:
-    """Apply the caller's scope, or refuse if this view cannot express it.
+    """Apply the caller's scope. One mechanism, the same as every other report.
 
-    The refusal is the point. ``_apply_filters`` drops a filter naming a column
-    the view lacks, so a scope this report cannot honour would vanish in silence
-    and serve a regional manager the whole company's receivables.
+    There used to be a second check here, specific to Credit Control, because
+    the view stopped at the customer's sub-territory and a region-scoped
+    caller's scope would have been dropped in silence by ``_apply_filters``.
+    Revision 0040 gave the view the sales hierarchy, so
+    ``enforce_report_scope`` now pins a region the same way it pins a company,
+    and the bespoke refusal has gone with the gap it was covering — two
+    mechanisms for one rule being exactly what drifts.
     """
-    scoped = enforce_report_scope(session, user, filters, CREDIT_INVOICE_VIEW)
-    try:
-        assert_scope_is_honourable(user, scoped)
-    except ScopeNotHonourable as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
-    return scoped
+    return enforce_report_scope(session, user, filters, CREDIT_INVOICE_VIEW)
 
 
 def _run(handler, session: Session, filters: ReportFilters, user: UserContext,

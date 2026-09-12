@@ -21,10 +21,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Sequence
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, literal, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -44,6 +45,7 @@ from ..database.models_warehouse import (
 )
 from ..utils.progress import Phase, ProgressReporter
 from ..utils.text import normalize_text
+from . import credit as credit_rules
 from . import errors
 from .bulk import bulk_insert, bulk_upsert, chunked, existing_keys, parameter_limit
 from .calendar import ensure_dates_exist, to_date_id
@@ -54,6 +56,8 @@ from .readers import SourceReader, SourceRow, reader_for_file
 from .period import RECORD_PERIOD_RESOLVERS
 from .transforms import (
     DERIVATIONS,
+    LOAD_NOTES,
+    LoadOptions,
     MEASURE_BUILDERS,
     PASSTHROUGH_COLUMNS,
     apply_volume,
@@ -129,6 +133,76 @@ class LineOutcome:
 
 
 @dataclass
+class Restatement:
+    """What a scoped restatement voided, and what it was bounded by.
+
+    Carried on the result so a **dry run can report it before anything is
+    committed**, which is the whole point: a person has to be able to see what a
+    load is about to stand down before it stands it down.
+    """
+
+    #: The column the scope is expressed in, and the values declared for it.
+    scope_field: str
+    scope: tuple[str, ...]
+    #: Rows inside the scope that this file did not restate, and their balance.
+    #: These are what the load voids.
+    voided_rows: int = 0
+    voided_amount: Decimal = Decimal("0")
+    #: Of those, the ones this very file *rejected*. They are the sharpest edge
+    #: of a restatement: the file names the invoice, the loader refuses the row,
+    #: and the warehouse row is stood down with nothing put in its place. Counted
+    #: separately so the preview can say so in those words.
+    voided_because_rejected: int = 0
+    voided_because_rejected_amount: Decimal = Decimal("0")
+    #: Identities inside the scope that the file still names.
+    restated_rows: int = 0
+    #: Rows voided because a **newer row for the same invoice** replaced them,
+    #: rather than because the file stopped naming them.
+    #:
+    #: They exist because a business key names the fields it was built from and
+    #: the source system that supplied them, so the same invoice arriving from a
+    #: second extract cannot be updated in place — it is written beside the old
+    #: row and the old row is stood down. Counted apart from a settlement
+    #: because they are the opposite of one: the debt did not go away, its
+    #: authoritative record moved.
+    superseded_rows: int = 0
+    superseded_amount: Decimal = Decimal("0")
+    #: Rows the load wrote that were outside any existing scope row — new
+    #: business, not a restatement of anything.
+    new_rows: int = 0
+    #: What the upload declared it was **holding out** of its own claim, and the
+    #: rows that were spared as a result.
+    #:
+    #: A scope says "this file states the whole of X". A hold says "…except for
+    #: these, whose absence from the file I do not accept as settlement" — which
+    #: is a narrower claim, never a wider one, and the only direction a
+    #: declaration is allowed to move a void in.
+    held_field: str | None = None
+    held: tuple[str, ...] = ()
+    held_rows: int = 0
+    held_amount: Decimal = Decimal("0")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope_field": self.scope_field,
+            "scope": list(self.scope),
+            "voided_rows": self.voided_rows,
+            "voided_amount": float(self.voided_amount),
+            "voided_because_rejected": self.voided_because_rejected,
+            "voided_because_rejected_amount":
+                float(self.voided_because_rejected_amount),
+            "restated_rows": self.restated_rows,
+            "superseded_rows": self.superseded_rows,
+            "superseded_amount": float(self.superseded_amount),
+            "new_rows": self.new_rows,
+            "held_field": self.held_field,
+            "held": list(self.held),
+            "held_rows": self.held_rows,
+            "held_amount": float(self.held_amount),
+        }
+
+
+@dataclass
 class ImportResult:
     """Outcome of one import run."""
 
@@ -157,6 +231,27 @@ class ImportResult:
     volume_gaps: dict[str, int] = field(default_factory=dict)
     #: Rows whose hierarchy was derived from the Customer Master.
     hierarchy_from_customer: int = 0
+    #: Sentences a dataset wants said about the load as a whole, rather than
+    #: about any one row.
+    #:
+    #: Credit Control is what this exists for: the SPL extract states its own
+    #: overdue split in ``od`` and ``maturity``, both frozen at the date the
+    #: extract was taken. Neither reaches a fact column — a stored overdue figure
+    #: is wrong the next morning while still looking authoritative — but a load
+    #: whose own derivation disagrees with the source's is a defect worth
+    #: hearing about at the moment it happens, rather than a fortnight later when
+    #: somebody queries a total. So the two are compared and the disagreement is
+    #: stated here as a percentage.
+    notes: list[str] = field(default_factory=list)
+    #: How this file signs a deduction, as declared for this load.
+    #:
+    #: Recorded rather than merely used: the staging rows and every rejected
+    #: row's ``raw_data`` keep the file's original signs, so without knowing
+    #: which convention they were read under nobody could interpret them again
+    #: afterwards. The fact rows themselves are canonical and need no such key.
+    deduction_convention: str | None = None
+    #: What the scoped restatement did, or ``None`` when this load was not one.
+    restatement: "Restatement | None" = None
     #: Per-line verdicts for the first :data:`LINE_REPORT_LIMIT` rows, which is
     #: what the upload preview shows. Like ``rejections``, carried on the result
     #: so a dry run can report them after rolling everything back.
@@ -239,6 +334,9 @@ class EtlPipeline:
         date_format: str | None = None,
         master_index: MasterDataIndex | None = None,
         progress: ProgressReporter | None = None,
+        deduction_convention: str | None = None,
+        restatement_scope: Sequence[str] | None = None,
+        restatement_hold: tuple[str, Sequence[str]] | None = None,
     ) -> None:
         self.session = session
         self.spec: DatasetSpec = get_dataset(data_type)
@@ -267,6 +365,79 @@ class EtlPipeline:
         #: rather than from codes in the file. Reported, not hidden.
         self.hierarchy_from_customer = 0
 
+        #: How this file signs a deduction. Required where the dataset says the
+        #: question has an answer, and refused up front rather than defaulted:
+        #: picking a side silently is the one failure this parameter exists to
+        #: prevent, and it surfaces months later as a balance off by twice the
+        #: payment. The caller gets the default from
+        #: ``credit.detect_convention`` and a person confirms it in the preview.
+        if self.spec.requires_deduction_convention:
+            if deduction_convention not in credit_rules.DEDUCTION_CONVENTIONS:
+                raise ValueError(
+                    f"{self.spec.data_type} must be told how its file signs a "
+                    f"deduction: expected one of "
+                    f"{credit_rules.DEDUCTION_CONVENTIONS}, got "
+                    f"{deduction_convention!r}. It is declared per upload "
+                    "because two real extracts disagree, and inferring it "
+                    "silently is what this refusal prevents."
+                )
+        elif deduction_convention is not None:
+            raise ValueError(
+                f"{self.spec.data_type} states no deductions, so a deduction "
+                f"convention ({deduction_convention!r}) means nothing here. A "
+                "setting that changes nothing is a setting somebody will trust."
+            )
+        self.deduction_convention = deduction_convention
+
+        #: The values of ``spec.restatement_scope_field`` this load claims to
+        #: restate in full. Empty means an ordinary incremental load: nothing is
+        #: voided, which is what every dataset but receivables does.
+        if restatement_scope and self.spec.restatement_scope_field is None:
+            raise ValueError(
+                f"{self.spec.data_type} cannot be restated: it declares no "
+                "restatement scope field, so there is no column to bound the "
+                "claim with and nothing may be voided."
+            )
+        self.restatement_scope: tuple[str, ...] = tuple(restatement_scope or ())
+
+        #: ``(field, values)`` this load declares it is **not** restating, even
+        #: though they fall inside its scope. Their rows are excluded from the
+        #: snapshot entirely, so they can never be voided by this load.
+        #:
+        #: The case it exists for is real and was found on the first deployment:
+        #: a receivables extract for one company omitted an entire customer's
+        #: thirteen invoices. Read as a restatement that is thirteen settlements
+        #: worth ৳2.81 Cr; read as a person who knows the business would read it,
+        #: it is an extract that is missing a customer. The scope is expressed
+        #: per company, so it cannot express that doubt — and widening the scope
+        #: is not the answer, because the doubt is *narrower* than the scope, not
+        #: broader.
+        #:
+        #: It is a declaration like the scope itself, and it only ever spares
+        #: rows. A hold cannot cause anything to be voided that would otherwise
+        #: have survived, which is what makes it safe to accept from a caller.
+        self.restatement_hold: tuple[str, tuple[str, ...]] | None = None
+        if restatement_hold is not None:
+            field_name, values = restatement_hold
+            if self.spec.restatement_scope_field is None:
+                raise ValueError(
+                    f"{self.spec.data_type} cannot be restated, so there is "
+                    "nothing for a hold to narrow."
+                )
+            if field_name not in self.fact_model.__table__.columns:
+                raise ValueError(
+                    f"'{field_name}' is not a column of "
+                    f"{self.spec.fact_table}, so rows cannot be held out by it."
+                )
+            self.restatement_hold = (field_name, tuple(values))
+        #: Identities of rows this file named and the loader refused. Used only
+        #: by the restatement, to say how much of what it stands down is
+        #: standing down because of a defect rather than a settlement.
+        self._rejected_keys: set[tuple] = set()
+        #: Identity -> the business keys the warehouse holds it under. One
+        #: identity can have several, which is what `…#2` numbering produces.
+        self._keys_by_identity: dict[tuple, list[str]] = {}
+
     # -- steps --------------------------------------------------------------
 
     def _create_batch(self) -> EtlImportBatch:
@@ -279,6 +450,8 @@ class EtlPipeline:
             data_type=self.spec.data_type,
             load_mode=self.load_mode,
             status=BATCH_STARTED,
+            deduction_convention=self.deduction_convention,
+            restatement_scope=list(self.restatement_scope) or None,
         )
         self.session.add(batch)
         self.session.flush()
@@ -357,7 +530,34 @@ class EtlPipeline:
                 cleaned[spec.name] = value
 
             else:
-                cleaned[spec.name] = normalize_text(raw)
+                text = normalize_text(raw)
+                # A spreadsheet error marker is not a value this column can
+                # hold. `#N/A` is what Excel leaves behind when a lookup finds
+                # nothing, and stored as a code it becomes a territory named
+                # "#N/A" that groups, filters and totals like a real place — the
+                # SPL extract carries it in every hierarchy column on 75 rows
+                # worth ৳23.76 Cr, a fifth of that book.
+                #
+                # Rejected rather than blanked: blanking it would let the row
+                # load with a hole where its hierarchy should be, and the money
+                # would go missing from every organisational total without
+                # appearing anywhere as a problem. The rejection keeps the whole
+                # original row in `etl_rejected_records`.
+                if text is not None and spec.reject_values and any(
+                    text.strip().casefold() == bad.casefold()
+                    for bad in spec.reject_values
+                ):
+                    self._reject(
+                        row, errors.SPREADSHEET_ERROR_VALUE,
+                        f"'{text}' is a spreadsheet error marker, not a "
+                        f"{spec.name.replace('_', ' ')}. The row is kept in full "
+                        "so the amount it carries stays visible.",
+                        spec.name, raw,
+                    )
+                    failed = True
+                    failed_fields.add(spec.name)
+                    continue
+                cleaned[spec.name] = text
 
         for name in self.spec.required_fields:
             if name in failed_fields:
@@ -370,11 +570,208 @@ class EtlPipeline:
                 failed = True
 
         if failed:
+            self._note_rejected_key(cleaned)
             return None
         resolved = self._resolve_period(cleaned, row)
         if resolved is None:
             return None
         return self._apply_derivations(resolved)
+
+    def _note_rejected_key(self, cleaned: dict[str, Any]) -> None:
+        """Remember which warehouse row a *rejected* row would have restated.
+
+        Only meaningful during a restatement, and it is the sharpest edge of one.
+        A file names an invoice, the loader refuses the row, and the warehouse
+        row the file was restating is then stood down with nothing put in its
+        place — the book falls by that amount for a reason that is a data-quality
+        problem rather than a settlement.
+
+        The SPL extract does exactly this 75 times, for ৳23.76 Cr of bank FDRs,
+        share investments and inter-company loans carrying ``#N/A`` hierarchies.
+        That has to be said in the preview, before the commit, in those words.
+
+        A row whose *identity* fields failed to clean has no key to remember and
+        is skipped: it names nothing, so it stands nothing down.
+        """
+        if self.spec.restatement_scope_field is None:
+            return
+        if any(cleaned.get(name) is None
+               for name in self.spec.business_key_fields):
+            return
+        self._rejected_keys.add(self._identity(cleaned))
+
+    def _identity(self, source) -> tuple:
+        """What makes this row *the same invoice* as one already in the warehouse.
+
+        The values of ``business_key_fields``, not the ``business_key`` string
+        built from them — and the difference is the whole reason a restatement
+        works at all across two extracts.
+
+        That string names the fields it was built from **and the source system**,
+        so a row loaded by one export can never share it with the same document
+        loaded by another. The first deployment rehearsal is what proved it: the
+        existing book was loaded as ``UPLOAD`` under the ``(company, invoice)``
+        grain 0031 declared, the SPL extract arrives as ``SPL`` under
+        ``(company, customer, invoice)``, and matching on the key string reported
+        **zero** of 14,589 genuinely-matching invoices as restated and proposed
+        voiding the entire company. Identity is what a person means by "the file
+        still names this invoice"; the key string is an implementation detail of
+        how one loader wrote it down.
+        """
+        return tuple(
+            None if (value := source.get(name) if isinstance(source, dict)
+                     else getattr(source, name, None)) is None else str(value)
+            for name in self.spec.business_key_fields
+        )
+
+    def _scope_snapshot(self) -> dict[tuple, Decimal]:
+        """Every open row inside the declared scope, with what it is worth.
+
+        Taken **before** the write, and that ordering is the whole of why this is
+        a separate step. Read afterwards, a row this load has just inserted is
+        indistinguishable from one it restated — both are simply present — and
+        the preview would report new business as though the file had confirmed
+        something already on the books.
+        """
+        assert self.spec.restatement_scope_field is not None
+        table = self.fact_model.__table__
+        amount_column = (
+            table.c[self.spec.restatement_amount_field]
+            if self.spec.restatement_amount_field else None
+        )
+        columns = [table.c[name] for name in self.spec.business_key_fields]
+        columns.append(table.c.business_key)
+        if amount_column is not None:
+            columns.append(amount_column)
+        conditions = [
+            table.c[self.spec.restatement_scope_field].in_(self.restatement_scope),
+            table.c.is_void == False,  # noqa: E712 - portable on both dialects
+        ]
+        if self.restatement_hold is not None:
+            field_name, values = self.restatement_hold
+            if values:
+                # Held out of the snapshot rather than filtered at the void, so
+                # a held row is not merely spared — it is never a candidate, and
+                # it does not appear in any count this load reports as dropped.
+                conditions.append(table.c[field_name].notin_(values))
+        rows = self.session.execute(select(*columns).where(*conditions)).all()
+        width = len(self.spec.business_key_fields)
+        snapshot: dict[tuple, Decimal] = {}
+        self._keys_by_identity = {}
+        for row in rows:
+            identity = tuple(None if v is None else str(v) for v in row[:width])
+            amount = (Decimal(str(row[width + 1] or 0))
+                      if amount_column is not None else Decimal("0"))
+            # A repeat of one identity is what the `…#2` numbering permits, so
+            # both rows are held and both are voided or spared together — the
+            # file names the invoice or it does not.
+            snapshot[identity] = snapshot.get(identity, Decimal("0")) + amount
+            self._keys_by_identity.setdefault(identity, []).append(row[width])
+        return snapshot
+
+    def _held_out(self) -> tuple[int, Decimal]:
+        """How many live in-scope rows this load declined to consider, and their value.
+
+        Counted and reported rather than left silent: a hold is the one thing
+        that makes a restatement's void *smaller* than its scope implies, so a
+        reader comparing the two needs the difference stated rather than having
+        to infer it from a number that looks lower than expected.
+        """
+        if self.restatement_hold is None or not self.restatement_hold[1]:
+            return 0, Decimal("0")
+        assert self.spec.restatement_scope_field is not None
+        table = self.fact_model.__table__
+        field_name, values = self.restatement_hold
+        amount_column = (
+            table.c[self.spec.restatement_amount_field]
+            if self.spec.restatement_amount_field else None
+        )
+        row = self.session.execute(
+            select(
+                func.count(),
+                func.sum(amount_column) if amount_column is not None
+                else literal(0),
+            ).where(
+                table.c[self.spec.restatement_scope_field].in_(self.restatement_scope),
+                table.c[field_name].in_(values),
+                table.c.is_void == False,  # noqa: E712
+            )
+        ).one()
+        return int(row[0] or 0), Decimal(str(row[1] or 0))
+
+    def _restate(self, before: dict[tuple, Decimal], written: set[tuple],
+                 written_keys: set[str]) -> Restatement:
+        """Void every in-scope row this file did not restate.
+
+        **This is not REPLACE.** The distinction is the whole design and it has
+        two halves. *Bounded*: only rows whose ``restatement_scope_field`` is one
+        of the values declared for this upload are even looked at, so a
+        receivables file for company 1000 cannot touch company 2000's book no
+        matter what it contains or omits. *Voided, not deleted*: the row, its
+        provenance and its batch survive, every reporting view filters
+        ``is_void``, and a later file naming that key again updates the row back
+        into life rather than inserting a second one.
+
+        The precedent is ``targetmgmt.lock._void_dropped``, which restates a
+        plan's own rows and voids the keys it drops — the same shape for the same
+        reason, and scoped there to the plan's own batches exactly as this is
+        scoped to declared values.
+
+        The scope is a *declaration*, never a reading of the file. Inferring what
+        to stand down from what happens to be present would mean a file that
+        accidentally omitted a company erased that company's book, and the
+        erasure would be indistinguishable from a correct restatement.
+        """
+        assert self.spec.restatement_scope_field is not None
+        outcome = Restatement(
+            scope_field=self.spec.restatement_scope_field,
+            scope=self.restatement_scope,
+        )
+        if self.restatement_hold is not None:
+            outcome.held_field, outcome.held = self.restatement_hold
+            outcome.held_rows, outcome.held_amount = self._held_out()
+        # Every in-scope row this load did not itself write is stood down, and
+        # the reason is reported per row. Keyed on the business key rather than
+        # on identity, because that is what says "this exact row is the one I
+        # just wrote": an invoice the file restates arrives under a *new* key
+        # when it comes from a different extract, so the old row is superseded
+        # rather than updated, and leaving it live would double-count the debt.
+        # On a re-upload of the same file the keys match, nothing is superseded,
+        # and the upsert updates in place exactly as before.
+        to_void: list[str] = []
+        for identity, amount in before.items():
+            keys = [key for key in self._keys_by_identity.get(identity, [])
+                    if key not in written_keys]
+            still_named = identity in written
+            if still_named:
+                outcome.restated_rows += 1
+            if not keys:
+                continue
+            to_void.extend(keys)
+            outcome.voided_rows += len(keys)
+            outcome.voided_amount += amount
+            if still_named:
+                outcome.superseded_rows += len(keys)
+                outcome.superseded_amount += amount
+            elif identity in self._rejected_keys:
+                outcome.voided_because_rejected += len(keys)
+                outcome.voided_because_rejected_amount += amount
+        outcome.new_rows = len(written - set(before))
+
+        # Chunked against the dialect's bind-parameter ceiling: each key in the
+        # IN clause is one parameter, and a restatement can stand down thousands
+        # of rows at once. SQLite's ceiling is 32,766, which a full receivables
+        # book would sail past on its second upload.
+        now = datetime.now(timezone.utc)
+        table = self.fact_model.__table__
+        for chunk in chunked(to_void, parameter_limit(self.session)):
+            self.session.execute(
+                table.update()
+                .where(table.c.business_key.in_(chunk))
+                .values(is_void=True, voided_at=now)
+            )
+        return outcome
+
 
     def _apply_derivations(self, cleaned: dict[str, Any]) -> dict[str, Any]:
         """Add a dataset's derived fields to the cleaned record.
@@ -390,7 +787,10 @@ class EtlPipeline:
         every dataset but credit invoices.
         """
         derive = DERIVATIONS.get(self.spec.data_type)
-        return {**cleaned, **derive(cleaned)} if derive is not None else cleaned
+        if derive is None:
+            return cleaned
+        options = LoadOptions(deduction_convention=self.deduction_convention)
+        return {**cleaned, **derive(cleaned, options)}
 
     def _resolve_period(self, cleaned: dict[str, Any],
                         row: SourceRow) -> dict[str, Any] | None:
@@ -897,6 +1297,19 @@ class EtlPipeline:
 
         ensure_dates_exist(self.session, needed_dates)
 
+        # Whatever the dataset wants said about the load as a whole. Run over the
+        # rows that survived validation, because a check against rows the loader
+        # refused would be comparing the source's figure with a total this load
+        # never claimed.
+        note_builder = LOAD_NOTES.get(self.spec.data_type)
+        if note_builder is not None:
+            result.notes.extend(note_builder([c[1] for c in candidates]))
+
+        # The scope as it stands *before* this load touches it. See
+        # ``_scope_snapshot``: read after the write, a newly inserted row and a
+        # restated one are the same thing.
+        scope_before = self._scope_snapshot() if self.restatement_scope else {}
+
         # Step 11: the write. Reported chunk by chunk because on a large file
         # this is where most of the wait actually is.
         self.progress.phase(Phase.WRITING, total=len(fact_rows))
@@ -905,6 +1318,17 @@ class EtlPipeline:
             on_chunk=self.progress.rows,
         )
         self.progress.counts(imported_records=inserted + updated)
+
+        # Step 12: the restatement. After the write, because what is voided is
+        # defined as "in scope and not written by this load", so the write has to
+        # have happened for the question to have an answer. A dry run reaches
+        # here too and rolls the whole thing back, which is what lets the preview
+        # state the consequence before anybody commits to it.
+        if self.restatement_scope:
+            result.restatement = self._restate(
+                scope_before,
+                {self._identity(c[1]) for c in candidates},
+                {c[3] for c in candidates})
 
         for rejection in self.rejections:
             status_by_row.setdefault(
@@ -926,6 +1350,7 @@ class EtlPipeline:
         result.rejections = list(self.rejections)
         result.volume_gaps = dict(self.volume_gaps)
         result.hierarchy_from_customer = self.hierarchy_from_customer
+        result.deduction_convention = self.deduction_convention
 
         batch.successful_rows = result.valid_rows
         batch.failed_rows = result.rejected_rows
@@ -987,12 +1412,25 @@ def run_import(
     sheet_name: str | None = None,
     dry_run: bool = False,
     progress: ProgressReporter | None = None,
+    deduction_convention: str | None = None,
+    restatement_scope: Sequence[str] | None = None,
+    restatement_hold: tuple[str, Sequence[str]] | None = None,
 ) -> ImportResult:
     """Import one transaction file (or reader) end to end.
 
     The whole run is one transaction: either the batch, staging rows, facts and
     rejections are all committed, or nothing is. ``dry_run`` performs every step
-    and rolls back, which is the safe way to inspect a new file's data quality.
+    and rolls back, which is the safe way to inspect a new file's data quality —
+    and, for a restating load, the only way to see what it is about to stand down
+    before it stands it down.
+
+    ``deduction_convention`` says how this file signs a payment, a discount and
+    an adjustment; a dataset that needs one and is not given one refuses to load.
+    ``restatement_scope`` declares what this file states *in full*: rows inside
+    it that the file does not name are voided. Both are declarations about the
+    upload rather than properties of the dataset, and neither is ever inferred
+    from the file's own contents — see ``DatasetSpec`` for why the second of
+    those is the more dangerous of the two to get wrong.
     """
     # A reader built here is handed the reporter as well, so a run given a path
     # reports its read exactly as one given a ready-made reader does. A caller
@@ -1008,7 +1446,9 @@ def run_import(
         pipeline = EtlPipeline(
             session, data_type, reader,
             source_system=source_system, load_mode=load_mode, date_format=date_format,
-            progress=progress,
+            progress=progress, deduction_convention=deduction_convention,
+            restatement_scope=restatement_scope,
+            restatement_hold=restatement_hold,
         )
         result = pipeline.run()
         if dry_run:
@@ -1035,6 +1475,7 @@ def run_import(
 __all__ = [
     "EtlPipeline",
     "ImportResult",
+    "Restatement",
     "LineOutcome",
     "Rejection",
     "run_import",

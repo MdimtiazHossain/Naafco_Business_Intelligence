@@ -262,6 +262,26 @@ class EtlImportBatch(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="STARTED")
     error_summary: Mapped[dict | None] = mapped_column(JSON_TYPE)
 
+    #: How the file this batch loaded signed a deduction, where the dataset says
+    #: the question has an answer. NULL for every dataset that states none.
+    #:
+    #: The fact rows are canonical, so nothing reads this to interpret a figure —
+    #: that is the point of normalising at load. What needs it is everything that
+    #: kept the file's *original* signs: the staging rows, which hold every
+    #: column as text, and each rejected row's ``raw_data``. Without this column
+    #: those are a set of numbers nobody can read back afterwards.
+    deduction_convention: Mapped[str | None] = mapped_column(String(16))
+
+    #: For a **scoped restatement**, the values the file claimed to state in
+    #: full — rows inside that scope which the file did not name were voided by
+    #: this batch. NULL for an ordinary incremental load, which voids nothing.
+    #:
+    #: This is the record of a *declaration*, and that is exactly why it is
+    #: stored. The scope decides what gets stood down, so "which rows did that
+    #: load void, and on whose authority" has to be answerable later from the
+    #: batch rather than reconstructed from the file.
+    restatement_scope: Mapped[list | None] = mapped_column(JSON_TYPE)
+
     __table_args__ = (
         Index("ix_etl_import_batches_data_type", "data_type"),
         Index("ix_etl_import_batches_status", "status"),
@@ -774,17 +794,27 @@ class FactTarget(Base, FullOrgDimensionMixin, FactAuditMixin, VoidableMixin):
 class StgCreditInvoice(Base, StagingMixin):
     """Credit invoices as the file supplied them.
 
-    No ``OrgCodeMixin``. A credit invoice states a customer, and which region or
-    territory that customer sits in is the Customer Master's answer, not this
-    file's — reached through ``dim_customer.sub_territory_code`` the same way
-    every other customer-keyed report reaches it. Carrying org columns here
-    would invite a second mapping that no source states, which is the mistake
-    ``stg_material_stock`` avoids for the same reason.
+    **The organisational codes are staged now, and this docstring used to argue
+    they should not be.** The argument was that a credit invoice states a
+    customer and the customer's sub-territory is the Customer Master's answer, so
+    carrying org columns here would invite a second mapping no source states.
+    The SPL extract overruled it by *stating* them: zone through sub-territory on
+    every row. Staging keeps the source shape, so they are kept exactly as the
+    file wrote them — including the two that are wrong.
 
-    ``due_date`` and ``balance_amount`` are staged even though both are derived
-    downstream. The file may state them; where it does, the derived value wins
-    and the disagreement is recorded as a data-quality flag, so what the source
-    claimed has to survive long enough to be compared.
+    Wrong in a specific, measured way. The file's ``region_code`` holds the
+    **area** code on all 15,576 rows and none of its 13 zone codes or 16 region
+    codes exists in the masters, while area, unit, territory and sub-territory
+    resolve completely. So staging records what arrived and the *fact* records
+    what the master hierarchy derives from the deepest trustworthy level — which
+    is why these columns are text here and surrogate keys there, and why nothing
+    reports off them.
+
+    ``due_date``, ``balance_amount``, ``source_od`` and ``source_maturity`` are
+    staged even though none reaches the fact. The file states them; where one
+    disagrees with what the row's own columns imply, the derived value wins and
+    the disagreement is recorded — so what the source claimed has to survive long
+    enough to be compared against.
     """
 
     __tablename__ = "stg_credit_invoice"
@@ -804,9 +834,28 @@ class StgCreditInvoice(Base, StagingMixin):
     last_payment_date: Mapped[str | None] = mapped_column(String(64))
     clearing_date: Mapped[str | None] = mapped_column(String(64))
     clearing_document: Mapped[str | None] = mapped_column(CODE)
+    #: The term code as the file writes it — ``NT90``, ``NCST``. Text, because
+    #: it is a code: aliasing it to the numeric ``credit_days`` failed to parse
+    #: on every row that states one.
+    payment_terms: Mapped[str | None] = mapped_column(String(64))
+    #: The organisational chain as the file stated it. Kept verbatim, resolved
+    #: selectively — see the class docstring.
+    zone_code: Mapped[str | None] = mapped_column(CODE)
+    region_code: Mapped[str | None] = mapped_column(CODE)
+    area_code: Mapped[str | None] = mapped_column(CODE)
+    unit_code: Mapped[str | None] = mapped_column(CODE)
+    territory_code: Mapped[str | None] = mapped_column(CODE)
+    sub_territory_code: Mapped[str | None] = mapped_column(CODE)
     #: What the file claimed, kept only to be checked against what we derive.
     due_date: Mapped[str | None] = mapped_column(String(64))
+    #: The pre-adjustment due date, and the input the immediate-terms rule reads.
+    net_due_date: Mapped[str | None] = mapped_column(String(64))
     balance_amount: Mapped[str | None] = mapped_column(String(64))
+    #: The source's own overdue split, frozen at the date the extract was taken.
+    #: Compared against at load and then discarded: an overdue figure computed on
+    #: one day is wrong the next while still looking authoritative.
+    source_od: Mapped[str | None] = mapped_column(String(64))
+    source_maturity: Mapped[str | None] = mapped_column(String(64))
     source_transaction_id: Mapped[str | None] = mapped_column(SOURCE_ID)
 
     __table_args__ = (
@@ -909,14 +958,45 @@ class FactCreditInvoice(Base, FactAuditMixin, VoidableMixin):
     #: to see all of them, so these concatenate rather than one winning.
     data_quality_flag: Mapped[str | None] = mapped_column(String(128))
 
+    #: The resolved organisational chain, declared here rather than taken from
+    #: ``FullOrgDimensionMixin`` — and the difference is one word: **no foreign
+    #: key**.
+    #:
+    #: ``FactSales`` carries real constraints on these because revision 0001
+    #: *created* it with them. This table was created without them by 0031 and
+    #: gained the columns in 0038, and SQLite cannot ``ALTER TABLE ADD COLUMN``
+    #: with a constraint at all: the only route is Alembic's batch mode, which
+    #: copies the table and moves it while SQLite re-validates every stored view
+    #: against a half-built schema. Paying that on a table three views read, to
+    #: buy a constraint on one dialect, is not a trade 0038 was willing to make.
+    #:
+    #: So the mixin is not inherited, because inheriting it would have the ORM
+    #: *claim* nine constraints the database does not hold — a name outliving
+    #: what it names, in the direction that is hardest to notice. What enforces
+    #: the reference is the loader: ``resolve_org`` produces an id only for a
+    #: code it found in a master, and a code it cannot find is a rejected row
+    #: rather than a dangling key.
+    company_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    business_unit_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    sales_line_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    zone_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    region_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    area_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    unit_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    territory_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+    sub_territory_id: Mapped[int | None] = mapped_column(SURROGATE_PK)
+
     __table_args__ = (
         UniqueConstraint("business_key", name="uq_fact_credit_invoice_business_key"),
-        # An invoice number is unique within the company that raised it, not
-        # globally: two group companies numbering from 1 each is ordinary, and a
-        # global constraint would reject the second one's whole file.
-        UniqueConstraint(
-            "company_code", "invoice_no", name="uq_fact_credit_invoice_company_invoice"
-        ),
+        # There is deliberately no uniqueness on (company_code, invoice_no).
+        # 0031 declared one, reasoning that an invoice number is unique within
+        # the company that raised it; the SPL receivables extract falsified that
+        # on 290 rows, and widening it to include the customer — which is where
+        # the business key went — still left 17. ``business_key`` is the grain,
+        # the pipeline's ``…#2`` numbering exists so a genuine repeat loads
+        # rather than being lost, and a table constraint forbidding what that
+        # numbering permits does not add safety: it aborts the load. 0038 dropped
+        # it. See that revision for the measurement.
         Index("ix_fact_credit_invoice_company", "company_code"),
         Index("ix_fact_credit_invoice_invoice_no", "invoice_no"),
         Index("ix_fact_credit_invoice_customer", "customer_code"),
@@ -932,6 +1012,19 @@ class FactCreditInvoice(Base, FactAuditMixin, VoidableMixin):
         Index("ix_fact_credit_invoice_quality", "data_quality_flag"),
         Index("ix_fact_credit_invoice_batch", "import_batch_id"),
         Index("ix_fact_credit_invoice_source_system", "source_system"),
+        # The resolved chain, indexed because every hierarchy report groups or
+        # filters on it. Zone and region are indexed like the rest: what is
+        # indexed is the master-derived key, which is exactly as trustworthy as
+        # the level below it, and not the file's own distrusted columns.
+        Index("ix_fact_credit_invoice_company_id", "company_id"),
+        Index("ix_fact_credit_invoice_business_unit_id", "business_unit_id"),
+        Index("ix_fact_credit_invoice_sales_line_id", "sales_line_id"),
+        Index("ix_fact_credit_invoice_zone_id", "zone_id"),
+        Index("ix_fact_credit_invoice_region_id", "region_id"),
+        Index("ix_fact_credit_invoice_area_id", "area_id"),
+        Index("ix_fact_credit_invoice_unit_id", "unit_id"),
+        Index("ix_fact_credit_invoice_territory_id", "territory_id"),
+        Index("ix_fact_credit_invoice_sub_territory_id", "sub_territory_id"),
     )
 
 

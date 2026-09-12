@@ -1649,9 +1649,13 @@ def get_business_alerts(ctx: ToolContext, arguments: AlertToolInput) -> ToolResu
     # a threshold in taka would have to be re-set for every company that ever
     # grows.
     #
-    # Skipped rather than refused when the caller's scope cannot be enforced on
-    # the credit view — the rule this tool established, now shared with the
-    # other three sections through ``_honoured_or_noted``.
+    # Still asked through ``_honoured_or_noted``, and since revision 0040 it
+    # always answers yes for this view: the credit view carries the sales
+    # hierarchy now, so there is no level a scope can be stated at that it cannot
+    # express. The guard stays because it is the shared one — the other three
+    # sections need it, and it is what would catch this view losing a column
+    # again — but for receivables it has stopped being the reason a regional
+    # manager sees no overdue figure. They see their own.
     if _honoured_or_noted(ctx, result, q.CREDIT_INVOICE_VIEW,
                           "Overdue receivables"):
         credit = q.credit_totals(

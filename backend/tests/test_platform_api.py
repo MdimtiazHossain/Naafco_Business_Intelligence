@@ -249,7 +249,8 @@ def test_dashboard_returns_kpis_and_charts(platform: TestClient) -> None:
     # nine seconds before anything appeared.
     assert body["sections"] == ["sales_trend", "monthly_performance",
                                 "region_overview", "territory_sales",
-                                "brand_sales", "top_customers"]
+                                "brand_sales", "top_customers",
+                                "overdue_receivables"]
     assert card(platform, token, "sales_trend", window)["rows"]
     # One card where there were two. ``region_performance`` and
     # ``target_achievement`` were merged into ``region_overview``, because the
@@ -585,6 +586,111 @@ def test_an_unknown_card_is_refused_and_says_which_exist(
                             headers=auth(token))
     assert response.status_code == 404
     assert "region_overview" in response.json()["detail"]
+
+
+def test_the_overdue_card_is_served_to_a_reader_who_holds_credit_control(
+    platform: TestClient,
+) -> None:
+    """The card CLAUDE.md refused for three revisions, and the condition it set.
+
+    It was not refused because an overdue figure is uninteresting. The dashboard
+    is the one screen a regional manager opens by default, and the credit view
+    reached the customer's sub-territory and no further — so the choice was
+    between refusing them the whole dashboard over a figure they would never see,
+    and putting an unscoped national total on it. CLAUDE.md wrote down the
+    condition rather than the verdict: *the card goes back on the table once the
+    credit view carries the sales hierarchy.* Revision 0040 is that.
+
+    The share is what the card reports, not the amount — a crore overdue is
+    alarming on a small book and routine on a large one.
+    """
+    token = login(platform, "ceo")
+    section = card(platform, token, "overdue_receivables", WINDOW)
+    assert section is not None
+    assert section["tool"] == "get_credit_summary"
+    assert section["sources"] == ["vw_credit_invoice_detail"]
+
+    # These fixtures hold no receivables, so the honest answer is *no figure*.
+    # A portfolio with nothing in it has no overdue proportion, and a card
+    # showing 0% would read as good news about a book that does not exist.
+    assert section["values"] == {}
+    assert any("No data found" in note for note in section["notes"])
+
+    # The reporting date is stated, because the same invoice is Not Yet Due in
+    # June and Over Due in August and a figure without its as-on date is not one
+    # anybody can check.
+    assert any("measured as at" in note for note in section["notes"])
+
+
+def test_the_overdue_card_ignores_the_dashboards_period(
+    platform: TestClient, agent_engine
+) -> None:
+    """A receivable is a position, and the first version only *said* so.
+
+    Every other card answers "what happened between these dates". This one
+    answers "what is owed", which is true whichever month the reader has
+    selected — and the code passed the dashboard's window straight to a tool
+    that filters on invoice date. On the real book the newest extract's last
+    posting is 31 August and the default period is September, so the card came
+    back empty about a ৳90 Cr portfolio. A card reading "no data" about a real
+    book is worse than no card.
+
+    Pinned on the **SQL** rather than on the payload, because the payload of an
+    empty fixture looks identical either way — which is exactly why the defect
+    reached production. What is asserted is that the window the card queries is
+    wider than the window it was asked for.
+    """
+    from sqlalchemy import event
+
+    token = login(platform, "ceo")
+    seen: list[tuple] = []
+
+    def record(conn, cursor, statement, parameters, context, many):
+        if "vw_credit_invoice_detail" in statement:
+            seen.append(parameters)
+
+    event.listen(agent_engine, "after_cursor_execute", record)
+    try:
+        card(platform, token, "overdue_receivables", WINDOW)
+    finally:
+        event.remove(agent_engine, "after_cursor_execute", record)
+
+    assert seen, "the card never read the credit view"
+    flat = [str(value) for params in seen for value in (
+        params if isinstance(params, (list, tuple)) else params.values())]
+    # WINDOW is a single month; the card must not have queried inside it.
+    assert not any("2026-08-01" in value for value in flat), (
+        "the card passed the dashboard's own date_from, so it is filtering "
+        "receivables by when they were invoiced")
+
+
+def test_the_overdue_card_is_absent_rather_than_refused_without_the_section(
+    platform: TestClient,
+) -> None:
+    """Credit exposure is a permission of its own, and absence is how that shows.
+
+    Exposure is the basis for stopping a customer's supply, so Credit Control
+    does not ride along with the reporting sections every role gets. A reader
+    without it is not offered the card and cannot fetch it — and the refusal is a
+    **404**, the same answer as a card this build does not serve, because a 403
+    would disclose that a receivables card sits on the dashboards of people
+    senior to them.
+
+    Absent rather than drawn-and-refused is the rule Target Management follows
+    for the same reason: a control whose only outcome is a refusal teaches people
+    to ignore controls.
+    """
+    token = login(platform, "dhaka_rm")
+    body = platform.get("/api/dashboard" + WINDOW, headers=auth(token)).json()
+    assert "overdue_receivables" not in body["sections"]
+    # ...and the other cards are all still there. Gating one must not cost a
+    # regional manager their sales and achievement figures, which is precisely
+    # what refusing the whole dashboard would have done.
+    assert "sales_trend" in body["sections"]
+
+    response = platform.get(
+        "/api/dashboard/section/overdue_receivables" + WINDOW, headers=auth(token))
+    assert response.status_code == 404
 
 
 def test_every_named_card_can_actually_be_fetched(platform: TestClient) -> None:
@@ -1266,3 +1372,4 @@ def test_period_options_come_from_the_backend(platform: TestClient) -> None:
     assert {"TODAY", "THIS_MONTH", "LAST_MONTH", "YTD"} <= values
     assert body["financial_year_start_month"] == 7
     assert body["current_financial_year"].startswith("FY ")
+

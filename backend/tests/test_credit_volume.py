@@ -138,7 +138,8 @@ def loaded(volume_engine):
     started = time.perf_counter()
     reader = RecordsSourceReader(_invoices(ROWS), source_name="volume.csv",
                                  source_type="CSV")
-    result = run_import(engine, "credit_invoice", reader, source_system="TEST")
+    result = run_import(engine, "credit_invoice", reader, source_system="TEST",
+                        deduction_convention=credit.DEDUCTION_UNSIGNED)
     elapsed = time.perf_counter() - started
     print(f"\nloaded {ROWS:,} credit invoices in {elapsed:.1f}s "
           f"({ROWS / max(elapsed, 0.001):,.0f} rows/s)")

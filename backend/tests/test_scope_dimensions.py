@@ -461,18 +461,23 @@ def test_honourability_is_asked_level_by_level_not_chain_by_chain(session):
     """The case that makes the distinction matter, and it is not hypothetical.
 
     A scope granting a region *and* a sub-territory is two conditions ANDed.
-    Credit Control carries ``sub_territory_code`` and no ``region_code``, so
+    ``vw_target_vs_actual`` carries ``region_code`` and nothing below it, so
     honouring the reachable half alone is **wider** than the grant — and where
-    the two sit on different branches, wider by exactly the rows the region was
-    there to exclude. A dimension-level test would call this scope honourable.
+    the two sit on different branches, wider by exactly the rows the
+    sub-territory was there to exclude. A dimension-level test would call this
+    scope honourable, because the organisational chain plainly applies.
+
+    This example used to be Credit Control, which carried a sub-territory and no
+    region. Revision 0040 gave that view the whole hierarchy, so it stopped being
+    an illustration of anything — see the test below, which now pins the opposite.
     """
     user = UserContext(user_id=905, username="mixed", role=Role.REGIONAL_MANAGER,
                        data_scope={"region_code": ["REG002"],
                                    "sub_territory_code": ["STR001"]})
-    credit = q.view(session, q.CREDIT_INVOICE_VIEW).c
-    assert "sub_territory_code" in credit and "region_code" not in credit
-    assert PermissionFilter(session, user).unhonourable_levels(credit) == (
-        "region_code",
+    target = q.view(session, q.TARGET_VS_ACTUAL_VIEW).c
+    assert "region_code" in target and "sub_territory_code" not in target
+    assert PermissionFilter(session, user).unhonourable_levels(target) == (
+        "sub_territory_code",
     )
 
 
@@ -523,24 +528,34 @@ def test_a_region_and_plant_scope_is_served_sales_by_its_region(session):
     assert ctx.scoped(ScopeFilters(), q.MATERIAL_STOCK_VIEW).plant_codes == ["PL01"]
 
 
-def test_a_region_and_plant_scope_is_still_refused_credit(session):
-    """The half a coarser fix would have broken.
+def test_a_region_and_plant_scope_is_now_honoured_on_credit(session):
+    """The reversal, and the one view in this file that changed sides.
 
-    Credit Control carries a plant, so the plant half of the scope *is*
-    enforceable — which is exactly what makes dropping the region half
-    dangerous: it would serve that plant's invoices from customers outside the
-    region. The chain applies, so its missing level still refuses.
+    Credit Control used to be this module's sharpest example: it carried a plant
+    but no region, so the plant half of a dual scope was enforceable and the
+    region half was not — and dropping the unenforceable half would have served
+    that plant's invoices from customers outside the region. It was the case a
+    coarser fix (skip any chain the view carries none of the caller's levels
+    for) would have silently broken.
+
+    Revision 0040 gave the view the sales hierarchy, so **both** halves are now
+    real columns and the same caller is narrowed rather than refused. That is
+    asserted here rather than simply deleted: a test that stops existing leaves
+    nobody able to tell whether the behaviour changed or the check did.
     """
-    from app.ai.exceptions import ScopeNotEnforceable
     from app.ai.tools import ToolContext
 
     user = both_scopes()
     permissions = PermissionFilter(session, user)
     assert permissions.unhonourable_levels(
-        q.view(session, q.CREDIT_INVOICE_VIEW).c) == ("region_code",)
+        q.view(session, q.CREDIT_INVOICE_VIEW).c) == ()
+
     ctx = ToolContext(session=session, permissions=permissions, user=user)
-    with pytest.raises(ScopeNotEnforceable):
-        ctx.scoped(ScopeFilters(), q.CREDIT_INVOICE_VIEW)
+    scoped = ctx.scoped(ScopeFilters(), q.CREDIT_INVOICE_VIEW)
+    # Both halves applied, which is the whole point: honouring one alone was
+    # always wider than the grant.
+    assert scoped.region_codes == ["REG001"]
+    assert scoped.plant_codes == ["PL01"]
 
 
 def test_a_company_scope_is_honourable_on_both_views(session):

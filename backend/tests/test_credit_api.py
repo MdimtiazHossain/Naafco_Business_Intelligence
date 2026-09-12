@@ -27,7 +27,6 @@ from app.etl import credit
 from app.etl.pipeline import run_import
 from app.etl.readers import RecordsSourceReader
 from app.main import app
-from app.reporting.credit import ScopeNotHonourable, assert_scope_is_honourable
 from app.reporting.service import ReportFilters
 
 PASSWORD = "TestPass123!"
@@ -40,6 +39,7 @@ AS_ON = dt.date(2026, 8, 29)
 
 def _invoice(no: str, *, invoice_date: str, credit_days: int, value: int,
              payment: int = 0, customer: str = "CUST-001",
+             territory: str = "TR001",
              company: str = "C001") -> dict:
     return {
         "Company": company, "Invoice No": no, "Customer": customer,
@@ -47,9 +47,17 @@ def _invoice(no: str, *, invoice_date: str, credit_days: int, value: int,
         "Credit Days": credit_days, "Invoice Value": value,
         "Return": 0, "Payment": payment, "Discount": 0, "Adjustment": 0,
         "Payment Mode": "CREDIT",
+        "Territory_Code": territory,
     }
 
 
+#: ``territory`` places the invoice in the hierarchy, and every fixture here
+#: states one since revision 0040 gave the view the sales chain. Before it, an
+#: invoice reached a sub-territory through its customer and nothing above that,
+#: so a scope test could only ever assert a refusal. Now the same rows can show
+#: the scope being *applied*, which is the stronger claim: a test that only
+#: checks a scoped caller is not refused passes equally well on a scope that was
+#: silently dropped.
 #: Five invoices arranged around AS_ON so every status and several buckets are
 #: represented, and the expected figures can be stated in the tests by hand.
 #:
@@ -62,10 +70,12 @@ INVOICES = [
     _invoice("OPEN-NYD", invoice_date="2026-08-11", credit_days=30, value=100000),
     _invoice("OPEN-30", invoice_date="2026-07-12", credit_days=30, value=50000),
     _invoice("OPEN-90", invoice_date="2026-03-03", credit_days=90, value=70000),
+    # Khulna, so a Dhaka scope has something to leave out. TR002 -> UN002 ->
+    # AR002 -> REG002, seeded by ``conftest_phase3``.
     _invoice("OPEN-OLD", invoice_date="2025-10-07", credit_days=90, value=30000,
-             customer="CUST-002"),
+             customer="CUST-002", territory="TR002"),
     _invoice("PAID", invoice_date="2026-06-01", credit_days=30, value=40000,
-             payment=-40000),
+             payment=40000),
 ]
 
 
@@ -73,7 +83,8 @@ INVOICES = [
 def credit_api(agent_engine, users):
     """A client, with the five invoices loaded and passwords set."""
     reader = RecordsSourceReader(INVOICES, source_name="credit.csv", source_type="CSV")
-    run_import(agent_engine, "credit_invoice", reader, source_system="TEST")
+    run_import(agent_engine, "credit_invoice", reader, source_system="TEST",
+               deduction_convention=credit.DEDUCTION_UNSIGNED)
 
     with Session(agent_engine) as session:
         for user in session.query(AppUser).all():
@@ -107,6 +118,25 @@ def get(client: TestClient, path: str, username: str = "ceo", **params):
     return client.get(f"{path}?{query}", headers=token(client, username))
 
 
+
+def _grant_section(client: TestClient, username: str,
+                   section: str = "credit_control") -> None:
+    """Give one user an explicit ALLOW for a section, the way an admin would.
+
+    Written through the model rather than the admin API because what is under
+    test here is the data scope, and routing the setup through a second endpoint
+    would make a failure there look like a failure in this.
+    """
+    from app.database.models_admin import UserSectionPermission
+    from app.api.deps import get_session
+
+    session = next(app.dependency_overrides[get_session]())
+    user = session.query(AppUser).filter_by(username=username).one()
+    session.add(UserSectionPermission(user_id=user.user_id, section_key=section,
+                                      access="ALLOW"))
+    session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Permission
 # ---------------------------------------------------------------------------
@@ -129,37 +159,62 @@ def test_an_unauthenticated_request_is_refused(credit_api) -> None:
     assert credit_api.get(BASE).status_code == 401
 
 
-def test_a_scope_this_view_cannot_express_is_refused_not_dropped() -> None:
-    """The one failure here that would be silent and serious.
+def test_a_region_scope_is_applied_rather_than_refused(credit_api) -> None:
+    """The reversal revision 0040 exists for, checked end to end over HTTP.
 
-    ``_apply_filters`` ignores a filter naming a column the view lacks, so a
-    region-scoped caller would have their scope dropped without comment and be
-    served the whole company's receivables. Refusing names the levels instead.
+    Until the view carried the sales hierarchy this endpoint answered **403** to
+    a region-scoped caller. It had to: ``_apply_filters`` drops a filter naming a
+    column the view lacks, so the alternative was serving a regional manager the
+    whole company's receivables with no sign that their scope had been ignored.
+
+    Now the level is a real column, so the scope is *applied* — and the figures
+    come back narrowed rather than complete. That is the assertion worth making:
+    a test that only checked for 200 would pass just as happily on a scope that
+    had been silently dropped, which is the failure this whole mechanism exists
+    to prevent.
     """
-    class _Scoped:
-        is_unrestricted = False
-        data_scope = {"region_code": ["REG001"]}
+    # The section and the scope are different gates, and this test is about the
+    # second one. A regional manager does not hold Credit Control by default —
+    # the test above pins that — so the section is granted here explicitly,
+    # leaving the scope as the only thing that can narrow the answer.
+    _grant_section(credit_api, "dhaka_rm")
 
-    with pytest.raises(ScopeNotHonourable) as raised:
-        assert_scope_is_honourable(_Scoped(), ReportFilters())
-    assert "region_code" in str(raised.value)
+    response = get(credit_api, BASE, username="dhaka_rm")
+    assert response.status_code == 200, response.text
+
+    scoped = response.json()["metrics"]
+    unscoped = get(credit_api, BASE).json()["metrics"]
+    assert scoped["invoice_count"] < unscoped["invoice_count"], (
+        "a narrowed scope that returns the whole book has been dropped, not applied")
+    assert scoped["invoice_count"] > 0, "and it must not narrow to nothing either"
 
 
-def test_an_unrestricted_caller_has_no_scope_to_lose() -> None:
-    class _Unrestricted:
-        is_unrestricted = True
-        data_scope = {"region_code": ["REG001"]}
+def test_the_scope_mechanism_is_the_shared_one(credit_api) -> None:
+    """One rule, one implementation — which is why the bespoke one was deleted.
 
-    assert_scope_is_honourable(_Unrestricted(), ReportFilters())
+    Credit Control used to carry its own ``SCOPE_LEVELS_HONOURED`` literal and
+    its own refusal beside the generic ``SCOPE_POLICY`` check. Two mechanisms for
+    one rule drift, and this one had already started to: the literal named four
+    levels while the view was about to carry eleven. What is pinned here is that
+    the surviving list is *equal to the scope-bearing columns the view actually
+    has*, so it cannot outlive what it names.
+    """
+    from sqlalchemy import MetaData, Table
+    from app.ai import queries as q
+    from app.database.connection import get_engine
+    from app.reporting.credit import SCOPE_LEVELS_HONOURED
+    from app.security.scope import SCOPE_LEVELS
 
+    view = Table(q.CREDIT_INVOICE_VIEW, MetaData(), autoload_with=get_engine())
+    carried = {level for level in SCOPE_LEVELS if level in view.c}
+    # ``customer_code`` is a scope this platform can *grant* but is not one of
+    # ``SCOPE_LEVELS``, so it is named here and excluded from the comparison,
+    # exactly as the four-level version of this assertion did.
+    assert SCOPE_LEVELS_HONOURED - {"customer_code"} == carried
+    # ...and the policy stays REFUSE, inert now but still the guard for the next
+    # report that cannot express a level.
+    assert q.scope_policy(q.CREDIT_INVOICE_VIEW) is q.ScopePolicy.REFUSE
 
-def test_a_scope_the_view_can_express_is_allowed() -> None:
-    """Company and customer are real columns on the view, so they are honoured."""
-    class _ByCompany:
-        is_unrestricted = False
-        data_scope = {"company_code": ["C001"]}
-
-    assert_scope_is_honourable(_ByCompany(), ReportFilters())
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +262,9 @@ def test_a_negative_return_pushes_net_above_gross(credit_api) -> None:
         source_name="returns.csv", source_type="CSV")
     from app.api.deps import get_session
     session = next(app.dependency_overrides[get_session]())
-    run_import(session.get_bind(), "credit_invoice", reader, source_system="TEST")
+    run_import(session.get_bind(), "credit_invoice", reader,
+               source_system="TEST",
+               deduction_convention=credit.DEDUCTION_UNSIGNED)
 
     metrics = get(credit_api, BASE).json()["metrics"]
     assert metrics["return_amount"] < 0
@@ -409,3 +466,228 @@ def test_the_payment_timeline_says_what_it_cannot_show(credit_api) -> None:
     assert events[0]["amount"] == 40000.0
     assert events[0]["date"] is None
     assert "no last payment date" in events[0]["note"]
+
+
+# ---------------------------------------------------------------------------
+# The hierarchy sections, and the partition that makes the headline add up
+# ---------------------------------------------------------------------------
+
+
+def test_the_open_book_partitions_into_overdue_due_soon_and_due_later(
+    credit_api: TestClient,
+) -> None:
+    """The three figures add up to the fourth, and until now the third was absent.
+
+    Overdue and Due Soon were reported without Due Later, so the two largest
+    numbers on the page did not account for the outstanding total and nothing
+    said what the remainder was. On the SPL extract the missing piece is
+    ৳45.59 Cr — *more* than the overdue book — money that is neither late nor
+    imminent, and which the source's own ``od`` and ``maturity`` columns do not
+    publish either.
+
+    Asserted on both the money and the count, because a partition that balances
+    in taka and not in invoices would mean a row counted twice and another not
+    at all, netting to nothing.
+    """
+    metrics = get(credit_api, BASE).json()["metrics"]
+
+    parts = (metrics["overdue_amount"] + metrics["due_soon_amount"]
+             + metrics["due_later_amount"])
+    assert parts == pytest.approx(metrics["outstanding_amount"], abs=0.01)
+
+    counts = (metrics["overdue_invoice_count"] + metrics["due_soon_invoice_count"]
+              + metrics["due_later_invoice_count"])
+    assert counts == metrics["open_invoice_count"]
+
+
+def test_an_invoice_due_on_the_reporting_date_is_due_soon_and_not_overdue(
+    credit_api: TestClient,
+) -> None:
+    """The boundary the whole module agrees on, checked where it partitions.
+
+    ``credit.days_overdue`` is ``(as_on - due).days`` and zero days late is
+    NOT_YET_DUE, so an invoice due *today* belongs to Due Soon. Getting this
+    wrong by a day would move money between two cards that are read against each
+    other, and it is the one boundary a partition cannot hide.
+    """
+    # OPEN-NYD is due 2026-09-10; asked as at exactly that date.
+    body = get(credit_api, BASE, as_on_date="2026-09-10").json()
+    statuses = {row["status"]: row for row in body["status"]}
+    assert statuses["OVER_DUE"]["invoice_count"] >= 0
+    rows = get(credit_api, f"{BASE}/invoices", as_on_date="2026-09-10").json()["rows"]
+    nyd = next(row for row in rows if row["invoice_no"] == "OPEN-NYD")
+    assert nyd["credit_status"] == "NOT_YET_DUE"
+    assert nyd["days_overdue"] == 0
+
+
+def test_the_aging_matrix_agrees_with_the_aging_chart_bucket_for_bucket(
+    credit_api: TestClient,
+) -> None:
+    """Two readings of one truth, which is the reason to check them against each other.
+
+    ``aging`` is the portfolio by bucket; ``aging_by_level`` is the same money
+    split by region as well. Summing the matrix down its columns must reproduce
+    the chart exactly — if it does not, one of the two is filtering differently
+    and the page would draw a total beside a breakdown that contradicts it.
+    """
+    body = get(credit_api, BASE).json()
+    chart = {row["bucket"]: row["outstanding_amount"] for row in body["aging"]}
+    matrix = body["aging_by_level"]
+
+    assert matrix["buckets"] == list(chart), "same buckets, same order"
+    for index, bucket in enumerate(matrix["buckets"]):
+        column = sum(row["amounts"][index] for row in matrix["rows"])
+        assert column == pytest.approx(chart[bucket], abs=0.01), bucket
+
+
+def test_every_matrix_row_carries_every_bucket_even_the_empty_ones(
+    credit_api: TestClient,
+) -> None:
+    """A ragged row would read as a rendering fault rather than as a fact.
+
+    Same rule the flat aging chart follows: "nothing in 91-120" is something the
+    screen has to state. A matrix is where it matters most — a row with four
+    cells beside a row with eight does not line up as a table at all.
+    """
+    matrix = get(credit_api, BASE).json()["aging_by_level"]
+    assert matrix["rows"], "the fixtures place invoices in regions"
+    for row in matrix["rows"]:
+        assert len(row["amounts"]) == len(matrix["buckets"])
+        assert len(row["counts"]) == len(matrix["buckets"])
+        assert row["outstanding_amount"] == pytest.approx(sum(row["amounts"]), abs=0.01)
+
+
+def test_the_breakdown_groups_by_the_level_the_caller_asks_for(
+    credit_api: TestClient,
+) -> None:
+    """Region by default, because that is the level this page is read at.
+
+    The level is a request parameter rather than a constant: a managing director
+    reads receivables by region and an area manager reads their own areas by
+    territory, and one fixed level serves one of them.
+    """
+    default = get(credit_api, BASE).json()
+    assert default["exposure_by_level"]["level"] == "region_code"
+    assert default["aging_by_level"]["level"] == "region_code"
+
+    by_territory = get(credit_api, BASE, group_level="territory_code").json()
+    assert by_territory["exposure_by_level"]["level"] == "territory_code"
+    assert by_territory["aging_by_level"]["level"] == "territory_code"
+
+    # The same money, cut a different way: a finer level can only have at least
+    # as many groups, and the totals cannot move.
+    assert (sum(r["outstanding_amount"] for r in by_territory["exposure_by_level"]["rows"])
+            == pytest.approx(
+                sum(r["outstanding_amount"]
+                    for r in default["exposure_by_level"]["rows"]), abs=0.01))
+
+
+def test_an_unknown_group_level_is_refused_rather_than_silently_defaulted(
+    credit_api: TestClient,
+) -> None:
+    """Reading correct figures under the wrong heading is worse than an error."""
+    response = get(credit_api, BASE, group_level="material_code")
+    assert response.status_code == 422
+    assert "material_code" in response.text
+
+
+def test_a_group_with_nothing_outstanding_has_no_overdue_share(
+    credit_api: TestClient,
+) -> None:
+    """Suppressed, never rendered as 0% — the platform's rule, applied per row.
+
+    A group with no receivables has no overdue *proportion*. Reporting 0% there
+    would read as good news about a book that does not exist, which is exactly
+    the claim the headline metric refuses to make.
+    """
+    rows = get(credit_api, BASE).json()["exposure_by_level"]["rows"]
+    for row in rows:
+        if not row["outstanding_amount"]:
+            assert row["overdue_share_percent"] is None
+        else:
+            assert 0 <= row["overdue_share_percent"] <= 100
+
+
+def test_the_due_profile_covers_what_is_not_yet_late_and_says_what_it_omits(
+    credit_api: TestClient,
+) -> None:
+    """The aging chart's other half, and deliberately not overlapping it.
+
+    Aging looks backwards; this looks forwards. Overdue money is **not** a
+    bucket here — it has seven of its own on the other chart — because the same
+    taka on two charts is taka a reader will add. It is returned beside the
+    buckets instead, so the two can be related without being mixed.
+
+    The buckets must therefore sum to Due Soon plus Due Later exactly: that is
+    the whole of what is open and not yet late.
+    """
+    body = get(credit_api, BASE).json()
+    metrics, profile = body["metrics"], body["due_profile"]
+
+    assert profile["overdue_amount"] == pytest.approx(
+        metrics["overdue_amount"], abs=0.01)
+    total = sum(bucket["due_amount"] for bucket in profile["buckets"])
+    assert total == pytest.approx(
+        metrics["due_soon_amount"] + metrics["due_later_amount"], abs=0.01)
+
+    from app.etl.credit import DUE_BUCKET_CODES
+    assert [b["bucket"] for b in profile["buckets"]] == list(DUE_BUCKET_CODES)
+
+
+def test_the_status_split_states_what_was_billed_as_well_as_what_is_owed(
+    credit_api: TestClient,
+) -> None:
+    """Because ``outstanding_amount`` cannot describe CLEARED at all.
+
+    A cleared invoice has a balance of zero or below *by definition*, so the
+    outstanding figure for that status is always 0.0 — which left the split
+    reporting a status with a count and no money, and no way to see how much had
+    actually been settled.
+    """
+    rows = {row["status"]: row for row in get(credit_api, BASE).json()["status"]}
+
+    cleared = rows["CLEARED"]
+    assert cleared["outstanding_amount"] == 0.0, "cleared means nothing owed"
+    assert cleared["invoice_count"] > 0
+    assert cleared["invoice_amount"] > 0, "and that is the figure that was missing"
+
+    # The three statuses partition every invoice, settled or not.
+    assert sum(row["invoice_count"] for row in rows.values()) == (
+        get(credit_api, BASE).json()["metrics"]["invoice_count"])
+
+
+def test_the_worst_overdue_customers_say_where_they_are(
+    credit_api: TestClient,
+) -> None:
+    """The action this chart leads to is somebody going to see the customer.
+
+    Territory rather than region, because that is the level a single visit
+    happens at — and impossible before revision 0040, when this view stopped at
+    the customer's sub-territory. The region rides along so a regional manager
+    reading their own filtered page recognises the rows.
+    """
+    rows = get(credit_api, BASE).json()["top_overdue_customers"]
+    assert rows, "the fixtures hold overdue invoices"
+    for row in rows:
+        assert row["territory_code"], row
+        assert row["region_code"], row
+        assert row["max_days_overdue"] >= 1, "an overdue row is at least a day late"
+
+    # Ranked by what is owed, which is what makes it a ranking rather than a list.
+    amounts = [row["overdue_amount"] for row in rows]
+    assert amounts == sorted(amounts, reverse=True)
+
+
+def test_a_customer_trading_in_two_territories_is_still_one_row(
+    credit_api: TestClient,
+) -> None:
+    """Grouping on the place as well would split them and drop both below the cut.
+
+    The customer is the grain of this ranking because the customer is what gets
+    a visit. Their territory is taken as a MAX over their own invoices, which is
+    their territory in every case the master data allows and a stable answer in
+    any case it does not.
+    """
+    rows = get(credit_api, BASE).json()["top_overdue_customers"]
+    codes = [row["customer_code"] for row in rows]
+    assert len(codes) == len(set(codes)), "one row per customer"

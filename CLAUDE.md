@@ -27,7 +27,7 @@ Three packages sit outside that numbering: `app/reporting/` (the `/api/reports/*
 
 **`HIGH_OVERDUE` measures a share, not an amount.** A crore overdue is alarming on a small book and routine on a large one, so a threshold in taka would need re-setting every time the business grew. `AlertToolInput.overdue_share_percent` defaults to 25. The share is suppressed rather than rendered as `0%` when nothing is outstanding — a book with no receivables has no overdue proportion.
 
-**No Overdue card on the executive dashboard, deliberately.** The plan offered one as optional and the scope gap below rules it out: the dashboard is the one screen a regional manager opens by default, `get_business_summary` is scoped to their region, and the credit view cannot honour a region scope. The only two options were to refuse the whole dashboard for them — denying their sales and stock figures over a receivables number they were never going to see — or to put an unscoped national overdue figure on it. The card goes back on the table once the credit view carries the sales hierarchy.
+**The executive dashboard's Overdue card exists again** (`overdue_receivables`), and the condition this paragraph used to set is what let it: it was refused while the credit view could not honour a region scope, because the dashboard is the one screen a regional manager opens by default and the only alternatives were refusing them the whole page or showing them an unscoped national total. Revision 0040 gave the view the sales hierarchy, so the figure is now their own region's. It is gated on the `credit_control` section and absent — not refused — for a reader who does not hold it. See *Credit Control* below.
 
 `README.md` (~3165 lines) is the authoritative specification — validation rule catalogue (VR001–VR016), table-by-table schema, endpoint tables, and a numbered "Assumptions and decisions" list explaining *why* each design choice was made. Read the relevant section before changing behaviour it describes.
 
@@ -251,18 +251,27 @@ therefore answers with levels, derived from the view's own columns.
 
 **A chain the dataset does not have is skipped entirely, and "the column is
 missing" does not tell you which case you are in** (`scope.dimension_applies`).
-Two views can both lack `region_code` for opposite reasons: a **sale states no
-plant**, so a plant scope excludes no sales row and dropping it widens nothing,
-while a **credit invoice has a region** through its customer's sub-territory
-that the view merely does not join, so dropping a region scope there serves that
-plant's invoices from customers outside it. A view says which by carrying a
-level *unique* to a chain — `company_code` is in both chains and so identifies
+Two views can lack a level for opposite reasons: a **sale states no plant**, so
+a plant scope excludes no sales row and dropping it widens nothing, while
+`vw_target_vs_actual` **has** everything below its region through the facts it
+is built from and simply does not carry it, so dropping a sub-territory scope
+there serves the rest of that region. A view says which by carrying a level
+*unique* to a chain — `company_code` is in both chains and so identifies
 neither. This was a live defect, not a hypothetical: the first version asked
 only "which of your levels is missing from this view" and therefore **refused
 every sales question from an account holding a region and a plant**, which is
 the exact account the second chain exists to serve. A coarser repair — skipping
 any chain the view carries none of the caller's levels for — fixes sales and
-silently breaks Credit Control. `test_scope_dimensions` pins both halves.
+breaks the other case silently. `test_scope_dimensions` pins both halves.
+
+Credit Control was this rule's sharpest example until revision 0040: it carried a
+plant and no region, so a dual-scoped caller had one half enforceable and one
+half not, and the coarse repair would have served that plant's invoices from
+customers outside the region. The view now carries every level a scope can be
+stated at, so it has moved from illustrating the trap to demonstrating the fix —
+and the test says so rather than being deleted, because a test that stops
+existing leaves nobody able to tell whether the behaviour changed or the check
+did.
 
 **`ctx.scoped(filters, *views)` takes the views the tool is about to read, and
 they are not optional.** The check runs before the query, so a refusal can never
@@ -1024,7 +1033,7 @@ The package is eleven tabs over one plan, and the things they have in common are
 
 **A control whose only outcome is a refusal is absent, not disabled.** The Revise column, the Apply button, the lock control and the matrix editor are all added to the page rather than rendered inert, because a button that never works teaches people to ignore buttons.
 
-### Credit Control (`app/etl/credit.py`, migration 0031)
+### Credit Control (`app/etl/credit.py`, migrations 0031, 0038–0040)
 
 The warehouse half of the receivables module: one fact, one staging table, three views and the derivations behind them. See the reversal note near the top of this file for why receivables exist again at all.
 
@@ -1032,27 +1041,166 @@ The warehouse half of the receivables module: one fact, one staging table, three
 
 **One rule, written twice, pinned rather than trusted.** The bucket and status boundaries are frozen SQL in revision 0031 (a migration must keep producing the same schema forever) and live Python in `etl/credit.py` (the ETL goes on being edited). Two copies of one rule drift silently — the view bucketing an invoice one way and the loader another, each right in isolation — so `test_view_and_python_agree_on_every_boundary` walks every boundary day through both. Never edit one without the other; the test is what makes that safe rather than hopeful.
 
+**`CURRENT_DATE` is UTC on SQLite, and that made a test fail only at night.**
+The credit views derive `days_overdue`, `credit_status` and `aging_bucket` from
+`CURRENT_DATE`; `test_view_and_python_agree_on_every_boundary` compared them
+against `etl.credit` evaluated at `date.today()`, which is **local**. East of
+Greenwich the two are different days between local midnight and local dawn, so
+twenty-seven parametrised cases passed all evening and failed at 01:18 with
+nothing having touched them — which reads exactly like a regression from whatever
+was edited last, and is not one. Both sides now read the date off the connection
+(`_database_today`), so they mean the same day by construction on either dialect
+at any hour. No retry, no tolerance: the race is removed rather than survived.
+The other credit test files were never exposed to it because they pin an explicit
+`as_on`, which is the better habit anyway.
+
 **Eight aging buckets, not the platform's six.** `NOT_YET_DUE · 1-30 · 31-60 · 61-90 · 91-120 · 121-180 · 181-365 · 365+`, an explicit decision: a 120-day debt and a 179-day debt are chased by different people. The specification wrote the last two as "181-365" and "365+", which claims 365 twice — the tail starts at **366** and the label stays cosmetic. `AGING_COLORS` in the frontend gains two entries to match.
 
 **A cleared invoice ages nowhere, and a negative balance is cleared.** Aging measures money still owed, so `aging_bucket` is NULL once the balance reaches zero *or below*; that is what lets the aging chart and the outstanding KPI be counted against each other. Over-adjustment keeps its negative figure — never floored — carries `BALANCE_NEGATIVE`, and is excluded from the exposure total so a data-quality problem cannot net off against real debt and understate what is owed.
 
 **Nothing is refused on an unverified assumption.** There is no CHECK on any amount and none on `credit_days`. A contradicting row is **flagged and kept** — `data_quality_flag`, pipe-separated because a row can be wrong twice and a reviewer needs both. That tolerance is what let the first real file load at all, and it is what made the two corrections below findable rather than fatal.
 
-**The sign convention was measured, not assumed, and it is mixed.** The first real file settled what the specification could not: payment, discount and adjustment arrive **negative** and are *added*; return arrives negative too but is *subtracted*, because a returned-goods document offsets an invoice and increases what is owed on it. Agreement with the source's own Balance Amount over 16,614 rows, by rule:
+**Each file's sign convention was measured, not assumed.** The first real file settled what the specification could not: in the **Credit Invoice** extract payment, discount and adjustment arrive *negative* and are added, while return arrives negative and is subtracted, because a returned-goods document offsets an invoice and increases what is owed on it. The **SPL** extract posts all four positive and subtracts them. Both are now normalised to one canonical sign at the load — see below — so what follows is a measurement of those files rather than a description of how the warehouse stores anything. Agreement with the Credit Invoice file's own Balance Amount over 16,614 rows, by rule:
 
 | Rule | Agreement |
 |---|---|
-| `value − return + pay + disc + adj` (current) | 95.0% |
+| `value − return + pay + disc + adj` (that file's rule) | 95.0% |
 | `value + return + pay + disc + adj` | 93.5% |
 | `net − pay − disc − adj` (as first built) | 54.2% |
 
-The original all-subtract rule was wrong in the worst way: payment is *never* positive in this source, so subtracting it added it, and an invoice paid in full reported at roughly twice its value. Note the **adjustment sign is not determined by this data** — flipping it changes agreement by exactly nothing, because every row it would affect carries a zero adjustment. It is written `+` for consistency with payment and discount; that is a choice, not a measurement, and the first file with a non-zero adjustment that disagrees is the trigger to re-measure.
+The original all-subtract rule was wrong in the worst way: payment is *never* positive in this source, so subtracting it added it, and an invoice paid in full reported at roughly twice its value. Note the **adjustment sign is not determined by this data** — flipping it changes agreement by exactly nothing, because every row it would affect carries a zero adjustment. It was written `+` for consistency with payment and discount; that is a choice, not a measurement, and the first file with a non-zero adjustment that disagrees is still the trigger to re-measure. The **SPL** extract settled the other file the same way: `rounded_total − rev_rtn − adjustment − collection` reproduces its own `maturity + od` on 11,443 of 11,443 rows due on or before the snapshot, at a ±৳0.50 tolerance — 100%, the tolerance being there because that file states `od` in whole taka while the derivation carries paisa.
 
 **A stated due date wins over a derived one**, which is also the reverse of how this started. The reasoning then was that a source computing a due date from terms it had not sent us should not move a reported figure. The file overruled it: 11,791 rows state `credit_days` of 0 beside a real due date, so deriving handed back the invoice date and made every one of them look immediately overdue. The stated date is the fact; the terms column is what is missing. Deriving is the fallback for a row stating no due date. `0` is therefore in `KNOWN_CREDIT_DAYS` — it is the ordinary value in this source, and flagging three quarters of a file teaches everyone to ignore the flag.
 
 Both disagreements are still flagged. The figure no longer moves because of them, but "the terms do not explain this due date" and "the source's balance does not equal its own columns" are what a data-quality review needs to see. **A residual ~5% still disagree on balance** (23.7M BDT, 2% of outstanding) and is not yet explained; it is visible as `BALANCE_MISMATCH` rather than quietly absorbed.
 
-**The deduction columns are stored signed and reported as magnitudes.** The sign is what makes the balance a plain sum, but a card headed "Total Payment" showing −1.10 Cr is not a figure anybody can read, and the payment rate under it would come out negative. `reporting.credit._deduction` and `queries.credit_totals` flip it once each, so the page and the assistant agree.
+**One canonical sign for a deduction, settled at the load and nowhere else.**
+The warehouse stores *the amount by which that component reduced the balance*:
+positive reduced it, negative increased it. One arithmetic serves every file —
+`net = invoice_value − return_amount`, then
+`balance = net − payment_amount − discount_amount − adjustment_amount` — and
+`reporting.credit` and `queries.credit_totals` read the figures straight through
+without knowing which extract a row came from.
+
+**This replaced a working design, and why it had to is the lesson.** The columns
+used to be stored exactly as the file posted them and *corrected at read time*:
+both surfaces negated a payment so a card headed "Total Payment" would not show
+−1.10 Cr. That was correct and fragile — one rule that has to be applied
+identically in two places is the shape of defect
+`test_view_and_python_agree_on_every_boundary` exists to warn about, and the
+arrival of a second extract with the opposite convention turned the latent
+version of it into a live one, putting a minus in front of every payment on the
+page. Deleting both negations is the fix; there is now nothing to keep in step.
+
+**Normalising the sign, never the magnitude.** `abs()` would have been simpler
+and would have destroyed the thing worth keeping: a debit note is a deduction
+that *increased* what is owed, it arrives positive under SIGNED and negative
+under UNSIGNED, and under the canonical rule both are stored negative and go on
+increasing the balance. Magnitude-normalising would have reported every one of
+them as a payment and overstated what had been collected.
+
+**`return_amount` is the asymmetry, and it is real.** Under SIGNED, payment,
+discount and adjustment are negated and return is not — that file subtracts the
+return from the invoice value too, so a negative return already increases the net
+exactly as the canonical rule says a negative deduction should, and negating it
+would invert the one figure that was right to begin with.
+`credit.canonical_deductions` is the whole of it, and `0039_deduction_convention`
+is the back-fill that restated the rows loaded before it — counting three ways
+first and aborting the revision on any disagreement, because ABS is only
+equivalent to negation once you have established every value is already negative.
+
+**The convention travels with the upload, and is refused rather than guessed.**
+It is a property of the *file*, not of the dataset: the Credit Invoice extract
+posts a payment negative and the SPL extract posts it positive, both are
+`credit_invoice`, and `DatasetSpec.deduction_convention` could only ever have been
+right for one of them. So `DatasetSpec.requires_deduction_convention` says the
+question has an answer, `run_import` refuses to load without one,
+`credit.detect_convention` proposes a default from the file's own signs, and
+`upload_batches.deduction_convention` records what was declared. Detection states
+its evidence — the negative, positive and zero counts it read the answer off — so
+the preview shows the answer *and* the working. It declines to answer in two
+cases: a file with no non-zero deduction anywhere, which satisfies both rules
+identically, and a file whose signs are genuinely mixed, which usually means two
+extracts have been pasted into one sheet. Both are `UNDECLARED_SETTING`, a
+refusal with its own error code because "re-save your spreadsheet" is useless
+advice for a file that reads perfectly well.
+
+**A receivables file restates a book, so the rows it stops naming are voided —
+and this is NOT REPLACE.** The distinction is the whole design and it has two
+halves. *Bounded*: only rows whose `DatasetSpec.restatement_scope_field` is one
+of the values **declared for this upload** are looked at, so a file for company
+1000 cannot touch company 2000's book however little it says about it. *Voided,
+not deleted*: the row, its provenance and its batch survive, every reporting view
+filters `is_void`, and a later file naming that key again updates the row back
+into life rather than inserting a second one. REPLACE, by contrast, empties
+whatever a file does not mention, globally, with no declaration bounding it and
+nothing left behind. The precedent is `targetmgmt.lock._void_dropped`, which
+restates a plan's own rows and voids the keys it drops — the same shape for the
+same reason, scoped there to the plan's own batches exactly as this is scoped to
+declared values.
+
+**A restatement matches on *identity*, not on `business_key`** — and the first
+deployment is what forced that. A business key names the fields it was built from
+*and the source system*, so the same invoice arriving from a second extract can
+never share one with the row already in the warehouse. Matching on the key
+reported **zero** of 14,589 genuinely-matching invoices as restated and proposed
+voiding an entire company's book. `_identity` compares the values of
+`business_key_fields`, which is what a person means by "the file still names this
+invoice".
+
+**And it supersedes rather than updates.** Because the keys differ across
+extracts, an invoice the file restates is *written beside* the old row, not over
+it — so the old row must be voided or the debt is counted twice. The second
+rehearsal caught that too: 28,379 live rows and ৳169.96 Cr against a real book of
+৳118.57 Cr. Every in-scope row the load did not itself write is stood down, and
+the reason is reported per row: **superseded** (the file still names it, a newer
+row replaced it), **settled** (the file stopped naming it), or **rejected** (the
+file names it but the loader refused it). On a re-upload of the same file the
+keys match, nothing is superseded, and the upsert updates in place exactly as
+before.
+
+Those three counts matter more than the total. The first production load voided
+14,616 rows worth ৳114.10 Cr, which reads as catastrophic until it is split:
+14,536 superseded (৳93.55 Cr, the same debt under a newer record), 27 settled
+(৳17.39 Cr) and 53 rejected (৳3.15 Cr).
+
+**A hold narrows a restatement's own claim, and only ever narrows it**
+(`restatement_hold`). A scope says "this file states the whole of X"; a hold says
+"…except these, whose absence I do not accept as settlement". The case is real:
+the first SPL extract omitted **an entire customer's** thirteen invoices worth
+৳2.81 Cr. Read mechanically that is thirteen settlements; read by somebody who
+knows the business it is an extract missing a customer. The scope is expressed
+per *company* and so cannot express a doubt about one *customer* — and widening
+the scope is no answer, because the doubt is narrower than the scope rather than
+broader. A hold is a declaration like the scope, it is reported in the preview,
+and it can never cause a row to be voided that would otherwise have survived.
+
+Note what a hold leaves behind: those rows are now the **largest single overdue
+exposure on the book**, and the newest extract does not confirm them. That is the
+honest state — held is not the same as verified — and it is why a hold is meant
+to be temporary, resolved by asking whoever produces the extract.
+
+**The scope is declared, never inferred, and that is the load-bearing part.**
+Inferring from a file's contents what to stand down is the most dangerous form of
+invented data this platform could commit: a file that accidentally omitted a
+company would erase that company's book, and the erasure would be
+indistinguishable from a correct restatement. So `etl.declarations.scan` proposes
+the scope from the codes the file contains, the preview states what committing it
+would void, and `upload_batches.restatement_scope` records what a person
+accepted. `restatement_scope=[]` is a real declaration meaning "restate nothing",
+deliberately distinct from `None`, which means "propose one and show me".
+
+**The preview says what the commit will stand down, before it stands it down.**
+The dry run performs the restatement and rolls it back, so the warnings can state
+how many in-scope rows the file does not name and what they are worth — and,
+separately, **how many of those are rows the file *does* name but which were
+rejected**. That second figure is the sharpest edge of a restatement: the book
+falls by that amount for a data-quality reason rather than because anything was
+settled. On the SPL extract it is 75 rows and ৳23.76 Cr of bank FDRs, share
+investments and inter-company loans carrying `#N/A` hierarchies, and it is stated
+up front rather than discovered afterwards. `_scope_snapshot` is taken *before*
+the write for the same reason: read after it, a row this load just inserted and
+one it restated are indistinguishable.
 
 **An invoice number is unique within its company, not globally.** Two group companies each numbering from 1 is ordinary, and a global constraint would reject the whole of the second one's file. `vw_customer_credit_exposure` keeps company in its grain for the same reason — a customer trading with two companies has two sets of books, and collapsing them would leave a company-filtered report unable to answer for either. The customer join is a **LEFT JOIN on the code**, so an invoice whose customer the master lacks keeps its figures and shows its code rather than vanishing from a total.
 
@@ -1066,13 +1214,256 @@ Both disagreements are still flagged. The figure no longer moves because of them
 
 **`AGING_COLORS` was replaced, not extended.** It held six keys — `CURRENT`, `91-180`, `180+` — and had held them since revision 0020 removed the only module that read them, so every key named a bucket nothing produced. The eight-bucket scheme shares not one of them. `creditControl.test.tsx` pins both halves: every bucket the backend can return has a colour, and none of the three stale keys survives.
 
+**Seven cards, because six did not add up.** Outstanding, Overdue and Due Soon
+sat on the strip without Due Later, so the two largest figures did not account
+for the total and nothing on screen said what the rest was. The seventh card is
+neutral-toned on purpose: it is not a warning, it is the remainder of the book —
+and on the real data it is the largest of the three.
+
+**The aging chart is horizontal.** Eight bucket names do not fit across a phone
+and were being rotated to the point of illegibility; read down the side they need
+no rotation, and the severity ramp still runs top to bottom, which is the reading
+direction anyway.
+
+**The Aging × Level matrix is shaded in a single hue, and that is the whole
+design.** `AGING_COLORS` already spends *hue* on severity, so colouring the cells
+on that scale would make every column a flat block of its bucket's colour —
+carrying no information, and worse, making a large figure in the green column
+look less important than a small one in the red. So hue is dropped inside the
+table and **intensity alone** carries magnitude, scaled **per row**: the question
+is not which is the biggest number on screen — the ranking down the left already
+answers that — but how *this* region's debt is distributed. The bucket colours
+stay on the column headings, so the severity scale is stated once, where it
+means something. The figure is in the cell and in its title attribute; shading is
+never the only signal, the rule the stock statuses follow.
+
+**One level selector drives the matrix, the exposure chart and the hierarchy
+tab**, lives in the URL, and is read by the *server* — `group_level` is validated
+against `EXPOSURE_LEVELS` and an unknown one is a 422 naming it. No regrouping
+happens in the browser; a breakdown is a business calculation.
+
+**Exposure is stacked rather than grouped, and that is a claim.** Grouped and
+stacked answer different questions: grouped compares series against each other
+(plan against outcome), stacked compares each bar's *total* while showing its
+parts, which is only honest when the parts are mutually exclusive and add to that
+total. Overdue and not-yet-overdue are; two years of sales are not.
+`ComparisonBarChart` gained a `stacked` prop and rounds only the last segment —
+a radius on each would draw gaps inside one total and make a stack look like a
+group of thin bars.
+
+**The hierarchy tab uses one `tableId` across every level** —
+`credit-control.hierarchy`, not `…hierarchy.${level}`. Every level lists the same
+columns, so a reader who hid Code and widened Outstanding while looking at
+regions means that arrangement to survive switching to territories; this is the
+`performance.breakdown` rule, and the opposite of `master-data.${entityKey}`,
+where the columns genuinely differ. It reads the breakdown off the page bundle
+rather than fetching again, so the table cannot disagree with the chart directly
+above it.
+
+**Each of the three tables is `key`ed, and finding out why is worth recording.**
+`DataTable` seeds which columns are hidden from the column definitions in a
+`useState` initialiser — which runs once per *mount*. React reconciled the three
+tables as one component in the same tree position, so switching tabs reused the
+instance and carried the previous tab's hidden set: arriving at the hierarchy tab
+from Customers (which hides nothing) left Code and Invoices showing, and the
+invoice tab's `company_code` had been quietly unhidden the same way since it was
+written. A default silently not applied is the hardest kind of defect to notice,
+because the table still works. The third tab is what made it visible; `key` per
+`tableId` is the fix, and it fixes the older case too.
+
 **`Modal` gained a `placement`, and the behaviour did not change.** `sheet` docks the panel to the right edge so the invoice list stays readable beside the invoice being read; Escape, the focus trap, the scroll lock and the overlay click are shared with `center` because they are what a dialog owes the user wherever it is drawn. Below `sm` a sheet falls back to the centred layout — a phone has no room for a side panel.
+
+**The open book partitions into Overdue, Due Soon and Due Later, and the third
+one was missing.** Every open invoice falls in exactly one, by its due date
+against the reporting date, so the three add to `outstanding_amount` by
+construction — `_is_overdue` / `_is_due_soon` / `_is_due_later` are a strict
+ordering on one column. It was reported without the last of them, so the two
+largest figures on the page did not account for the total and nothing said what
+the remainder was. On the SPL book that remainder is **৳45.59 Cr, more than the
+overdue figure itself** — money that is neither late nor imminent, which the
+source's own `od` and `maturity` columns do not publish either. `credit_totals`
+carries it too, so the page and the assistant partition the book the same way;
+`test_credit_api` checks the partition in taka **and** in invoice count, because
+one that balanced in money alone would mean a row counted twice and another not
+at all.
+
+**The due profile is the aging chart's other half, and deliberately does not
+overlap it.** `credit.DUE_BUCKETS` is the forward horizon — 0-7 / 8-30 / 31-60 /
+61-90 / 90+ — mirroring `OVERDUE_BUCKETS` in shape so the two read as
+counterparts. It is coarser on purpose: debt already late is chased by different
+people at 120 days and at 179, while debt that has not fallen due is *planned*
+for, and nobody plans differently for day 47 and day 52. **Overdue money is not a
+bucket here.** It has seven of its own on the aging chart, and the same taka on
+two charts is taka a reader will add — so `overdue_amount` is returned *beside*
+the buckets instead, and the buckets sum to Due Soon plus Due Later exactly.
+Unlike the aging boundaries these are in no view, so there is one copy and
+nothing to keep in step; the day a view needs them, 0031's rule applies and
+`test_view_and_python_agree_on_every_boundary` gains a sibling.
+
+**Four sections group by an organisational level, which revision 0040 is what
+made possible.** `_aging_by_level` is the Aging × Level matrix, `_exposure_by_level`
+ranks what each group is owed and how much of it is late, `_top_overdue` names
+the territory each customer sits in, and `_due_profile` completes the picture
+forwards. `EXPOSURE_LEVELS` is *derived* from `ORG.code_fields()` plus
+`customer_code` rather than written out, so a level added to the warehouse
+appears without this list being edited. `CreditQuery.group_level` is a request
+parameter validated against it — an unknown level is a **422 naming it**, never a
+silent fall back to the default, because reading correct figures under the wrong
+heading is worse than an error.
+
+**The matrix is returned as a matrix**, one row per group with every bucket
+present and zeros filled, and the bucket order travels with the data. Flattening
+it in the browser would put a business rule on the wrong side of the API, and a
+row with four cells beside a row with eight does not line up as a table at all.
+Summing the matrix down its columns reproduces the flat aging chart exactly,
+which is pinned — two readings of one truth is precisely the pair worth checking
+against each other. The per-group overdue share is **suppressed rather than
+rendered as 0%** where a group has nothing outstanding, the headline rule applied
+per row.
+
+**`_status_split` states what was billed as well as what is owed**, because
+`outstanding_amount` cannot describe CLEARED at all: a cleared invoice has a
+balance of zero or below by definition, so that status always read as a count
+with no money beside it and no way to see how much had been settled. It is the
+**net** invoice value, because that is what every other total on this page nets
+against and a gross figure in one row of a split would be the only one on the
+surface.
+
+**`_top_overdue` groups on the customer alone and takes the place as a MAX.**
+The action that chart leads to is somebody going to see the customer, so the
+grain is the customer; adding the place columns to the GROUP BY would split a
+customer trading across two territories into two rows and quietly drop both below
+the cut. Territory rather than region because that is the level a single visit
+happens at, with the region beside it so a regional manager recognises the rows.
 
 **The outstanding trend is printed as a sentence, not drawn as a chart.** `_outstanding_trend` returns `NOT_AVAILABLE` with the reason, and the page renders that text. The source states one aggregate payment per invoice and one last payment date, so what was owed at a past month end is genuinely unrecorded; reconstructing it would mean assuming a payment pattern, and a chart of assumed history is indistinguishable on screen from a measured one. It becomes real when a payment-transaction extract exists — which is a different source, not a missing file.
 
-**Scope on this view is enforced or the request is refused — never partially applied, on either surface.** `queries.filter_conditions` *skips* a filter naming a column the view lacks, and `vw_credit_invoice_detail` reaches the customer's sub-territory and no further, so a region-scoped caller's scope would be dropped in silence and answered with the whole company's receivables. `/api/reports/credit-control` returns 403 naming the levels it could not honour, and the tool path raises for the same reason — **if the tool path merely disclosed it, the assistant would be a documented route to figures the API declines to serve the same person**, which is exactly what a single tool layer exists to prevent. The stock tools meet the identical gap and only *disclose* it; that is right there and wrong here, because stock is deliberately not held below company while credit exposure decides whether a customer keeps getting supplied. Both halves of that are now **declared rather than written twice**: `queries.SCOPE_POLICY` states REFUSE for this view and DISCLOSE for stock, `ctx.scoped` applies it before the query runs, and the bespoke `CreditScopeRefused` this section used to describe has been replaced by the shared `ScopeNotEnforceable` — see *A data scope has two dimensions*. The one deliberate exception is `get_business_alerts`, which **skips** the overdue check with a note rather than refusing: it answers four questions at once, and refusing all of them would deny a regional manager their stock and achievement alerts to protect a figure they were never going to be shown. The section defaults to the unrestricted roles, who have no scope to lose. This all becomes unnecessary the day the view carries the sales hierarchy above the customer — a `dim_customer → dim_sub_territory → …` join, and a new revision.
+**The view carries the sales hierarchy, and four refusals retired with the gap
+they covered** (`0040_credit_hierarchy_views`). `vw_credit_invoice_detail` now
+holds all six organisational levels between company and sub-territory,
+`vw_customer_credit_exposure` carries them in its grain and `vw_credit_aging`
+gains zone, region, area and territory. What that changes is not cosmetic: until
+it, the view reached the customer's sub-territory and no further, and
+`queries.filter_conditions` *skips* a filter naming a column the view lacks — so
+a region-scoped caller's scope would have been dropped in silence and answered
+with the whole company's receivables.
+
+Four things existed only because of that. `/api/reports/credit-control` carried
+its own `assert_scope_is_honourable` / `ScopeNotHonourable` / 403 beside the
+shared check; the tool path raised `ScopeNotEnforceable`; `get_business_alerts`
+**skipped** its `HIGH_OVERDUE` section with a note saying it had not been
+evaluated; and the executive dashboard had no Overdue card at all. All four are
+gone or inert, and a regional manager now gets their own region's figures on
+every one of those surfaces. `CREDIT_FILTERS` gains the hierarchy for the same
+reason and in the same step — offering a Region control over a view that could
+not honour it would have been the same defect from the other side.
+
+**What did not change is the mechanism.** `queries.SCOPE_POLICY` still declares
+REFUSE for this view, and it is still what would catch the next report that
+cannot express a level; it simply has nothing left to refuse, because
+`PermissionFilter.unhonourable_levels` reads the view's *own columns* and now
+finds every level present. The bespoke duplicate is what was deleted — two
+mechanisms for one rule is what drifts, and this pair had already started to:
+the hand-written `SCOPE_LEVELS_HONOURED` named four levels while the view was
+about to carry eleven. `test_credit_control` pins that list equal to the
+scope-bearing columns the view actually has, which is what stops it outliving
+what it names.
+
+**Two chains, each whole, and never mixed.** A row's levels come from the
+resolved keys 0038 put on the fact, or — for a row loaded before those existed —
+from its customer's sub-territory walked up through the masters. A per-level
+`COALESCE` between them is safe because `resolve_org` derives the *entire* chain
+upward from the deepest level a file states, so a fact row holds either a
+complete chain or none of one. The first draft got this wrong in a way worth
+keeping: it anchored on the sub-territory alone and derived everything above it,
+so a row stating its **territory** and no sub-territory came out with every level
+NULL and silently invisible to any scoped report. The SPL extract states both
+levels, so it looked right on the real file; a fixture stating only a territory
+is what found the hole.
+
+**Two defects reached the deployment on that card, and both were invisible to a
+green suite.** The builder passed the dashboard's period straight to a tool that
+filters on *invoice date*, so on the default period the card read "no data" about
+a ৳90 Cr book — the docstring already said the period must be ignored, and only
+the docstring did it. And `queries.credit_totals` was the one query in that module
+not passing its rows through `normalize_value`, so every receivables figure
+serialised as a **string**: it decodes as a string, reaches the browser as a
+string, and the one card that leads with a ratio compared and divided it without
+raising. On top of that the tool carried no `overdue_share_percent` at all, while
+the page computed one — so the card meant to lead with the share had nothing to
+lead with.
+
+The lesson is about the tests rather than the code: the fixtures hold no
+receivables, so an empty payload looks identical whether the window is right or
+wrong. The regression test therefore asserts on the **emitted SQL**, the way
+`test_platform_api` already pins the invoice-count measure set — and it was
+confirmed to fail against the defect before being kept.
+
+**The Overdue card is back, and it reports a share.** `DASHBOARD_SECTIONS` gains
+`overdue_receivables`, gated by `SECTION_BY_DASHBOARD_CARD` on the
+`credit_control` section — credit exposure is the basis for stopping a
+customer's supply, so it does not ride along with the reporting sections every
+role gets. A reader without it is not offered the card and cannot fetch it, and
+the refusal is a **404** rather than a 403: the frame never named it to them, so
+from where they stand it does not exist, and a 403 would disclose that a
+receivables card sits on the dashboards of people senior to them. Absent rather
+than drawn-and-refused, the rule Target Management already follows. The card
+ignores the dashboard's period on purpose — every other card answers "what
+happened between these dates" and a receivable is a *position*, so a window
+would make the figure move when the period changed while describing something
+that had not.
 
 **There is a volume test, and it is opt-in.** `pytest -m volume` loads 50,000 credit invoices (`CREDIT_VOLUME_ROWS` sets the size) because three things break only at row count and pass every small test: **bind-parameter chunking** — `fact_credit_invoice` has ~30 columns against SQLite's 32,766 ceiling, so an unchunked insert fails somewhere above eleven hundred rows, which is to say on the first real file and never in a fixture; **the `due_date` index actually being used**, since a comparison that stops being index-friendly does not break, it just grows with the table; and **the aging buckets still summing to the outstanding total**, which is arithmetic nobody can get wrong across five invoices and a real boundary check across fifty thousand. `pytest.ini` carries `-m "not volume"` in `addopts`, so the ordinary gate is unchanged. Measured on this machine: 50,000 rows load in 8.6s and 200,000 in 37.3s (~5,400 rows/s, linear), each aggregate answers in 0.1s / 0.4s, and the last page of a 200,000-row paged read costs 1.0s against 0.64s for the first. `conftest_phase2.seed_master_data` was split out of the `seeded_engine` fixture so these can hold a module-scoped database seeded the same way as everybody else's rather than a second, drifting definition of it.
+
+**`#N/A` is a value, not a code, and a row carrying one is rejected with its
+whole original row kept** (`SPREADSHEET_ERROR_VALUE`, `FieldSpec.reject_values`).
+Excel leaves that marker behind when a lookup finds nothing; stored as a code it
+becomes a territory named `#N/A` that groups, filters and totals like a real
+place. Blanking it instead would let the row load with a hole where its hierarchy
+should be, and the money would go missing from every organisational total without
+appearing anywhere as a problem. On the first SPL extract it is 75 rows worth
+৳23.76 Cr — 21.7% of that book — of bank FDRs, share investments and
+inter-company loans, and the rejection is what keeps that figure findable.
+
+**A blank credit term is derived from the row's own dates and flagged
+`CREDIT_DAYS_DERIVED`, which *suppresses* `CREDIT_DAYS_UNEXPECTED` rather than
+joining it.** The SPL extract states no payment term on 8,651 of 15,576 rows
+(55.5%), so defaulting to zero would make every one of them look immediately due.
+The term is read back out of the invoice date and the due date instead — and
+those derived gaps take **290 distinct values**, every one of them "unexpected"
+against the six codes the source does state (`PAYMENT_TERM_DAYS`: NT00=0, NT45=45,
+NT90=90, N150=150, N180=180, NCST=250). Raising that flag on 55% of a file is how
+a flag stops being read, so a derived term carries its own flag and not the other
+one. A code the file *does* state is a mapping rather than a derivation and is not
+flagged at all; where it disagrees with the row's dates, `DUE_DATE_MISMATCH`
+already says so.
+
+**The SPL file's own Zone, Region *and Unit* columns are distrusted, and the
+loader resolves none of them.** Measured over all 15,576 rows: `Region_Code` holds the *area*
+code on every one, none of its 13 zone codes exists in `dim_zone` and none of its
+16 region codes exists in `dim_region`, while Area (16/16), Unit (20/20),
+Territory (154/154) and Sub-Territory (267/267) resolve completely — the file's
+hierarchy is shifted a whole level. So `CREDIT_INVOICE.org_levels` names the four
+that resolve plus company, `resolve_org` derives everything above them from the
+master chain, and the file's own two columns are kept **in staging**, where a
+record of what arrived belongs. They are declared as fields rather than left
+unmapped so the upload does not report them as columns we do not understand: we
+understand them and we distrust them.
+
+**`unit_code` joined that list on the deployment, not in development, and the
+difference is the master data rather than the code.** The first production
+load rejected **1,205** rows for `HIERARCHY_MISMATCH` on that column alone,
+where dev rejected none. Nothing was wrong: the org master had moved on —
+three new units created and eight territories re-parented onto them — while
+the extract still names the old parent, so `resolve_org` correctly refused a
+row claiming a territory and a unit the master no longer connects. Measured
+against the deployment's current master over the 15,501 rows carrying a
+hierarchy: sub-territory resolves 15,501/15,501, territory equals its
+sub-territory's parent 15,501/15,501, area equals its unit's parent
+15,501/15,501 — and unit equals its territory's parent on only 14,296. One
+stale column, and the re-parenting kept the area unchanged, which is why
+every other level still agrees. **A file's org columns age against a master
+that keeps moving, and only the deepest ones can be trusted to keep up.**
 
 **`credit_days` is validated as a number and stored as an integer.** Numeric so an unreadable term is rejected with the same message as any other bad figure; `int` because the column is an INTEGER and SQLite will not bind a `Decimal` to one. The distinction the module draws is between *unexpected* and *impossible*: an unrecognised term is flagged and kept, a negative one is rejected, because it would derive a due date before the invoice existed.
 
@@ -1091,7 +1482,7 @@ Run against throwaway SQLite files, never PostgreSQL, and build their own workbo
 - **No invented data, ever.** No master record, relationship, date or figure is guessed. An ambiguous date format is rejected, not interpreted; an unresolvable name is reported as not found; a validation failure aborts the import rather than being papered over.
 - **Codes are strings.** `001` must never become `1`. `FieldKind.CODE` → `VARCHAR(64)`; normalisation is in `utils/text.py`.
 - **Bangla/Unicode is preserved verbatim** — trim only, no case folding, no NFKC rewriting.
-- **Nothing is deleted or replaced.** Master records are retired (`is_deleted`/`deleted_at`/`deleted_by`) and restorable; transactions are voided (`is_void`), never removed; upload modes are INSERT/UPDATE/UPSERT with **no REPLACE**; the only rollback is per-`import_batch_id`, transactional data, super-admin, audited. Business codes are read-only after creation.
+- **Nothing is deleted or replaced.** Master records are retired (`is_deleted`/`deleted_at`/`deleted_by`) and restorable; transactions are voided (`is_void`), never removed; upload modes are INSERT/UPDATE/UPSERT with **no REPLACE**; the only rollback is per-`import_batch_id`, transactional data, super-admin, audited. Business codes are read-only after creation. **A scoped restatement is not REPLACE and does not weaken this** — see *Credit Control* below: it voids rather than deletes, and it is bounded by a scope a person declares rather than by whatever a file happens to omit.
 - **The source workbook is read-only** — opened read-only in code, mounted `:ro` in docker-compose.
 - **Suppress rather than guess.** A failed result validation (NaN, out-of-range percentage, row-count mismatch, wrong date window) suppresses the answer; a zero denominator renders `n/a`, never `0%`.
 - **Financial year is configuration** (`FINANCIAL_YEAR_START_MONTH`, default 7 = July) and is never hard-coded anywhere outside `etl/calendar.py` / `config.py`.
@@ -1112,7 +1503,7 @@ Run against throwaway SQLite files, never PostgreSQL, and build their own workbo
 - **Sales Vol is `SUM(fact_sales.volume)` — the Total Volume the upload stated, never a calculation.** There is no volume unit, UOM or conversion factor in the sales path, and material stock has no volume at all: `etl.volume.from_source(volume, quantity)` stores the file's number and reads the quantity only for the negative-volume sign check. `volume` is therefore in `queries.SALES_MEASURES.sums` and comes back from `aggregate_by` like quantity and net sales; `queries.volume_total`/`volume_by_group` serve the unit-free readers. `fact_sales.volume_unit`/`volume_factor` survive as unwritten historical columns — no migration drops them.
 - **No volume anywhere carries a unit** (`0022`). A target volume used to be the exception: a target named a SKU, so its unit was that SKU's `pack_unit` in the Product Master, and `queries.volume_by_unit`/`volume_totals`/`single_volume_by_group` partitioned on it to refuse adding a kilogram to a litre. Removing that master removed the unit those readers partitioned on — the Material Master states none — so all three are gone rather than left running on a column that would always be NULL and render every target volume as "mixed". `target_volume` is now in `queries.TARGET_MEASURES.sums` beside `target_amount`, and `volume_total`/`volume_by_group` take a `volume_column` and serve both sides. There is no `UNSPECIFIED_UNIT` and no MIXED basis left.
 - Registries are **derived, never hand-written**: upload types come from `master_data.schema.TABLE_SPECS` and `etl.datasets.DATASETS`; the data-management catalogue comes from `app.upload.registry`. Add a column to a dimension and the template, validation, preview, edit form and export follow automatically — so extend the spec, don't add a parallel list.
-- Migrations are `0001`–`0037` under `backend/app/database/migrations/versions/`. **Data is never truncated and no row is ever deleted**; new columns carry server defaults. A column may be dropped only after the data it held has been derived into its replacement in the same migration — 0013 and 0014 both do this on `fact_target`/`stg_target`, back-filling from each row's own `dim_date` entry before removing anything. Do not drop a column whose content cannot be reconstructed from what remains. When a migration rebuilds a view, base it on the body from the revision that **last authored** it (0009 added `WHERE is_void = FALSE` to the fact-reading views) — copying an older body silently resurrects voided rows in every report. `0016_material_stock` is the one exception to "nothing is deleted": it drops the old stock tables because the two models describe different things and neither can be derived from the other, so it **refuses to run while those tables hold rows** rather than discarding them. `0017_admin_layers` is purely additive — `dim_country`, `map_admin_points` and a country row in `map_area_styles` — and `dim_division.country_code` is deliberately **nullable** because divisions imported before any country file exist and the migration will not invent a parent for them. `0019_material_architecture` is the second exception: it drops `dim_material_location` because its rows carry no Material Brand and no Material Description, the two columns that now define a material, so a record derived from one would be incomplete — the rows were exported to `reports/` first and the migration **refuses to run while either stock table holds a row**. `0020_remove_receivables_and_warehouse` is the third: it drops `fact_collection`, `fact_outstanding`, their staging tables, `dim_warehouse`, the two warehouse columns on the sales tables and six views, and it counts every one of them first — a non-zero count anywhere aborts the whole revision rather than destroying part of it. On SQLite that revision also captures every surviving view, drops them and recreates them byte-for-byte around the column drop, because SQLite re-validates the entire schema during a table rewrite and a view two joins away fails just as loudly as a direct reader. `0022_remove_product_architecture` is the fourth: it drops `dim_product` outright after exporting it, because the replacement master is loaded from its own file and deriving one from the other is the exact thing the change exists to prevent. It back-fills `fact_sales`/`fact_target.material_code` from each fact's **own staging row** — the source file's identifier, never the dropped dimension — and counts four ways first (no staging row, ambiguous staging rows, a code the Material Master lacks, a pre-existing `materials` grant); a non-zero count anywhere aborts with the facts intact. It builds temporary indexes on `(source_file, source_row_number)` for that join and drops them afterwards: without them the guard is a nested scan over tens of billions of comparisons and the migration appears to hang. `0023_material_company` and `0024_customer_name_on_views` are both purely additive — one column plus two indexes, and a pair of view rebuilds respectively. `0025_agent_learning` is additive too: four new tables and nothing else touched. Its `active_key` column on the two approved tables is worth knowing about — it holds the natural key while a row is ACTIVE and NULL otherwise, under a plain unique constraint, because "at most one active meaning per phrase, and a retired one may be replaced" needs both halves and a partial unique index is PostgreSQL-only. NULLs are distinct in a unique constraint on both dialects, so the retired rows pile up freely while at most one active row can hold the key. `0026_remove_warehouse_marker` deletes one seeded marker design that outlived the entity type it named, and counts an assignment first. `0027_target_management` is additive: the eight Target Management tables, the seeded approval matrix, and `conversion_factor` / `transfer_price` on `dim_material` — both **nullable with no default and no back-fill**, because a conversion factor of 1.0 does not read as “unknown”, it reads as a claim about the goods. `0028_target_allocation_job` is additive too: one table holding one run of the allocation engine and how far it got. `0029_target_adjustments` adds `target_adjustment` plus four columns on the job row (`projected_rows`, `allocation_level`, `warning_count`, `sales_rows_found`), all additive. `0030_target_revision_node` adds four columns to `target_revision` — `version_id`, `level`, `node_code`, `material_code` — and corrects one piece of seeded configuration: `0027` seeded the approval chain **upside down**, Management at sequence 1 and the Sales Officer at 8, which taken literally means the CEO signs before the regional manager has looked. The correction runs in two passes through a negative holding value (the source and target sequences overlap) and applies **only where the row still holds the value 0027 wrote**, because a deployment whose administrator has already reordered the chain has expressed a decision that a migration fixing its own earlier defect has no business overwriting. `0031_credit_control` is purely additive — `stg_credit_invoice`, `fact_credit_invoice`, twelve indexes and three views — and touches no existing object, so the SQLite view-capture dance 0020 and 0022 needed does not apply. It is *not* built from 0020's `downgrade()`: that rebuilt a table holding a balance somebody else had calculated, and this one holds an invoice, so only the shape of `aging_bucket` carried over. Note that `alembic.ini`'s `sqlalchemy.url` is ignored — `migrations/env.py` resolves `os.getenv("DIRECT_URL") or get_settings().database_url`, and `database_url` is a **property** reading `DATABASE_URL` at access time — so a migration run with neither variable set does not fail, it silently succeeds against whatever `.env` names, which on a developer box is `data/dev.db`. Any test or script that migrates must set the variable *and assert the target*, which is what `test_credit_control._migrate` does. `0032_map_composition` added three map-composition tables and is kept as history rather than deleted — both databases were stamped at it, and a revision removed from the chain strands every database that has applied it. `0033_remove_map` reverses the whole map: eleven tables dropped in foreign-key order, plus the `map` and `map_settings` permission rows, which name sections the application no longer declares. It is the platform's most destructive revision — 1,397 coordinates, 6,284 admin points and 580 boundary rings, none of them recoverable from what remains — and unlike 0016, 0019 and 0020 it does **not** refuse to run on non-empty tables, because destroying those rows is the instruction it carries out rather than an accident it must prevent. The four administrative dimensions are deliberately untouched. `0034_business_map` is purely additive: the four rebuilt map tables and one seeded design, inserted **without explicit primary keys** so the PostgreSQL identity sequences advance. It loads no coordinates — a migration whose result depended on what `reports/` happened to contain would not be a migration — and `scripts/reload_map_locations.py` is the separate, dry-by-default step that restores them. `0035_map_demarcation` adds the `purpose` discriminator and seeds the Area Demarcation design; it is a **column rather than a second pair of tables** because a demarcation map needs exactly what an analysis map needs minus the metrics — which is `map_layers`, and a `map_level_shapes` table would have grown the same four columns and become `map_layers` under another name. The discriminator is not cosmetic: a design is *offered* to a reader, and without it somebody on the analysis tab could pick "Area Demarcation" from the same dropdown and get a map that is neither. `0036_demarcation_all_levels` gives that design a visible layer at every drawable level, and exists because the tab's own acid test failed at 1,124 drawn against 1,139 stored — twelve derived Unit centroids plus the Company / Business Unit / Sales Line rows the seed had no layer for. **On a map of figures a hidden level is one fewer thing competing for the eye; on a map of coordinates it is a hidden row**, so the analysis design is deliberately left alone. `0037_demarcation_level_order` rewrites `display_order` on demarcation layers into `MAP_LEVELS` order, because `0035` started at Zone and `0036` appended the three widest levels *after* Sales Force — the order the rows were written rather than the order they mean, at the bottom of a list whose entire subject is a hierarchy. It moves the stacking with it, deliberately: `display_order` has two consumers, and `0036` had put those three last precisely so they would be drawn on top, reasoning that a single company dot would otherwise be buried under 846 customer points. `af81425` stopped drawing `DERIVED` coordinates and all three are centroids in both databases, so there is no company dot left to bury and one field can serve both orders again. All three restate their level order rather than importing `MAP_LEVELS`, as every seed in this chain does — a migration must keep producing what it produced — and `test_map_demarcation` is where the registry and the seed are pinned equal instead, so a level added to the registry is reported rather than quietly leaving the seeded design in an order nobody chose.
+- Migrations are `0001`–`0037` under `backend/app/database/migrations/versions/`. **Data is never truncated and no row is ever deleted**; new columns carry server defaults. A column may be dropped only after the data it held has been derived into its replacement in the same migration — 0013 and 0014 both do this on `fact_target`/`stg_target`, back-filling from each row's own `dim_date` entry before removing anything. Do not drop a column whose content cannot be reconstructed from what remains. When a migration rebuilds a view, base it on the body from the revision that **last authored** it (0009 added `WHERE is_void = FALSE` to the fact-reading views) — copying an older body silently resurrects voided rows in every report. `0016_material_stock` is the one exception to "nothing is deleted": it drops the old stock tables because the two models describe different things and neither can be derived from the other, so it **refuses to run while those tables hold rows** rather than discarding them. `0017_admin_layers` is purely additive — `dim_country`, `map_admin_points` and a country row in `map_area_styles` — and `dim_division.country_code` is deliberately **nullable** because divisions imported before any country file exist and the migration will not invent a parent for them. `0019_material_architecture` is the second exception: it drops `dim_material_location` because its rows carry no Material Brand and no Material Description, the two columns that now define a material, so a record derived from one would be incomplete — the rows were exported to `reports/` first and the migration **refuses to run while either stock table holds a row**. `0020_remove_receivables_and_warehouse` is the third: it drops `fact_collection`, `fact_outstanding`, their staging tables, `dim_warehouse`, the two warehouse columns on the sales tables and six views, and it counts every one of them first — a non-zero count anywhere aborts the whole revision rather than destroying part of it. On SQLite that revision also captures every surviving view, drops them and recreates them byte-for-byte around the column drop, because SQLite re-validates the entire schema during a table rewrite and a view two joins away fails just as loudly as a direct reader. `0022_remove_product_architecture` is the fourth: it drops `dim_product` outright after exporting it, because the replacement master is loaded from its own file and deriving one from the other is the exact thing the change exists to prevent. It back-fills `fact_sales`/`fact_target.material_code` from each fact's **own staging row** — the source file's identifier, never the dropped dimension — and counts four ways first (no staging row, ambiguous staging rows, a code the Material Master lacks, a pre-existing `materials` grant); a non-zero count anywhere aborts with the facts intact. It builds temporary indexes on `(source_file, source_row_number)` for that join and drops them afterwards: without them the guard is a nested scan over tens of billions of comparisons and the migration appears to hang. `0023_material_company` and `0024_customer_name_on_views` are both purely additive — one column plus two indexes, and a pair of view rebuilds respectively. `0025_agent_learning` is additive too: four new tables and nothing else touched. Its `active_key` column on the two approved tables is worth knowing about — it holds the natural key while a row is ACTIVE and NULL otherwise, under a plain unique constraint, because "at most one active meaning per phrase, and a retired one may be replaced" needs both halves and a partial unique index is PostgreSQL-only. NULLs are distinct in a unique constraint on both dialects, so the retired rows pile up freely while at most one active row can hold the key. `0026_remove_warehouse_marker` deletes one seeded marker design that outlived the entity type it named, and counts an assignment first. `0027_target_management` is additive: the eight Target Management tables, the seeded approval matrix, and `conversion_factor` / `transfer_price` on `dim_material` — both **nullable with no default and no back-fill**, because a conversion factor of 1.0 does not read as “unknown”, it reads as a claim about the goods. `0028_target_allocation_job` is additive too: one table holding one run of the allocation engine and how far it got. `0029_target_adjustments` adds `target_adjustment` plus four columns on the job row (`projected_rows`, `allocation_level`, `warning_count`, `sales_rows_found`), all additive. `0030_target_revision_node` adds four columns to `target_revision` — `version_id`, `level`, `node_code`, `material_code` — and corrects one piece of seeded configuration: `0027` seeded the approval chain **upside down**, Management at sequence 1 and the Sales Officer at 8, which taken literally means the CEO signs before the regional manager has looked. The correction runs in two passes through a negative holding value (the source and target sequences overlap) and applies **only where the row still holds the value 0027 wrote**, because a deployment whose administrator has already reordered the chain has expressed a decision that a migration fixing its own earlier defect has no business overwriting. `0031_credit_control` is purely additive — `stg_credit_invoice`, `fact_credit_invoice`, twelve indexes and three views — and touches no existing object, so the SQLite view-capture dance 0020 and 0022 needed does not apply. It is *not* built from 0020's `downgrade()`: that rebuilt a table holding a balance somebody else had calculated, and this one holds an invoice, so only the shape of `aging_bucket` carried over. Note that `alembic.ini`'s `sqlalchemy.url` is ignored — `migrations/env.py` resolves `os.getenv("DIRECT_URL") or get_settings().database_url`, and `database_url` is a **property** reading `DATABASE_URL` at access time — so a migration run with neither variable set does not fail, it silently succeeds against whatever `.env` names, which on a developer box is `data/dev.db`. Any test or script that migrates must set the variable *and assert the target*, which is what `test_credit_control._migrate` does. `0032_map_composition` added three map-composition tables and is kept as history rather than deleted — both databases were stamped at it, and a revision removed from the chain strands every database that has applied it. `0033_remove_map` reverses the whole map: eleven tables dropped in foreign-key order, plus the `map` and `map_settings` permission rows, which name sections the application no longer declares. It is the platform's most destructive revision — 1,397 coordinates, 6,284 admin points and 580 boundary rings, none of them recoverable from what remains — and unlike 0016, 0019 and 0020 it does **not** refuse to run on non-empty tables, because destroying those rows is the instruction it carries out rather than an accident it must prevent. The four administrative dimensions are deliberately untouched. `0034_business_map` is purely additive: the four rebuilt map tables and one seeded design, inserted **without explicit primary keys** so the PostgreSQL identity sequences advance. It loads no coordinates — a migration whose result depended on what `reports/` happened to contain would not be a migration — and `scripts/reload_map_locations.py` is the separate, dry-by-default step that restores them. `0035_map_demarcation` adds the `purpose` discriminator and seeds the Area Demarcation design; it is a **column rather than a second pair of tables** because a demarcation map needs exactly what an analysis map needs minus the metrics — which is `map_layers`, and a `map_level_shapes` table would have grown the same four columns and become `map_layers` under another name. The discriminator is not cosmetic: a design is *offered* to a reader, and without it somebody on the analysis tab could pick "Area Demarcation" from the same dropdown and get a map that is neither. `0036_demarcation_all_levels` gives that design a visible layer at every drawable level, and exists because the tab's own acid test failed at 1,124 drawn against 1,139 stored — twelve derived Unit centroids plus the Company / Business Unit / Sales Line rows the seed had no layer for. **On a map of figures a hidden level is one fewer thing competing for the eye; on a map of coordinates it is a hidden row**, so the analysis design is deliberately left alone. `0037_demarcation_level_order` rewrites `display_order` on demarcation layers into `MAP_LEVELS` order, because `0035` started at Zone and `0036` appended the three widest levels *after* Sales Force — the order the rows were written rather than the order they mean, at the bottom of a list whose entire subject is a hierarchy. It moves the stacking with it, deliberately: `display_order` has two consumers, and `0036` had put those three last precisely so they would be drawn on top, reasoning that a single company dot would otherwise be buried under 846 customer points. `af81425` stopped drawing `DERIVED` coordinates and all three are centroids in both databases, so there is no company dot left to bury and one field can serve both orders again. `0038_credit_hierarchy` gives `fact_credit_invoice` the nine resolved organisational keys and their indexes, the ten columns the SPL extract states that staging had nowhere to put, and — the part that is not additive — **drops** 0031's `(company_code, invoice_no)` uniqueness, because the SPL file falsifies it on 290 rows and widening it to include the customer still leaves 17; `business_key` is the grain and the pipeline's `…#2` numbering exists so a genuine repeat loads rather than aborting the load. `0039_deduction_convention` records what a load was *told* — `deduction_convention` and `restatement_scope` on both batch tables — and back-fills every existing credit row to the canonical sign, counting three ways first and aborting the whole revision on any disagreement (a positive deduction, a row that does not reconcile, or a batch that already declares a convention), the 0016 / 0019 / 0020 pattern for the same reason those use it. `0040_credit_hierarchy_views` rebuilds the three credit views with the sales hierarchy, which is what retires four separate scope refusals; it changes no table and no row. All three restate their level order rather than importing `MAP_LEVELS`, as every seed in this chain does — a migration must keep producing what it produced — and `test_map_demarcation` is where the registry and the seed are pinned equal instead, so a level added to the registry is reported rather than quietly leaving the seeded design in an order nobody chose.
 - **Stock is a dateless position with no volume** (`0016_material_stock`, `0019_material_architecture`). `fact_material_stock` references three masters and nothing else — `dim_plant` (Company + Plant, joined by `models.plant_key()`), `dim_storage_location` (Plant + Storage Location, `models.storage_location_key()`) and `dim_material` (keyed on `material_code` alone) — with no `date_id` and no organisational hierarchy below company. The source states neither, so no report may imply them. The four categories (unrestricted, quality inspection, blocked, in transit) stay four separate numbers because only unrestricted stock is sellable; `total_stock` sums all four including in transit and is defined **once**, in `vw_material_stock_detail`. Risk is measured by shelf life (`EXPIRED` / `EXPIRING_SOON` within `STOCK_EXPIRING_SOON_DAYS` / `VALID` / `NO_EXPIRY`), never by coverage days — that needs a rate of consumption, and a rate needs two readings and the time between them, which a dateless position cannot supply. (Stock and sales *do* share a Material Code since `0022`; it is the rate that cannot be derived, not the join.) A stock row naming a plant, storage location or material its master lacks is rejected, never auto-created, and each failure names the master to correct.
 - **A stock figure is reported as `KG/LTR`, and the unit lives in the label.** A card reads `Unrestricted Stock (KG/LTR)` above `125,500`; a column heading carries the unit and its cells are plain grouped numbers; a chart passes the labelled name as its series (`CategoryBarChart`'s `valueLabel`) so the tooltip says it too; the agent writes `Unrestricted Stock (KG/LTR): 125,500` and never `125,500 KG/LTR`. The unit string is declared once on each side — `ai/queries.STOCK_UNIT` and `utils/format.STOCK_UNIT` — and applied through `stock_label`/`stockLabel` (name) and `format_stock`/`formatStock` (value); `humanizeColumn` adds it to a derived stock heading so a table that names no headers still gets the pairing. **Nothing is ever converted**: the uploaded value *is* the reported value, there is no factor in the source to convert with, and a kilogram is never derived from a litre or the reverse. There is no UOM column, unit column or KG/LTR selector anywhere in the stock surface, and adding one would mean inventing the per-row unit the source does not state. This is display only — `fact_material_stock` has no unit column and must not gain one.
 - **A stock status colours the complete metric — its label and its value — and never one of them alone.** Green for unrestricted stock, the only stock that can be sold; amber for expiring-soon stock, a warning with time left to act on it; red for expired stock, money already lost. The three tokens are declared once as `.stock-status--unrestricted` / `--expiring` / `--expired` in `frontend/src/index.css` and looked up by metric key through `utils/format.stockStatusClass`, which answers to both spellings of each measure — a KPI or column key (`expired_stock`) and a shelf-life bucket code (`EXPIRED`). `KpiCard`, `StatCard`'s `statusKey` and `DataTable` (heading *and* cells) all read that one lookup; a component that spells its own emerald, amber or red has left the standard, and `charts/Charts.STOCK_STATUS_COLORS` is the one deliberate second copy, as fills, because an SVG bar takes a colour and not a class. Anything not in the lookup — a total, quality-inspection or blocked figure, any sales measure — stays neutral, and a card's supporting position count stays neutral under a coloured metric. Green and amber use the 700 weight in light mode rather than 600, because amber-600 on white clears the contrast floor for the large figure but not for the small label above it and the pair has to be legible as one unit; red is the 600 the rest of the application already uses. Colour is never the only signal — the label always names the status in words.

@@ -2,9 +2,11 @@
 
 Everything here reads ``vw_credit_invoice_detail`` through the same
 ``ReportFilters`` every other report uses, so these figures and the Sales page
-cannot disagree about which rows exist. Scope is either enforced or the request
-is refused — see :func:`assert_scope_is_honourable`, which exists because this
-view cannot yet express a scope stated above the customer's sub-territory.
+cannot disagree about which rows exist. Scope is enforced by the one generic
+mechanism — ``enforce_report_scope`` under ``queries.SCOPE_POLICY`` — because
+since revision 0040 the view carries the whole sales hierarchy and there is no
+level left for it to fail to express. The bespoke refusal this module used to
+carry went with the gap it covered.
 
 **Why the status and aging rules are rebuilt here rather than read off the view.**
 The view computes them against ``CURRENT_DATE``, which is right for the default
@@ -31,11 +33,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Table, and_, case, func, literal, or_, select
+from sqlalchemy import Table, and_, case, distinct, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..etl import credit
+from ..security.scope import ORG
 from .service import (
     DEFAULT_LIMIT,
     MAX_LIMIT,
@@ -50,6 +53,15 @@ from .service import (
 CREDIT_INVOICE_VIEW = "vw_credit_invoice_detail"
 CREDIT_EXPOSURE_VIEW = "vw_customer_credit_exposure"
 CREDIT_AGING_VIEW = "vw_credit_aging"
+
+#: The levels a receivables report may be grouped by, shallowest first.
+#:
+#: Derived from the organisational chain rather than written out, so a level
+#: added to the warehouse appears here without this list being edited — the rule
+#: at the top of CLAUDE.md, applied to the one list on this page that a reader
+#: picks from. ``customer_code`` is appended because a customer is where credit
+#: exposure actually lives: it is the entity whose supply gets stopped.
+EXPOSURE_LEVELS: tuple[str, ...] = tuple(ORG.code_fields()) + ("customer_code",)
 
 #: Columns the invoice list may be sorted by. A whitelist rather than a
 #: pass-through: ``sort_by`` arrives from a query string, and interpolating it
@@ -78,63 +90,30 @@ INVOICE_SEARCH_COLUMNS: tuple[str, ...] = (
 )
 
 
-#: Organisational levels ``vw_credit_invoice_detail`` can actually filter on.
+#: The scope levels this view can be narrowed by — **all of them**, since 0040.
 #:
-#: An invoice states a company, a plant and a customer; the customer carries its
-#: sub-territory. Everything above that — territory, unit, area, region, zone,
-#: sales line, business unit — is reachable only by walking the master hierarchy,
-#: and the view does not join it yet.
+#: This used to be a four-item literal and a refusal beside it. The view reached
+#: the customer's sub-territory and no further, so a region-scoped caller's scope
+#: named a column that was not there; ``_apply_filters`` drops such a filter in
+#: silence, which is right for an optional narrowing and catastrophic for a
+#: scope, so Credit Control refused the whole request instead.
 #:
-#: This matters because ``_apply_filters`` **ignores** a filter naming a column
-#: the view lacks, which is the right behaviour for an optional narrowing and
-#: exactly the wrong one for a scope: a regional manager's scope would be
-#: dropped in silence and they would be served the whole company's receivables.
-#: :func:`assert_scope_is_honourable` refuses instead. Refusing is the same
-#: answer ``enforce_report_scope`` already gives a caller whose scope it cannot
-#: express — a 403 that names the problem beats a page of somebody else's debt.
-#: ``plant_code`` joined this set when a data scope could first be *granted* at
-#: plant level. It was always a column on the view — an invoice states the plant
-#: that raised it — so this is the list catching up with the view rather than
-#: the view gaining anything. Kept as a literal because this check runs without
-#: a session and must stay cheap enough for every request;
-#: ``test_credit_control`` pins it equal to the scope-bearing columns the view
-#: actually carries, which is what stops a hand-written list outliving what it
-#: names.
+#: 0040 gave the view the sales hierarchy, and the refusal went with the reason
+#: for it. What checks the scope now is the one generic mechanism every other
+#: report uses — ``PermissionFilter.assert_scope_is_honourable`` against
+#: ``queries.SCOPE_POLICY``, which reads the view's *own columns* rather than any
+#: hand-written list. That is why this is derived and no longer declared: a list
+#: of levels beside a view that has just gained six is precisely the stale name
+#: this codebase's first rule is about.
+#:
+#: The policy stays REFUSE. It is inert while the view carries every level, and
+#: it is what would catch the next report that does not.
 SCOPE_LEVELS_HONOURED: frozenset[str] = frozenset({
-    "company_code", "customer_code", "sub_territory_code", "plant_code",
+    "company_code", "bu_code", "sales_line_code", "zone_code", "region_code",
+    "area_code", "unit_code", "territory_code", "sub_territory_code",
+    "customer_code", "plant_code",
 })
 
-
-class ScopeNotHonourable(Exception):
-    """A caller's data scope names a level this view cannot filter on."""
-
-    def __init__(self, levels: tuple[str, ...]) -> None:
-        self.levels = levels
-        super().__init__(
-            "Credit Control cannot yet apply a data scope at: "
-            + ", ".join(levels)
-            + ". An invoice records its company, plant and customer, and the "
-            "reporting view does not carry the sales hierarchy above the "
-            "customer's sub-territory, so this scope cannot be enforced and the "
-            "request is refused rather than answered with unscoped figures."
-        )
-
-
-def assert_scope_is_honourable(user: Any, filters: ReportFilters) -> None:
-    """Refuse a request whose scope this view would silently drop.
-
-    Unrestricted callers pass: they have no scope to lose. Everyone else is
-    checked against what the view can express, *before* the query runs, so the
-    refusal cannot be mistaken for an empty result.
-    """
-    if getattr(user, "is_unrestricted", False):
-        return
-    scope = getattr(user, "data_scope", None) or {}
-    unusable = tuple(
-        level for level in sorted(scope) if level not in SCOPE_LEVELS_HONOURED
-    )
-    if unusable:
-        raise ScopeNotHonourable(unusable)
 
 
 @dataclass(frozen=True)
@@ -152,6 +131,15 @@ class CreditQuery:
     payment_mode: str | None = None
     credit_status: str | None = None
     aging_bucket: str | None = None
+    #: Which organisational level the hierarchy sections group by.
+    #:
+    #: A request parameter rather than a fixed level, because the question
+    #: changes with who is asking: a managing director reads this page by region
+    #: and an area manager reads their own areas by territory. Validated against
+    #: :data:`EXPOSURE_LEVELS` in :func:`resolve_query` rather than interpolated,
+    #: for the same reason ``GroupBy`` is an enum — a level that reached the
+    #: query as text would be a column name a caller chose.
+    group_level: str = "region_code"
     search: str | None = None
     sort_by: str | None = None
     sort_dir: str = "asc"
@@ -165,19 +153,39 @@ class CreditQuery:
         return (max(1, self.page) - 1) * self.bounded_page_size()
 
 
+class UnknownGroupLevel(ValueError):
+    """A grouping level this report does not offer.
+
+    Refused rather than silently replaced with the default: a caller who asked
+    for a breakdown by material and got one by region would be reading the right
+    numbers under the wrong heading, which is worse than an error.
+    """
+
+    def __init__(self, level: str) -> None:
+        self.level = level
+        super().__init__(
+            f"'{level}' is not a level Credit Control can group by. "
+            f"Available: {', '.join(EXPOSURE_LEVELS)}."
+        )
+
+
 def resolve_query(
     *,
     as_on: dt.date | None = None,
     due_soon_days: int | None = None,
+    group_level: str | None = None,
     **kwargs: Any,
 ) -> CreditQuery:
-    """Fill in the two defaults that come from configuration rather than the caller."""
+    """Fill in the defaults that come from configuration rather than the caller."""
     settings = get_settings()
+    if group_level is not None and group_level not in EXPOSURE_LEVELS:
+        raise UnknownGroupLevel(group_level)
     return CreditQuery(
         as_on=as_on or dt.date.today(),
         due_soon_days=(
             settings.credit_due_soon_days if due_soon_days is None else due_soon_days
         ),
+        **({"group_level": group_level} if group_level else {}),
         **kwargs,
     )
 
@@ -231,6 +239,41 @@ def _is_open(view: Table):
 
 def _is_overdue(view: Table, as_on: dt.date):
     return and_(_is_open(view), view.c.due_date < as_on)
+
+
+def _is_due_soon(view: Table, as_on: dt.date, horizon_days: int):
+    """Open, not yet late, and falling due inside the horizon.
+
+    The lower bound is ``>= as_on`` rather than ``> as_on``: an invoice due
+    *today* is not overdue — ``credit.days_overdue`` is ``(as_on - due).days``
+    and zero days late is NOT_YET_DUE — so it belongs here, and this is the
+    boundary the whole module already agrees on.
+    """
+    return and_(
+        _is_open(view),
+        view.c.due_date >= as_on,
+        view.c.due_date <= as_on + dt.timedelta(days=horizon_days),
+    )
+
+
+def _is_due_later(view: Table, as_on: dt.date, horizon_days: int):
+    """Open and falling due beyond the horizon — the third of the three.
+
+    **The partition is the point.** Overdue and Due Soon were reported without
+    it, so the two largest figures on the page did not add up to the third and
+    nothing said why. On the SPL extract the missing piece is ৳35.75 Cr, a third
+    of the book: money that is neither late nor imminent, which the source's own
+    ``od`` and ``maturity`` columns do not publish either.
+
+    Every open invoice falls in exactly one of the three, because the bounds are
+    a strict ordering on one column — so ``overdue + due_soon + due_later``
+    equals ``outstanding`` by construction rather than by hope, and
+    ``test_credit_api`` checks it rather than trusting it.
+    """
+    return and_(
+        _is_open(view),
+        view.c.due_date > as_on + dt.timedelta(days=horizon_days),
+    )
 
 
 def credit_status_expression(view: Table, as_on: dt.date):
@@ -317,20 +360,19 @@ def credit_control_report(
                 .label("overdue_amount"),
             func.sum(case((_is_overdue(view, as_on), 1), else_=0))
                 .label("overdue_invoice_count"),
-            # Due Soon is the near edge of what is *not yet* overdue: still open,
-            # not yet past its date, and falling due inside the horizon. An
-            # invoice already overdue is counted as overdue and not double-counted
-            # here, which is what lets the two figures be added.
-            func.sum(case((and_(
-                _is_open(view),
-                view.c.due_date >= as_on,
-                view.c.due_date <= as_on + dt.timedelta(days=query.due_soon_days),
-            ), view.c.balance_amount), else_=0)).label("due_soon_amount"),
-            func.sum(case((and_(
-                _is_open(view),
-                view.c.due_date >= as_on,
-                view.c.due_date <= as_on + dt.timedelta(days=query.due_soon_days),
-            ), 1), else_=0)).label("due_soon_invoice_count"),
+            # The three-way partition of everything still owed, by when it falls
+            # due. Overdue above; Due Soon is the near edge of what is not yet
+            # late; Due Later is the rest. They are mutually exclusive and
+            # exhaustive over the open book, which is what lets a reader add the
+            # first two and know what is missing.
+            func.sum(case((_is_due_soon(view, as_on, query.due_soon_days),
+                           view.c.balance_amount), else_=0)).label("due_soon_amount"),
+            func.sum(case((_is_due_soon(view, as_on, query.due_soon_days), 1),
+                          else_=0)).label("due_soon_invoice_count"),
+            func.sum(case((_is_due_later(view, as_on, query.due_soon_days),
+                           view.c.balance_amount), else_=0)).label("due_later_amount"),
+            func.sum(case((_is_due_later(view, as_on, query.due_soon_days), 1),
+                          else_=0)).label("due_later_invoice_count"),
         ),
         view, filters, query,
     )).one()._mapping
@@ -339,22 +381,24 @@ def credit_control_report(
         name: _f(totals[name]) for name in (
             "total_invoice_amount", "net_invoice_amount", "return_amount",
             "outstanding_amount", "overdue_amount", "due_soon_amount",
+            "due_later_amount",
         )
     }
-    # ``return_amount`` stays **signed**, unlike the three deductions below it.
-    # The sign is the whole message: a negative return is what makes the net
-    # figure exceed the gross one, and flipping it to a magnitude would hide
-    # exactly the thing the card needs to explain.
-    # The three deduction columns are *stored* signed, exactly as the source
-    # posts them — a payment arrives as a negative number. They are *reported* as
-    # magnitudes, because a card headed "Total Payment" showing −1.10 Cr is not a
-    # figure anybody can read, and the payment rate underneath it would come out
-    # negative as well.
+    # The deductions are read straight through, and that is a change worth
+    # knowing about: this used to negate them here.
     #
-    # Storage stays faithful and presentation stays legible: the sign carries the
-    # arithmetic (see ``etl.credit.derive``), the label carries the meaning.
+    # The warehouse stores one canonical sign — a deduction is the amount by
+    # which that component *reduced* the balance — so a payment is already the
+    # positive figure a card headed "Total Payment" wants, and a debit note that
+    # increased what is owed is already the negative one. Nothing on this path
+    # knows or needs to know which extract a row came from; the sign was settled
+    # once, at the load, by ``etl.credit.canonical_deductions``.
+    #
+    # Flipping it here was correct while one file existed and became wrong the
+    # moment a second one posted its payments the other way up. The rule now
+    # lives in one place instead of two, which is the point.
     metrics.update({
-        name: _deduction(totals[name])
+        name: _float(totals[name])
         for name in ("payment_amount", "discount_amount", "adjustment_amount")
     })
     metrics.update({
@@ -362,13 +406,11 @@ def credit_control_report(
         "open_invoice_count": totals["open_invoice_count"] or 0,
         "overdue_invoice_count": totals["overdue_invoice_count"] or 0,
         "due_soon_invoice_count": totals["due_soon_invoice_count"] or 0,
+        "due_later_invoice_count": totals["due_later_invoice_count"] or 0,
     })
     # Shares are suppressed rather than rendered as 0%: a portfolio with nothing
     # outstanding has no overdue *proportion*, and "0%" would read as good news
     # about a book that does not exist.
-    # The already-flipped magnitude, not the signed total: a rate computed from
-    # the negative would come out negative and read as money flowing the wrong
-    # way.
     metrics["payment_rate_percent"] = _share(
         metrics["payment_amount"], totals["net_invoice_amount"])
     metrics["overdue_share_percent"] = _share(
@@ -380,6 +422,16 @@ def credit_control_report(
         "due_soon_days": query.due_soon_days,
         "metrics": metrics,
         "aging": _aging(session, view, filters, query),
+        # The hierarchy sections. One bundle rather than four more endpoints,
+        # for the reason this is a bundle at all: four requests against the same
+        # filtered rows can arrive at four slightly different answers if a load
+        # lands between them, and a matrix that disagrees with the chart above it
+        # is worse than a slower page.
+        "aging_by_level": _aging_by_level(session, view, filters, query,
+                                          query.group_level),
+        "exposure_by_level": _exposure_by_level(session, view, filters, query,
+                                                query.group_level),
+        "due_profile": _due_profile(session, view, filters, query),
         "status": _status_split(session, view, filters, query),
         "top_overdue_customers": _top_overdue(session, view, filters, query),
         "outstanding_trend": _outstanding_trend(),
@@ -387,20 +439,15 @@ def credit_control_report(
     }
 
 
-def _deduction(value: Any) -> float | None:
-    """A signed deduction as the magnitude a reader expects to see.
+def _float(value: Any) -> float | None:
+    """A stored figure as a float, keeping its sign.
 
-    The source posts payments, discounts and adjustments as negative numbers and
-    the warehouse stores them that way, because the sign is what makes the
-    balance arithmetic a plain sum. Nobody wants to read "Total Payment
-    −1.10 Cr", so the reporting layer flips it once, here, rather than every
-    caller remembering to.
-
-    A genuinely positive value — a debit note that increases what is owed —
-    comes back negative, which is the honest rendering of "this added to the
-    balance rather than reducing it".
+    The sign is the figure's meaning and is never adjusted here. It was made to
+    mean one thing at load time — positive reduced the balance, negative
+    increased it — so a payment comes back positive, and a debit adjustment comes
+    back negative because that is what it did.
     """
-    return None if value is None else -float(value)
+    return None if value is None else float(value)
 
 
 def _share(part: Any, whole: Any) -> float | None:
@@ -446,7 +493,20 @@ def _aging(session: Session, view: Table, filters: ReportFilters,
 
 def _status_split(session: Session, view: Table, filters: ReportFilters,
                   query: CreditQuery) -> list[dict[str, Any]]:
-    """Count and balance per credit status, all three present even at zero."""
+    """Count, balance and invoice value per credit status, all three at zero too.
+
+    **``invoice_amount`` is here because ``outstanding_amount`` cannot describe
+    CLEARED.** A cleared invoice has a balance of zero or below by definition, so
+    the outstanding figure for that status is always 0.0 — which left the split
+    reporting a status with a count and no money at all, and no way to see how
+    much had actually been settled. The two answer different questions: what is
+    still owed in each state, and how much was billed to get there.
+
+    ``invoice_amount`` is the **net** invoice value — what was billed less what
+    came back — because that is the figure every other total on this page nets
+    against, and mixing gross into one row of a split would be the only gross
+    figure on the surface.
+    """
     as_on = query.as_on
     status = credit_status_expression(view, as_on)
     rows = session.execute(filtered(
@@ -455,6 +515,7 @@ def _status_split(session: Session, view: Table, filters: ReportFilters,
             func.count().label("invoice_count"),
             func.sum(case((_is_open(view), view.c.balance_amount), else_=0))
                 .label("outstanding_amount"),
+            func.sum(view.c.net_invoice_amount).label("invoice_amount"),
         ).group_by(status),
         view, filters, query,
     )).all()
@@ -467,6 +528,9 @@ def _status_split(session: Session, view: Table, filters: ReportFilters,
             "outstanding_amount": (
                 _f(found[code]["outstanding_amount"]) if code in found else 0.0
             ),
+            "invoice_amount": (
+                _f(found[code]["invoice_amount"]) if code in found else 0.0
+            ),
         }
         for code in credit.CREDIT_STATUSES
     ]
@@ -478,14 +542,34 @@ TOP_OVERDUE_LIMIT = 5
 
 def _top_overdue(session: Session, view: Table, filters: ReportFilters,
                  query: CreditQuery) -> list[dict[str, Any]]:
+    """The worst overdue customers, and **where each of them is**.
+
+    The territory joined these rows in revision 0040, and it is not decoration:
+    the action this chart leads to is somebody going to see the customer, and
+    until the view carried a hierarchy the page could name the debt but not the
+    person whose patch it sits in. Territory rather than region because it is the
+    level a single visit happens at; the region is carried beside it so a
+    regional manager reading their own filtered page still recognises the rows.
+
+    Grouped on the customer alone. Adding the place columns to the GROUP BY
+    would split a customer who trades across two territories into two rows and
+    quietly drop both below the cut — so the place is taken as the MAX over the
+    customer's own invoices, which is that customer's territory in every case
+    the master data allows and a stable choice in any case it does not.
+    """
     as_on = query.as_on
     overdue = _is_overdue(view, as_on)
     rows = session.execute(filtered(
         select(
             view.c.customer_code,
             view.c.customer_name,
+            func.max(view.c.territory_code).label("territory_code"),
+            func.max(view.c.territory_name).label("territory_name"),
+            func.max(view.c.region_code).label("region_code"),
+            func.max(view.c.region_name).label("region_name"),
             func.sum(view.c.balance_amount).label("overdue_amount"),
             func.count().label("invoice_count"),
+            func.max(view.c.days_overdue).label("max_days_overdue"),
         ).where(overdue).group_by(view.c.customer_code, view.c.customer_name)
         .order_by(func.sum(view.c.balance_amount).desc())
         .limit(TOP_OVERDUE_LIMIT),
@@ -495,12 +579,234 @@ def _top_overdue(session: Session, view: Table, filters: ReportFilters,
         {
             "customer_code": row._mapping["customer_code"],
             "customer_name": row._mapping["customer_name"],
+            "territory_code": row._mapping["territory_code"],
+            "territory_name": row._mapping["territory_name"] or UNASSIGNED,
+            "region_code": row._mapping["region_code"],
+            "region_name": row._mapping["region_name"] or UNASSIGNED,
             "overdue_amount": _f(row._mapping["overdue_amount"]),
             "invoice_count": row._mapping["invoice_count"],
+            "max_days_overdue": row._mapping["max_days_overdue"],
         }
         for row in rows
     ]
 
+
+
+# ---------------------------------------------------------------------------
+# The hierarchy sections
+#
+# Everything below became possible in revision 0040, which put the sales
+# hierarchy on ``vw_credit_invoice_detail``. Before it a receivables report
+# could say what was owed and how late, and nothing at all about *where* — so
+# the one question a regional manager brings to this page had no answer on it.
+# ---------------------------------------------------------------------------
+
+
+#: What a level is called when a row has no value for it.
+#:
+#: Rendered rather than dropped. A row with no region is money somebody is owed,
+#: and silently omitting it from a breakdown would make the parts add up to less
+#: than the total with nothing on screen to explain the gap.
+UNASSIGNED = "(unassigned)"
+
+#: How many groups a ranked breakdown names before it stops being a ranking.
+EXPOSURE_LIMIT = 20
+
+
+def _label_column(view: Table, level: str):
+    """The human name beside a code, where the view carries one.
+
+    ``region_code`` has ``region_name``; ``customer_code`` has ``customer_name``.
+    A level whose name column the view lacks falls back to the code, which is
+    what the Customers page did for two revisions before ``dim_customer``
+    existed — a code is a poor label and an honest one.
+    """
+    name = level.replace("_code", "_name")
+    return view.c[name] if name in view.c else view.c[level]
+
+
+def _grouped(session: Session, view: Table, filters: ReportFilters,
+             query: CreditQuery, level: str, columns: list, *, where=None,
+             order_by=None, limit: int | None = None):
+    """One grouped read of the credit view, filtered and scoped like every other."""
+    code = view.c[level]
+    label = _label_column(view, level)
+    statement = select(code.label("code"), label.label("name"), *columns)
+    if where is not None:
+        statement = statement.where(where)
+    statement = statement.group_by(code, label)
+    if order_by is not None:
+        statement = statement.order_by(order_by)
+    if limit is not None:
+        statement = statement.limit(limit)
+    return session.execute(filtered(statement, view, filters, query)).all()
+
+
+def _aging_by_level(session: Session, view: Table, filters: ReportFilters,
+                    query: CreditQuery, level: str) -> dict[str, Any]:
+    """The aging matrix: one row per group, one column per bucket.
+
+    Returned as a matrix rather than as a list of (group, bucket, amount)
+    triples, because a matrix is what the page draws and flattening it in the
+    browser would put the bucket order — which is a business rule — on the wrong
+    side of the API. Every bucket is present on every row, zeros included, for
+    the reason ``_aging`` fills them: "nothing in 91-120" is a fact the screen
+    has to state, and a ragged row would read as a rendering fault.
+
+    Groups are ordered by what they are worth rather than alphabetically: the
+    question this answers is which region is carrying the debt.
+    """
+    as_on = query.as_on
+    bucket = aging_bucket_expression(view, as_on)
+    code = view.c[level]
+    label = _label_column(view, level)
+    rows = session.execute(filtered(
+        select(
+            code.label("code"), label.label("name"),
+            bucket.label("aging_bucket"),
+            func.count().label("invoice_count"),
+            func.sum(view.c.balance_amount).label("outstanding_amount"),
+        ).where(_is_open(view)).group_by(code, label, bucket),
+        view, filters, query,
+    )).all()
+
+    groups: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        record = row._mapping
+        group = groups.setdefault(record["code"], {
+            "code": record["code"],
+            "name": record["name"] or record["code"] or UNASSIGNED,
+            "outstanding_amount": 0.0,
+            "invoice_count": 0,
+            "amounts": {code_: 0.0 for code_ in credit.AGING_BUCKETS},
+            "counts": {code_: 0 for code_ in credit.AGING_BUCKETS},
+        })
+        amount = _f(record["outstanding_amount"]) or 0.0
+        group["amounts"][record["aging_bucket"]] = amount
+        group["counts"][record["aging_bucket"]] = record["invoice_count"]
+        group["outstanding_amount"] += amount
+        group["invoice_count"] += record["invoice_count"]
+
+    ordered = sorted(groups.values(), key=lambda g: -g["outstanding_amount"])
+    return {
+        "level": level,
+        # The bucket order travels with the data, so the page renders whatever
+        # the business rule currently says rather than a list of its own.
+        "buckets": list(credit.AGING_BUCKETS),
+        "rows": [
+            {
+                "code": group["code"],
+                "name": group["name"],
+                "outstanding_amount": round(group["outstanding_amount"], 2),
+                "invoice_count": group["invoice_count"],
+                "amounts": [group["amounts"][code_] for code_ in credit.AGING_BUCKETS],
+                "counts": [group["counts"][code_] for code_ in credit.AGING_BUCKETS],
+            }
+            for group in ordered
+        ],
+    }
+
+
+def _exposure_by_level(session: Session, view: Table, filters: ReportFilters,
+                       query: CreditQuery, level: str) -> dict[str, Any]:
+    """What each group is owed, how much of it is late, and by how many invoices.
+
+    The overdue *share* is carried per group and suppressed rather than rendered
+    as zero where a group has nothing outstanding — a group with no receivables
+    has no overdue proportion, and 0% would read as good news about a book that
+    does not exist. Same rule as the headline metric, applied per row.
+    """
+    as_on = query.as_on
+    rows = _grouped(
+        session, view, filters, query, level,
+        [
+            func.sum(case((_is_open(view), view.c.balance_amount), else_=0))
+                .label("outstanding_amount"),
+            func.sum(case((_is_overdue(view, as_on), view.c.balance_amount), else_=0))
+                .label("overdue_amount"),
+            func.sum(case((_is_open(view), 1), else_=0)).label("open_invoice_count"),
+            func.count().label("invoice_count"),
+            func.count(distinct(view.c.customer_code)).label("customer_count"),
+        ],
+        order_by=func.sum(case((_is_open(view), view.c.balance_amount), else_=0)).desc(),
+        limit=EXPOSURE_LIMIT,
+    )
+    return {
+        "level": level,
+        "limit": EXPOSURE_LIMIT,
+        "rows": [
+            {
+                "code": row._mapping["code"],
+                "name": row._mapping["name"] or row._mapping["code"] or UNASSIGNED,
+                "outstanding_amount": _f(row._mapping["outstanding_amount"]),
+                "overdue_amount": _f(row._mapping["overdue_amount"]),
+                "overdue_share_percent": _share(
+                    row._mapping["overdue_amount"], row._mapping["outstanding_amount"]),
+                "open_invoice_count": row._mapping["open_invoice_count"] or 0,
+                "invoice_count": row._mapping["invoice_count"],
+                "customer_count": row._mapping["customer_count"],
+            }
+            for row in rows
+        ],
+    }
+
+
+def _due_profile(session: Session, view: Table, filters: ReportFilters,
+                 query: CreditQuery) -> dict[str, Any]:
+    """When money that is **not yet late** falls due. The aging chart's other half.
+
+    Aging looks backwards and is what a collections team chases; this looks
+    forwards and is what they plan. The SPL extract is why it is worth drawing:
+    ৳35.75 Cr of that book falls due beyond the snapshot month and appears in
+    neither of the source's own ``od`` and ``maturity`` columns, so a page built
+    from those alone simply loses a third of the portfolio.
+
+    Overdue money is deliberately **not** a bucket here. It has seven of its own
+    on the aging chart, and repeating it would put the same taka on two charts
+    that a reader would then be tempted to add. ``overdue_amount`` is returned
+    beside the buckets so the two can be related without being mixed.
+    """
+    as_on = query.as_on
+    arms: list[tuple[Any, Any]] = []
+    for code, upper in credit.DUE_BUCKETS:
+        if upper is None:
+            continue  # the open-ended tail is the ELSE
+        arms.append((view.c.due_date <= as_on + dt.timedelta(days=upper),
+                     literal(code)))
+    bucket = case(*arms, else_=literal(credit.DUE_BUCKETS[-1][0]))
+
+    rows = session.execute(filtered(
+        select(
+            bucket.label("due_bucket"),
+            func.count().label("invoice_count"),
+            func.sum(view.c.balance_amount).label("due_amount"),
+        ).where(and_(_is_open(view), view.c.due_date >= as_on)).group_by(bucket),
+        view, filters, query,
+    )).all()
+    found = {row._mapping["due_bucket"]: row._mapping for row in rows}
+
+    overdue = session.execute(filtered(
+        select(func.sum(case((_is_overdue(view, as_on), view.c.balance_amount),
+                             else_=0)).label("overdue_amount")),
+        view, filters, query,
+    )).scalar()
+
+    return {
+        "as_on_date": as_on.isoformat(),
+        # Stated so the chart can say what it is *not* showing, rather than
+        # leaving a reader to assume these buckets cover the whole book.
+        "overdue_amount": _f(overdue),
+        "buckets": [
+            {
+                "bucket": code,
+                "invoice_count": found[code]["invoice_count"] if code in found else 0,
+                "due_amount": (
+                    _f(found[code]["due_amount"]) if code in found else 0.0
+                ),
+            }
+            for code in credit.DUE_BUCKET_CODES
+        ],
+    }
 
 def _outstanding_trend() -> dict[str, Any]:
     """Not available, and said so rather than approximated.
@@ -782,10 +1088,10 @@ def _payment_events(record: dict[str, Any]) -> list[dict[str, Any]]:
         # which is the true statement.
         events.append({
             "date": record.get("last_payment_date"),
-            # The magnitude, for the same reason the KPI is: a timeline entry
-            # reading "− 40,000" beside the word Payment says the opposite of
-            # what happened.
-            "amount": _deduction(record["payment_amount"]),
+            # Read through with its sign, like every other deduction on this
+            # surface: what is stored is the amount by which the payment reduced
+            # the balance, so an ordinary payment is already positive here.
+            "amount": _float(record["payment_amount"]),
             "kind": "PAYMENT",
             "note": (
                 "Total posted in payment. The source states one aggregate figure "

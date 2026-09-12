@@ -260,6 +260,13 @@ def credit_invoice_row(**overrides: Any) -> dict[str, Any]:
     names, so the alias resolution is exercised by every test that builds a row
     instead of only by the test that checks aliases.
 
+    The deductions are stated as **positive magnitudes**, which is the SPL
+    receivables extract's convention (``DEDUCTION_UNSIGNED``) and also, as it
+    happens, the warehouse's canonical sign. The earlier Credit Invoice extract
+    posts them negative; a load is *told* which it is being given, so a test for
+    that convention says so when it imports. One fixture cannot state both, and
+    a fixture whose signs disagree with the declared convention tests neither.
+
     The row states no due date and no balance. Both are derived — and the file's
     own values, where it supplies them, are read only to be contradicted — so a
     fixture that stated them would be asserting the derivation against itself.
@@ -274,7 +281,7 @@ def credit_invoice_row(**overrides: Any) -> dict[str, Any]:
         "Credit Days": 90,
         "Invoice Value": 100000,
         "Return": 0,
-        "Payment": -25000,
+        "Payment": 25000,
         "Discount": 0,
         "Adjustment": 0,
         "Payment Mode": "CREDIT",

@@ -48,6 +48,7 @@ from ..database.models_admin import (
 )
 from ..database.models_ai import AuditAction, Role
 from ..security.sections import SectionKey
+from ..etl.credit import DEDUCTION_CONVENTIONS
 from ..upload import files as upload_files
 from ..upload import jobs, service, templates
 from ..upload.registry import catalogue, get_upload_type
@@ -229,6 +230,48 @@ def download_template(
     )
 
 
+
+def _convention_or_422(value: str | None) -> str | None:
+    """Validate a stated deduction convention, or leave it to be detected.
+
+    Rejected rather than ignored when it is not one this platform knows: a
+    setting that silently does nothing is a setting somebody will trust, and the
+    figure it silently failed to change is every balance in the file.
+    """
+    if value is None or not value.strip():
+        return None
+    stated = value.strip().upper()
+    if stated not in DEDUCTION_CONVENTIONS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"'{value}' is not a deduction convention. Expected one of "
+            f"{', '.join(DEDUCTION_CONVENTIONS)}, or omit it and the preview "
+            "will state what the file's own signs imply.",
+        )
+    return stated
+
+
+def _scope_or_none(value: str | None) -> list[str] | None:
+    """Parse a declared restatement scope.
+
+    Three distinct answers, and the distinction is the point. ``None`` — the
+    parameter was not sent — means "default it from the file and show me in the
+    preview". A list of codes is a declaration that the file states those in
+    full, so rows inside it that the file does not name will be voided. And the
+    literal ``none`` is the declaration that **nothing** is restated, which is
+    how a file covering part of a book is loaded without standing anything down.
+
+    An empty list and a missing parameter would otherwise be indistinguishable
+    over a form post, and they mean opposite things.
+    """
+    if value is None:
+        return None
+    stated = value.strip()
+    if not stated or stated.lower() == "none":
+        return []
+    return [code.strip() for code in stated.split(",") if code.strip()]
+
+
 # ---------------------------------------------------------------------------
 # Upload -> validate -> preview
 # ---------------------------------------------------------------------------
@@ -242,6 +285,14 @@ async def preview_upload(
     import_mode: str = Form(ImportMode.UPSERT),
     sheet_name: str | None = Form(None),
     date_format: str | None = Form(None),
+    deduction_convention: str | None = Form(
+        None, description="SIGNED or UNSIGNED. Omit to take the file's own "
+                          "evidence, which the preview states."),
+    restatement_scope: str | None = Form(
+        None, description="Comma-separated codes this file states in full; rows "
+                          "inside that scope which it does not name are voided. "
+                          "Omit to take the codes the file contains, which the "
+                          "preview states. 'none' restates nothing."),
     session: Session = Depends(get_session),
     user: UserContext = SectionDep,
 ) -> dict[str, Any]:
@@ -256,6 +307,8 @@ async def preview_upload(
     Nothing is written to the warehouse by this call or by the job it starts.
     """
     spec = _upload_type_or_404(upload_type)
+    convention = _convention_or_422(deduction_convention)
+    scope = _scope_or_none(restatement_scope)
     if import_mode not in spec.supported_modes:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -278,6 +331,7 @@ async def preview_upload(
         batch = service.create_batch(
             session, spec, stored, import_mode=import_mode,
             user_id=user.user_id, username=user.username,
+            deduction_convention=convention, restatement_scope=scope,
         )
         # Committed before the job is queued, not after: the worker opens its own
         # session and must be able to read this row the moment it starts.

@@ -867,6 +867,12 @@ export interface CreditControlSummary {
   metrics: CreditMetrics;
   /** All eight buckets, in order, zeros included — an empty bucket is a fact. */
   aging: CreditAgingRow[];
+  /** The same money split by organisational level as well: the aging matrix. */
+  aging_by_level: CreditAgingMatrix;
+  /** What each group is owed and how much of it is late, ranked. */
+  exposure_by_level: CreditExposureBreakdown;
+  /** When money that is *not yet late* falls due — the aging chart's other half. */
+  due_profile: CreditDueProfile;
   status: CreditStatusRow[];
   top_overdue_customers: CreditTopOverdueRow[];
   outstanding_trend: CreditTrend;
@@ -892,8 +898,18 @@ export interface CreditMetrics {
   discount_amount: number | null;
   adjustment_amount: number | null;
   outstanding_amount: number | null;
+  /**
+   * The three-way partition of everything still owed, by when it falls due.
+   *
+   * Mutually exclusive and exhaustive over the open book, so the three add to
+   * `outstanding_amount` exactly. `due_later_amount` was missing until Stage 3
+   * and is the largest of the three on the real data — money that is neither
+   * late nor imminent, which the source's own columns do not publish at all.
+   */
   overdue_amount: number | null;
   due_soon_amount: number | null;
+  due_later_amount: number | null;
+  due_later_invoice_count: number;
   /**
    * Both `null` when their denominator is zero, never `0`. A portfolio with
    * nothing outstanding has no overdue *proportion*, and rendering `0%` would
@@ -913,13 +929,87 @@ export interface CreditStatusRow {
   status: string;
   invoice_count: number;
   outstanding_amount: number;
+  /**
+   * What was billed, net of returns.
+   *
+   * Here because `outstanding_amount` cannot describe CLEARED: a cleared
+   * invoice has a balance of zero or below by definition, so that status always
+   * read as a count with no money beside it and no way to see how much had
+   * actually been settled.
+   */
+  invoice_amount: number;
+}
+
+/**
+ * The aging matrix: one row per organisational group, one column per bucket.
+ *
+ * A matrix rather than a list of triples, because a matrix is what the page
+ * draws — flattening it here would put the bucket order, which is a business
+ * rule, on the wrong side of the API. `amounts` and `counts` are positionally
+ * aligned with `buckets`, and every row carries every bucket including the
+ * empty ones: a row of four cells beside a row of eight does not line up.
+ */
+export interface CreditAgingMatrix {
+  level: string;
+  buckets: string[];
+  rows: CreditAgingMatrixRow[];
+}
+
+export interface CreditAgingMatrixRow {
+  code: string | null;
+  name: string;
+  outstanding_amount: number;
+  invoice_count: number;
+  amounts: number[];
+  counts: number[];
+}
+
+export interface CreditExposureBreakdown {
+  level: string;
+  limit: number;
+  rows: CreditExposureRow[];
+}
+
+export interface CreditExposureRow {
+  code: string | null;
+  name: string;
+  outstanding_amount: number | null;
+  overdue_amount: number | null;
+  /** `null` where the group has nothing outstanding — never `0`. */
+  overdue_share_percent: number | null;
+  open_invoice_count: number;
+  invoice_count: number;
+  customer_count: number;
+}
+
+/**
+ * The forward horizon. `overdue_amount` rides along **outside** the buckets:
+ * overdue money has seven buckets of its own on the aging chart, and the same
+ * taka on two charts is taka a reader will add.
+ */
+export interface CreditDueProfile {
+  as_on_date: string;
+  overdue_amount: number | null;
+  buckets: CreditDueBucket[];
+}
+
+export interface CreditDueBucket {
+  bucket: string;
+  invoice_count: number;
+  due_amount: number;
 }
 
 export interface CreditTopOverdueRow {
   customer_code: string;
   customer_name: string | null;
+  /** Where to go and see them — the action this ranking leads to. */
+  territory_code: string | null;
+  territory_name: string;
+  region_code: string | null;
+  region_name: string;
   overdue_amount: number | null;
   invoice_count: number;
+  max_days_overdue: number | null;
 }
 
 /**

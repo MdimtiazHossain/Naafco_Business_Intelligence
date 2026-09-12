@@ -39,6 +39,26 @@ class code:
     #: telling somebody that when their file is perfectly good wastes their
     #: afternoon and hides a real outage.
     SYSTEM = "SYSTEM_ERROR"
+    #: The file is perfectly readable but does not settle something the load
+    #: has to be told — today, how it signs a deduction. Its own code for the
+    #: same reason ``SYSTEM_ERROR`` has one: "re-save your spreadsheet" is
+    #: useless advice here, and the message this carries already says what to
+    #: do instead.
+    UNDECLARED = "UNDECLARED_SETTING"
+
+
+class UndeclaredSetting(ValueError):
+    """The file cannot settle something the load must be told, and nobody has.
+
+    A refusal, never a default. The two deduction conventions produce identical
+    figures for a file with no non-zero deduction in it, so picking one would be
+    right half the time and silently wrong the other half — discovered months
+    later as a balance off by twice the payment.
+
+    Subclasses ``ValueError`` so the readers' own file faults and this share a
+    type where callers only care that the upload cannot proceed;
+    :func:`failure_issue` tells them apart, because the advice differs entirely.
+    """
 
 
 @dataclass
@@ -219,6 +239,19 @@ def failure_issue(exc: BaseException, *, job_id: str) -> tuple[str, UploadIssue]
     whole point: a missing table used to arrive at the user as a full ``INSERT``
     statement in a downloadable CSV.
     """
+    # Checked before the file-fault branch: it *is* a ValueError, and would
+    # otherwise be reported as an unreadable file, which is both wrong and the
+    # least useful thing anybody could be told about it.
+    if isinstance(exc, UndeclaredSetting):
+        message = str(exc)
+        return message, UploadIssue(
+            row_number=None, column=None, value=None,
+            error_code=code.UNDECLARED, message=message,
+            suggested_fix=("State the setting explicitly on the upload and "
+                           "preview it again. Nothing is guessed here because "
+                           "both answers are plausible and only one is right."),
+        )
+
     if is_file_fault(exc):
         message = ("The file could not be read. Check that it is a valid Excel "
                    "or CSV file exported from the template.")
@@ -237,4 +270,5 @@ def failure_issue(exc: BaseException, *, job_id: str) -> tuple[str, UploadIssue]
 
 
 __all__ = ["code", "UploadIssue", "SUGGESTED_FIX_BY_CODE", "suggested_fix",
-           "hierarchy_fix", "failure_issue", "is_file_fault"]
+           "hierarchy_fix", "failure_issue", "is_file_fault",
+           "UndeclaredSetting"]

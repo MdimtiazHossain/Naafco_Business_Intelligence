@@ -9,6 +9,34 @@
 
 ---
 
+## ⚠️ Which parts of this document are still behind the code
+
+This file is the specification, and most of it is current. Three revisions
+removed things it still narrates in the present tense, so the sections that were
+*corrected* and the sections that were *not* are listed here rather than left for
+a reader to discover one at a time. **Where this file and `CLAUDE.md` disagree,
+`CLAUDE.md` wins.**
+
+Corrected: the architecture diagram, the staging and fact table lists, the
+calculations stored on the facts, the reporting views, the API endpoints, the
+shared filter list, the dimension table and the pending-dimension table.
+
+**Not yet corrected — read these as history, not as description:**
+
+| Section | What changed | When |
+|---|---|---|
+| The SKU / product architecture (brand resolution, the `sku_code` filter, `dim_product.material_code`, assumption 36) | `dim_product` was dropped. `dim_material` is the one item master; "product", "SKU" and "item" all mean a row of it, and brand is an attribute of that row | `0022` |
+| Anything describing a warehouse | `dim_warehouse` was dropped. Stock is located by plant and storage location; there is no warehouse | `0020` |
+| Anything describing Collection or Outstanding as datasets | Both were removed, having never held a row. **Receivables came back** in `0031` as Credit Control — see below — but **Collection did not**, because no source states an individual payment | `0020`, `0031` |
+| The Business Map | Removed entirely and rebuilt from nothing; the tables, the renderer and the endpoints are all different | `0033`, `0034` |
+
+The reason for the split is that the first two are *historical narrative* — they
+explain why a revision did what it did, and rewriting them would destroy the
+record — while the lists above were claims about what exists today, which is the
+one kind of staleness this codebase treats as a defect rather than as untidiness.
+
+---
+
 ## ⚠️ Blocker for going live: no master data and no transaction data yet
 
 Everything below is built, migrated and tested — but the warehouse cannot hold a
@@ -183,8 +211,8 @@ AI_Business_Agent/
                     etl/readers.py            one class per source,
                             │                 everything downstream is shared
                             ▼
-                     STAGING TABLES           stg_sales, stg_collection,
-                            │                 stg_outstanding, stg_material_stock, stg_target
+                     STAGING TABLES           stg_sales, stg_material_stock,
+                            │                 stg_target, stg_credit_invoice
                             ▼
                     DATA VALIDATION           required / date / numeric
                             │
@@ -192,10 +220,10 @@ AI_Business_Agent/
                   MASTER DATA MAPPING         existence + hierarchy consistency
                             │                 against the Phase 1 dimensions
                             ▼
-                      FACT TABLES             fact_sales, fact_collection,
-                            │                 fact_outstanding, fact_material_stock, fact_target
+                      FACT TABLES             fact_sales, fact_material_stock,
+                            │                 fact_target, fact_credit_invoice
                             ▼
-                    REPORTING VIEWS           12 vw_* views
+                    REPORTING VIEWS           11 vw_* views
                             │
                             ▼
                     AI AGENT (Phase 3+)
@@ -419,7 +447,14 @@ foreign key to `dim_company`.
 | `dim_unit` | Unit Master | `unit_code` | `dim_area.area_code` |
 | `dim_territory` | Territory Master | `territory_code` | `dim_unit.unit_code` |
 | `dim_sub_territory` | Sub-Territory Master | `sub_territory_code` | `dim_territory.territory_code` |
-| `dim_product` | Product Master | `sku_code` | — (independent) |
+| `dim_material` | Material Master | `material_code` | — (company is an attribute) |
+
+`dim_product` was **dropped in revision 0022** and `dim_material` is the one item
+master: a sale, a target and a stock position all carry `material_code` and all
+resolve it against the same row. "Product", "SKU" and "item" all mean a row of
+`dim_material`, and there is no product-to-material bridge and no compatibility
+view. Sections further down still narrate the SKU architecture as it stood — see
+the staleness note at the top of this file.
 
 Each table carries a `BIGSERIAL` surrogate key (`company_id`, `region_id`, …)
 used only for internal joins. The **official business code is never replaced by
@@ -452,9 +487,19 @@ dimensions are **created empty and never populated with invented records**:
 
 | Table | Status | Expected fields |
 |---|---|---|
-| `dim_customer` | `PENDING_SOURCE_DATA` | customer_code, customer_name, customer_type, address, district, mobile, status |
+| `dim_customer` | **Populated** — 2,091 customers | customer_code, customer_name, customer_type, address, district, mobile, status |
 | `dim_sales_force` | `PENDING_SOURCE_DATA` | sales_force_code, sales_force_name, designation, employee_id, territory_code, status |
-| `dim_warehouse` | `PENDING_SOURCE_DATA` | warehouse_code, warehouse_name, warehouse_type, location, status |
+
+`dim_warehouse` was **dropped in revision 0020**. Stock is located by plant and
+storage location, and there is no warehouse anywhere in this platform.
+
+`dim_customer` is no longer pending: the master arrived, and since revision 0024
+`customer_name` sits beside `customer_code` on the detail views exactly as
+`region_name` sits beside `region_code`. That changed **what is displayed, not
+what anything is keyed on** — the code is still the business key, still what
+filters and scope apply to, and still what a report groups by. The join is a
+LEFT JOIN **on the code**, so a transaction whose customer the master lacks keeps
+its figures and shows its code rather than vanishing from a total.
 
 The status lives in `etl_master_source_status` and is served by
 `GET /api/data-quality/master-sources/status`. While a dimension is pending, a
@@ -480,8 +525,13 @@ Batch statuses: `STARTED` → `VALIDATING` → `COMPLETED` /
 
 ### Staging tables
 
-`stg_sales`, `stg_collection`, `stg_outstanding`, `stg_material_stock`,
-`stg_target`.
+`stg_sales`, `stg_material_stock`, `stg_target`, `stg_credit_invoice`.
+
+`stg_collection` and `stg_outstanding` were **removed** in revision 0020 — no
+extract was ever produced for either, and reporting figures nothing could measure
+was worse than saying the platform did not track them. Receivables returned in
+revision 0031 against a source that exists, as `stg_credit_invoice`; Collection
+did **not**, because no source states an individual payment.
 
 Every business column is **TEXT**, so a value that fails numeric or date
 validation is still visible for diagnosis. Each row also carries `source_file`,
@@ -492,13 +542,27 @@ columns the canonical mapping does not use.
 
 ### Fact tables
 
-| Fact | Grain | Organisational depth | Product |
+| Fact | Grain | Organisational depth | Material |
 |---|---|---|---|
 | `fact_sales` | Invoice line | company → sub-territory | required |
-| `fact_collection` | Receipt | company → sub-territory | — |
-| `fact_outstanding` | Invoice per as-on date | company → sub-territory | — |
-| `fact_material_stock` | Company × plant × storage location × material × material group × production date × expiry date | — (its own dimension) | — |
-| `fact_target` | Month × territory × customer × SKU × sales force | territory → company, **derived** | required |
+| `fact_material_stock` | Company × plant × storage location × material × material group × production date × expiry date | — (its own dimension) | required |
+| `fact_target` | Month × territory × customer × material × sales force | territory → company, **derived** | required |
+| `fact_credit_invoice` | One invoice — company × customer × invoice number | company → sub-territory (revision 0038) | — |
+
+`fact_collection` and `fact_outstanding` were dropped in revision 0020; neither
+ever held a row. `fact_credit_invoice` is the receivables fact that replaced the
+second of them, and its grain is **one invoice, not one posting**: the source
+aggregates payments into a single `payment_amount` plus a Last Payment Date, so
+this table cannot reconstruct a payment history and does not pretend to.
+
+**The grain is enforced by `business_key` alone.** Revision 0031 also declared an
+invoice unique within its company; the SPL receivables extract falsified that on
+290 rows, and widening the constraint to include the customer still left 17 —
+one customer carrying the same document number twice with different dates and
+amounts. Revision 0038 **dropped** it: the pipeline numbers a repeated key `…#2`
+precisely so a genuine repeat loads rather than being lost, and a table
+constraint forbidding what that numbering permits does not add safety, it aborts
+the load.
 
 Every organisational key is nullable because a source need not carry every
 level — the mapper derives ancestors from the deepest code supplied. A row with
@@ -516,10 +580,33 @@ Every fact carries provenance (`source_system`, `source_file`,
 | `gross_sales` | `net_sales + discount`, **derived only when the source omits it** |
 | `net_sales` | Required on every sales row — the figure every report is built on |
 | `gross_profit` | `net_sales - cost`; NULL when cost is unknown, never 0 |
-| `outstanding_amount` | `invoice_amount - paid_amount`, derived only when omitted |
-| `days_overdue` | `as_on_date - due_date`, floored at 0 — not-yet-due is never overdue |
-| `aging_bucket` | `CURRENT` / `1-30` / `31-60` / `61-90` / `91-180` / `180+` |
+| `net_invoice_amount` | `invoice_value - return_amount` (credit invoice) |
+| `balance_amount` | `net_invoice_amount - payment_amount - discount_amount - adjustment_amount`. Negative is **kept, never floored** — an over-posted credit note is flagged `BALANCE_NEGATIVE` and excluded from the exposure total, so a data-quality problem cannot net off against real debt |
+| `due_date_id` | The date the file states; derived from invoice date + credit days only where it states none |
 | `unrestricted_stock`, `quality_inspection_stock`, `blocked_stock`, `stock_in_transit` | Taken from the file verbatim; a category the file leaves blank is a real zero. `total_stock` is **not** stored — it is the sum of all four, defined once in `vw_material_stock_detail` |
+
+**`days_overdue`, `aging_bucket` and `credit_status` are deliberately NOT stored,
+and this table said the opposite until Stage 5.** They depend on the day you ask.
+A `days_overdue` frozen at upload is wrong the next morning while still looking
+authoritative — the same reasoning that keeps Target Management's reconciliation
+computed rather than stored. The reporting views derive all three from
+`due_date_id` against the requested date, which is what lets `as_on_date` be a
+real request parameter instead of a label over stale figures.
+`test_credit_control` asserts their **absence** as columns, because the column is
+easy to re-add for a plausible-sounding reason and every value in it would be
+wrong.
+
+The same rule sends `od` and `maturity` — the SPL extract's own overdue split —
+to staging and to no fact column at all. The load compares its own derivation
+against them and reports the disagreement as a note.
+
+**A deduction is stored in one canonical sign**: the amount by which that
+component *reduced* the balance — positive reduced it, negative increased it. Two
+real extracts disagree about how they post one (the Credit Invoice file negative,
+the SPL file positive), so the convention is declared per upload and applied once
+at load by `etl.credit.canonical_deductions`. Nothing downstream knows which file
+a row came from. Revision 0039 back-filled the rows loaded before that rule
+existed.
 
 Ratios (margin %, achievement %, growth %) are computed in the reporting
 layer and return NULL on a zero denominator.
@@ -643,21 +730,201 @@ Re-importing the same file is always safe. A duplicate *within* one file is
 
 ---
 
+## Credit Control (receivables)
+
+Revision `0020` removed Collection and Outstanding because nothing could measure
+either. Revision `0031` brought receivables back against a source that exists —
+so what is outstanding is **read rather than estimated** — and revisions `0038`
+through `0040` gave it the organisational hierarchy, one canonical sign for a
+deduction, and a load that can restate a book rather than only append to it.
+
+Collection did **not** come back. The source aggregates payments into one
+`payment_amount` and a Last Payment Date, so there is no per-transaction history
+to hold and none is invented. The invoice detail panel shows a single payment
+event and says why. A question about *collections* is still answered "this system
+does not track that".
+
+### The eight aging buckets
+
+`NOT_YET_DUE` · `1-30` · `31-60` · `61-90` · `91-120` · `121-180` · `181-365` ·
+`365+`
+
+Eight rather than the six this platform used elsewhere, and that is a decision
+rather than an accident: a 120-day debt and a 179-day debt are chased by
+different people. The bounds do not overlap — the specification wrote the last
+two as "181-365" and "365+", which claims 365 twice, so the tail starts at **366**
+and the published label stays cosmetic.
+
+The rule exists **twice on purpose** — frozen SQL in the revision that authored
+each view, because a migration must keep producing the same schema for ever, and
+live Python in `etl/credit.py`, because the ETL goes on being edited. Two copies
+of one rule drift silently, so `test_view_and_python_agree_on_every_boundary`
+walks every boundary day through both. Never edit one without the other.
+
+### The forward horizon
+
+`0-7` · `8-30` · `31-60` · `61-90` · `90+` — how soon money that is **not yet
+overdue** falls due. Deliberately coarser than the aging scale: late debt is
+chased by different people at 120 days and at 179, while debt that has not fallen
+due is *planned* for, and nobody plans differently for day 47 and day 52.
+
+Unlike the aging boundaries these are in **no view**, so there is one copy of them
+and nothing to keep in step.
+
+### The open book partitions three ways
+
+`outstanding = overdue + due_soon + due_later`, by due date against the reporting
+date. Every open invoice falls in exactly one, so the three add to the total by
+construction rather than by hope, and the tests check it in **taka and in invoice
+count** — a partition that balanced in money alone would mean one row counted
+twice and another not at all.
+
+The third was missing until Stage 3, and on the first real extract it is the
+*largest*: ৳45.59 Cr against ৳36.68 Cr overdue. Money that is neither late nor
+imminent, which the source's own `od` and `maturity` columns do not publish
+either.
+
+### A declared convention, applied once
+
+Two real extracts disagree about how a deduction is posted: the Credit Invoice
+file states payment, discount and adjustment **negative** and adds them; the SPL
+file states them **positive** and subtracts them. One constant could not be right
+for both, and running either file through the other's rule roughly doubles every
+balance.
+
+So the convention is **declared per upload** — defaulted from
+`etl.credit.detect_convention`, shown in the preview with the counts it was read
+off, recorded on `upload_batches` and on `etl_import_batches` — and applied once,
+at the load. A file whose deductions are all zero satisfies both rules and so
+carries no evidence: it is **refused** (`UNDECLARED_SETTING`) rather than guessed
+at.
+
+The warehouse then stores one meaning: **a deduction is the amount by which that
+component reduced the balance** — positive reduced it, negative increased it.
+Nothing downstream knows which file a row came from, which is why the display
+layer no longer flips a sign and there is no longer a rule to keep in step
+between the loader and the page.
+
+The sign is normalised, **not the magnitude**. A debit note is a posting that
+*increased* what is owed; it arrives positive under one convention and negative
+under the other, and is stored negative under both. `abs()` would have turned
+every one of them into a payment.
+
+### A restating load, which is not REPLACE
+
+A receivables extract states a whole book as at a date, so an invoice it stops
+naming has been settled. Loading it incrementally would leave every settled
+invoice standing for ever and the outstanding total drifting upward with nothing
+to show why.
+
+So a load may be given a **restatement scope**: rows inside it that the file does
+not name are **voided**. Two things make that different from a REPLACE, which
+this platform does not have and still does not:
+
+* **Bounded.** Only rows whose `company_code` is one of the values declared for
+  that upload are looked at. A file for company 1000 cannot touch company 2000's
+  book however little it says about it.
+* **Voided, not deleted.** The row, its provenance and its batch survive, every
+  reporting view filters `is_void`, and a later file naming that key again brings
+  the row back rather than inserting a second one.
+
+The precedent is `targetmgmt.lock`, which restates a plan's own rows and voids
+the keys it drops — the same shape for the same reason.
+
+**The scope is declared, never inferred from the file's contents.** Deriving what
+to stand down from what happens to be present is the most dangerous form of
+invented data this platform could commit: a file that accidentally omitted a
+company would erase that company's book, and the erasure would be
+indistinguishable from a correct restatement. The preview states, before the
+commit, how many in-scope rows the file does not name, what they are worth, and
+**how many of those are rows the file does name but which were rejected** — the
+book falling for a data-quality reason rather than because anything was settled.
+
+### Scope is enforced, and four refusals retired when it could be
+
+`queries.SCOPE_POLICY` declares REFUSE for the credit view: a scope this report
+cannot narrow to is refused rather than silently dropped, because credit exposure
+decides whether a customer keeps getting supplied. Material stock meets the same
+gap and only *discloses*, which is right there and would be wrong here.
+
+Until revision `0040` the view reached the customer's sub-territory and no
+further, so a region-scoped caller could only be refused. Four separate things
+existed for that reason — a bespoke 403 on the report endpoint, a raise on the
+tool path, a skipped `HIGH_OVERDUE` alert, and no Overdue card on the executive
+dashboard — and all four went when the view gained the hierarchy. The policy
+stays REFUSE: it is inert while the view carries every level, and it is what
+would catch the next report that does not.
+
+### Rejections specific to this dataset
+
+| Code | Meaning |
+|---|---|
+| `SPREADSHEET_ERROR_VALUE` | A literal `#N/A` where a code belongs. Excel leaves it behind when a lookup finds nothing, and stored as a code it becomes a territory named `#N/A` that groups and totals like a real place. The row is **rejected with its whole original row kept**, because the money it carries has to stay findable — on the first real extract, 75 rows worth ৳23.76 Cr of bank FDRs, share investments and inter-company loans |
+| `UNDECLARED_SETTING` | The file cannot settle something the load must be told, and nobody has. Its own code because "re-save your spreadsheet" is useless advice for a file that reads perfectly well |
+
+Data-quality flags are **pipe-separated on `data_quality_flag`**, because a row
+can be wrong twice and a reviewer needs both: `BALANCE_NEGATIVE`,
+`BALANCE_MISMATCH`, `DUE_DATE_MISMATCH`, `CREDIT_DAYS_UNEXPECTED`,
+`CREDIT_DAYS_DERIVED`. Nothing here is refused on an unverified assumption —
+there is no CHECK on any amount and none on `credit_days`. That tolerance is what
+let the first real file load at all.
+
+`CREDIT_DAYS_DERIVED` **suppresses** `CREDIT_DAYS_UNEXPECTED` rather than joining
+it. The SPL extract states no payment term on 8,651 of 15,576 rows, so the term is
+read back out of the two dates the row does state — and those derived gaps take
+290 distinct values, every one of them "unexpected" against the six known codes.
+Raising that flag on 55% of a file is how a flag stops being read.
+
+### What is deliberately not reported
+
+The **outstanding trend** is printed as a sentence, not drawn as a chart. The
+source states one aggregate payment per invoice and one last payment date, so
+what was owed at a past month end is genuinely unrecorded; reconstructing it would
+mean assuming a payment pattern, and a chart of assumed history is
+indistinguishable on screen from a measured one. It becomes real when a
+payment-transaction extract exists — a different source, not a missing file.
+
+**DSO is not computed** and there is no trade / non-trade classification. The
+customer-code prefix correlation observed in the first extract is **observed, not
+confirmed**; if it turns out to be real it becomes a column on `dim_customer`
+from a master, never a prefix test in the ETL.
+
+---
+
 ## Reporting views
 
 | View | Contents |
 |---|---|
+| `vw_sales_detail` | Every sales line, fully labelled — the detail view the tools read |
 | `vw_daily_sales` | Daily sales by full hierarchy, with ASP and margin % |
 | `vw_monthly_sales` | Monthly roll-up incl. financial month/year |
 | `vw_region_sales` | Region-level sales |
-| `vw_product_sales` | SKU / category / brand sales |
-| `vw_daily_collection` | Daily collection by hierarchy and customer |
-| `vw_monthly_collection` | Monthly collection |
-| `vw_customer_outstanding` | Per-customer balance, overdue amount and % |
-| `vw_outstanding_aging` | Outstanding by aging bucket |
 | `vw_material_stock_detail` | Every stock position with its material code and its plant, storage location and material group names, plus `total_stock` |
+| `vw_target_detail` | Every target row, fully labelled |
 | `vw_target_vs_actual` | Target, actual, achievement %, gap |
 | `vw_region_target_achievement` | Region achievement by financial year |
+| `vw_credit_invoice_detail` | Every live invoice, its organisational chain, and `days_overdue` / `credit_status` / `aging_bucket` derived against the reporting date |
+| `vw_customer_credit_exposure` | One row per customer **per company**, with outstanding, overdue and the hierarchy |
+| `vw_credit_aging` | Outstanding per aging bucket, per company and per region |
+
+`vw_product_sales` went with `dim_product` in revision 0022 — there is one item
+master now and "product", "SKU" and "item" all mean a row of `dim_material`. The
+two collection and outstanding views went in revision 0020 with the datasets
+they read.
+
+**The three credit views carry the sales hierarchy** since revision 0040, and
+that is what lets a data scope be *enforced* on them. Until it, the detail view
+reached the customer's sub-territory and no further, so a region-scoped caller's
+scope named a column that was not there — and because `filter_conditions` skips a
+filter naming a missing column, the only honest options were to refuse the whole
+request or serve the whole company's receivables. Four separate refusals existed
+for that reason and all four went with it.
+
+A cleared invoice **ages nowhere**: `aging_bucket` is NULL once the balance
+reaches zero or below, which is what lets the aging chart and the outstanding
+KPI be counted against each other. A bucket holding nothing produces **no row** —
+the endpoint renders all eight in order and fills the absent ones, because "no
+invoices in 91-120" is a fact the screen must state rather than a gap.
 
 Stock is classified by **shelf life**, not by coverage: `EXPIRED` (expiry date
 already past), `EXPIRING_SOON` (within `STOCK_EXPIRING_SOON_DAYS`, default 90),
@@ -686,19 +953,37 @@ never a misleading zero.
 | `GET` | `/api/data-quality` | Quality aggregated across batches |
 | `GET` | `/api/data-quality/master-sources/status` | Which masters are pending |
 | `GET` | `/api/reports/sales` | Daily sales + MTD / YTD / growth / achievement |
-| `GET` | `/api/reports/collection` | Daily collection + MTD / YTD / growth |
-| `GET` | `/api/reports/outstanding` | Outstanding + aging + overdue % |
 | `GET` | `/api/reports/stock` | Stock positions + the four category totals |
 | `GET` | `/api/reports/target` | Target vs actual + achievement % + gap |
+| `GET` | `/api/reports/credit-control` | The whole page bundle: KPIs, aging, the aging × level matrix, exposure by level, the due profile, the status split and the worst overdue customers |
+| `GET` | `/api/reports/credit-control/invoices` | The invoice list, paged and sorted server-side |
+| `GET` | `/api/reports/credit-control/customers` | Exposure per customer per company |
+| `GET` | `/api/reports/credit-control/invoices/{company_code}/{invoice_no}` | One invoice, its derived state and its single payment event |
 | `GET` | `/master-data/schema` | Phase 1 dimension model |
 | `GET` | `/master-data/validation-rules` | Phase 1 rule catalogue |
 
 All report endpoints accept the same filters: `date_from`, `date_to`,
-`source_system`, every organisational code, `sku_code`, `category`, `brand`,
-`customer_code`, `warehouse_code`, `financial_year`, `limit` (≤ 1000), `offset`.
+`source_system`, every organisational code, `customer_code`, `plant_code`,
+`financial_year`, `limit` (≤ 1000), `offset`. `warehouse_code` went with
+`dim_warehouse` in revision 0020 — stock is located by plant and storage
+location, and there is no warehouse anywhere; `sku_code`, `category` and `brand`
+went with `dim_product` in 0022 and are now the global material chain.
 
-`data_type` is one of `sales`, `collection`, `outstanding`, `material_stock`,
-`target`.
+**A filter naming a column a view does not carry is skipped, not applied**, which
+is right for an optional narrowing and would be a silent scope drop for a data
+scope — so `queries.SCOPE_POLICY` declares per view whether an unenforceable
+scope is refused or disclosed, and the check runs *before* the query so a refusal
+can never be mistaken for an empty result.
+
+Credit Control adds four narrowings of its own: `as_on_date`, `due_soon_days`,
+`credit_status` and `aging_bucket`. The last two are **derived for the requested
+date** rather than stored, which is why they travel with `as_on_date` — the same
+invoice is Not Yet Due in June and Over Due in August. `group_level` picks the
+organisational level the matrix and the exposure breakdown are cut at, validated
+against the levels the view can actually group by; an unknown one is a 422
+naming it rather than a silent fall back to the default.
+
+`data_type` is one of `sales`, `material_stock`, `target`, `credit_invoice`.
 
 ### Error handling
 
